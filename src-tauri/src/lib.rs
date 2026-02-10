@@ -265,11 +265,45 @@ async fn ssh_sftp_list_dir(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn ssh_sftp_download_file(
+    state: State<'_, AppState>,
+    session_id: String,
+    remote_path: String,
+    local_path: String,
+) -> Result<(), String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || {
+        manager.sftp_download_file(&session_id, &remote_path, &local_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_sftp_upload_file(
+    state: State<'_, AppState>,
+    session_id: String,
+    local_path: String,
+    remote_path: String,
+) -> Result<(), String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || {
+        manager.sftp_upload_file(&session_id, &local_path, &remote_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(AppState {
             ssh_manager: Mutex::new(SshManager::new()),
         })
@@ -285,7 +319,9 @@ pub fn run() {
             ssh_execute_command,
             ssh_is_connected,
             ssh_list_sessions,
-            ssh_sftp_list_dir
+            ssh_sftp_list_dir,
+            ssh_sftp_download_file,
+            ssh_sftp_upload_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

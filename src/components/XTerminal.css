@@ -130,6 +130,11 @@
     background: var(--bg-primary);
     display: flex;
     flex-direction: column;
+    position: relative;
+}
+
+.xterminal-sftp--dragging {
+    background: rgba(15, 143, 255, 0.05);
 }
 
 .xterminal-sftp-header {
@@ -139,6 +144,7 @@
     padding: 10px 12px;
     border-bottom: 1px solid var(--border-light);
     background: var(--bg-primary);
+    gap: 4px;
 }
 
 .xterminal-sftp-title {
@@ -185,20 +191,54 @@
     box-shadow: 0 0 0 1px rgba(15, 143, 255, 0.2);
 }
 
+.xterminal-sftp-progress {
+    padding: 8px 12px;
+    background: rgba(15, 143, 255, 0.08);
+    border-bottom: 1px solid var(--border-light);
+    color: var(--accent);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 .xterminal-sftp-body {
     flex: 1;
     min-height: 0;
     overflow: auto;
+    position: relative;
 }
 
 .xterminal-sftp-state {
     padding: 16px 12px;
     color: var(--text-tertiary);
     font-size: 12px;
+    position: relative;
 }
 
 .xterminal-sftp-state--error {
     color: var(--danger);
+    background: rgba(255, 59, 48, 0.08);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.xterminal-sftp-error-close {
+    border: none;
+    background: transparent;
+    color: var(--danger);
+    font-size: 20px;
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    opacity: 0.7;
+    flex: 0 0 auto;
+}
+
+.xterminal-sftp-error-close:hover {
+    opacity: 1;
 }
 
 .xterminal-sftp-list {
@@ -215,10 +255,50 @@
     border-radius: 8px;
     color: var(--text-primary);
     font-size: 12px;
+    position: relative;
+}
+
+.xterminal-sftp-item--dir {
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.xterminal-sftp-item--file {
+    cursor: default;
 }
 
 .xterminal-sftp-item:hover {
     background: var(--bg-hover);
+}
+
+.xterminal-sftp-item--dir:active {
+    transform: scale(0.98);
+    transition: transform 0.1s ease;
+}
+
+.xterminal-sftp-download {
+    border: none;
+    background: transparent;
+    padding: 4px;
+    border-radius: 4px;
+    color: var(--text-tertiary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    flex: 0 0 auto;
+}
+
+.xterminal-sftp-item:hover .xterminal-sftp-download {
+    opacity: 1;
+}
+
+.xterminal-sftp-download:hover {
+    background: var(--bg-secondary);
+    color: var(--accent);
 }
 
 .xterminal-sftp-icon {
@@ -328,4 +408,33 @@
     to {
         transform: rotate(360deg);
     }
+}
+
+.xterminal-sftp-drop-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(15, 143, 255, 0.1);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    pointer-events: none;
+}
+
+.xterminal-sftp-drop-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    color: var(--accent);
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.xterminal-sftp-drop-content .app-icon {
+    opacity: 0.8;
 }

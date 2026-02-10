@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { listen } from "@tauri-apps/api/event";
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { sshApi } from "../api/ssh";
 import type { SftpEntry } from "../types/ssh";
 import "@xterm/xterm/css/xterm.css";
@@ -46,6 +47,7 @@ export function XTerminal({
   const [sftpEntries, setSftpEntries] = useState<SftpEntry[]>([]);
   const [sftpLoading, setSftpLoading] = useState(false);
   const [sftpError, setSftpError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
 
   useEffect(() => {
     onConnectRef.current = onConnect;
@@ -115,11 +117,110 @@ export function XTerminal({
         timeoutPromise,
       ])) as SftpEntry[];
       setSftpEntries(entries);
+      setSftpPath(path); // 更新当前路径
     } catch (error) {
       const message = formatError(error);
       setSftpError(message);
     } finally {
       setSftpLoading(false);
+    }
+  };
+
+  const handleEntryClick = (entry: SftpEntry) => {
+    if (!entry.is_dir) return; // 只处理文件夹点击
+
+    // 构建新路径
+    let newPath: string;
+    const currentPath = sftpPath || "/";
+
+    if (entry.name === "..") {
+      // 返回上一级
+      const parts = currentPath.split("/").filter(p => p);
+      if (parts.length > 0) {
+        parts.pop();
+        newPath = parts.length > 0 ? "/" + parts.join("/") : "/";
+      } else {
+        newPath = "/";
+      }
+    } else {
+      // 进入子目录 - 规范化路径拼接
+      if (currentPath === "/" || currentPath === "") {
+        newPath = "/" + entry.name;
+      } else {
+        newPath = currentPath.endsWith("/")
+          ? currentPath + entry.name
+          : currentPath + "/" + entry.name;
+      }
+    }
+
+    void loadSftpEntries(newPath);
+  };
+
+  const handleDownloadFile = async (entry: SftpEntry) => {
+    if (entry.is_dir) return; // 只下载文件
+
+    try {
+      const currentPath = sftpPath || "/";
+      const remotePath = currentPath.endsWith("/")
+        ? currentPath + entry.name
+        : currentPath + "/" + entry.name;
+
+      // 打开保存对话框
+      const localPath = await saveDialog({
+        defaultPath: entry.name,
+        title: "保存文件",
+      });
+
+      if (!localPath) return; // 用户取消
+
+      setUploadProgress(`下载中: ${entry.name}`);
+      await sshApi.downloadFile(sessionId, remotePath, localPath);
+      setUploadProgress(null);
+    } catch (error) {
+      const message = formatError(error);
+      setSftpError(`下载失败: ${message}`);
+      setUploadProgress(null);
+    }
+  };
+
+  const handleUploadFiles = async (filePaths: string[]) => {
+    for (const filePath of filePaths) {
+      try {
+        const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'unknown';
+        setUploadProgress(`上传中: ${fileName}`);
+
+        // 构建远程路径
+        const currentPath = sftpPath || "/";
+        const remotePath = currentPath.endsWith("/")
+          ? currentPath + fileName
+          : currentPath + "/" + fileName;
+
+        await sshApi.uploadFile(sessionId, filePath, remotePath);
+      } catch (error) {
+        const message = formatError(error);
+        setSftpError(`上传失败 ${filePath}: ${message}`);
+      }
+    }
+
+    setUploadProgress(null);
+    void loadSftpEntries();
+  };
+
+  const handleFileSelect = async () => {
+    try {
+      const selected = await openDialog({
+        multiple: true,
+        title: "选择要上传的文件",
+      });
+
+      if (!selected) return; // 用户取消
+
+      const files = Array.isArray(selected) ? selected : [selected];
+      await handleUploadFiles(files);
+    } catch (error) {
+      const message = formatError(error);
+      setSftpError(`选择文件失败: ${message}`);
+      setUploadProgress(null);
     }
   };
 
@@ -502,6 +603,33 @@ export function XTerminal({
                 <button
                   type="button"
                   className="xterminal-sftp-refresh"
+                  onClick={handleFileSelect}
+                  disabled={sftpLoading || !!uploadProgress}
+                  title="上传文件"
+                >
+                  <AppIcon icon="material-symbols:upload-rounded" size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="xterminal-sftp-refresh"
+                  onClick={() => {
+                    // 返回上级目录
+                    const currentPath = sftpPath || "/";
+                    const parts = currentPath.split("/").filter(p => p);
+                    if (parts.length > 0) {
+                      parts.pop();
+                      const newPath = parts.length > 0 ? "/" + parts.join("/") : "/";
+                      void loadSftpEntries(newPath);
+                    }
+                  }}
+                  disabled={sftpLoading || sftpPath === "/" || !sftpPath}
+                  title="返回上级目录"
+                >
+                  <AppIcon icon="material-symbols:arrow-upward-rounded" size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="xterminal-sftp-refresh"
                   onClick={() => void loadSftpEntries()}
                   disabled={sftpLoading}
                   title="刷新"
@@ -522,6 +650,11 @@ export function XTerminal({
                   placeholder="路径，例如 /var/log"
                 />
               </div>
+              {uploadProgress && (
+                <div className="xterminal-sftp-progress">
+                  {uploadProgress}
+                </div>
+              )}
               <div className="xterminal-sftp-body">
                 {sftpLoading && (
                   <div className="xterminal-sftp-state">加载中…</div>
@@ -529,6 +662,13 @@ export function XTerminal({
                 {!sftpLoading && sftpError && (
                   <div className="xterminal-sftp-state xterminal-sftp-state--error">
                     {sftpError}
+                    <button
+                      type="button"
+                      className="xterminal-sftp-error-close"
+                      onClick={() => setSftpError(null)}
+                    >
+                      ×
+                    </button>
                   </div>
                 )}
                 {!sftpLoading && !sftpError && sftpEntries.length === 0 && (
@@ -537,7 +677,11 @@ export function XTerminal({
                 {!sftpLoading && !sftpError && sftpEntries.length > 0 && (
                   <ul className="xterminal-sftp-list">
                     {sftpEntries.map((entry) => (
-                      <li key={entry.name} className="xterminal-sftp-item">
+                      <li
+                        key={entry.name}
+                        className={`xterminal-sftp-item ${entry.is_dir ? "xterminal-sftp-item--dir" : "xterminal-sftp-item--file"}`}
+                        onClick={() => handleEntryClick(entry)}
+                      >
                         <span className="xterminal-sftp-icon" aria-hidden="true">
                           <AppIcon
                             icon={
@@ -553,6 +697,19 @@ export function XTerminal({
                           <span className="xterminal-sftp-meta">
                             {entry.size.toLocaleString()} B
                           </span>
+                        )}
+                        {!entry.is_dir && (
+                          <button
+                            type="button"
+                            className="xterminal-sftp-download"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleDownloadFile(entry);
+                            }}
+                            title="下载文件"
+                          >
+                            <AppIcon icon="material-symbols:download-rounded" size={14} />
+                          </button>
                         )}
                       </li>
                     ))}
