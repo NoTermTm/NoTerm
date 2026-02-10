@@ -1,0 +1,69 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    /* 浅色主题 */
+    --bg-primary: #ffffff;
+    --bg-secondary: #f5f5f5;
+    --bg-tertiary: #ececec;
+    --bg-hover: #e8e8e8;
+    --bg-active: rgba(0, 122, 204, 0.12);
+    --border-color: #d4d4d4;
+    --border-light: #e5e5e5;
+    --text-primary: #2c2c2c;
+    --text-secondary: #6b6b6b;
+    --text-tertiary: #8c8c8c;
+    --accent: #007acc;
+    --accent-primary: #ffb347;
+    --accent-hover: #005a9e;
+    --danger: #e51400;
+    --success: #16825d;
+    --warning: #ca5010;
+    --sidebar-width: 48px;
+    --window-radius: 12px;
+}
+
+html,
+body {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+}
+
+body {
+    font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
+        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+        sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-color: transparent;
+    color: var(--text-primary);
+    overflow: hidden;
+    font-size: 13px;
+    border-radius: var(--window-radius);
+}
+
+button {
+    cursor: pointer;
+    font-family: inherit;
+}
+
+input,
+textarea {
+    font-family: inherit;
+}
+
+#root {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    border-radius: var(--window-radius);
+    background-color: var(--bg-primary);
+    display: flex;
+    background-clip: padding-box;
+    box-shadow: 0 15px 40px rgba(15, 15, 45, 0.18);
+}
