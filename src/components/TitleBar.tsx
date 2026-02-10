@@ -1,5 +1,6 @@
-import { X, Plus } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { PointerEvent } from "react";
+import { AppIcon } from "./AppIcon";
 import "./TitleBar.css";
 
 export interface Tab {
@@ -16,6 +17,10 @@ interface TitleBarProps {
   onNewTab?: () => void;
 }
 
+// 用于标识特殊的页面标签（如设置、密钥管理等）
+const SETTINGS_TAB_ID = "__settings__";
+const KEYS_TAB_ID = "__keys__";
+
 export function TitleBar({
   tabs = [],
   activeTabId,
@@ -24,6 +29,26 @@ export function TitleBar({
   onNewTab,
 }: TitleBarProps) {
   const appWindow = getCurrentWindow();
+
+  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    // Only start dragging on primary button.
+    if (event.button !== 0) return;
+
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+
+    // Avoid hijacking interactions (buttons, tabs, form elements, links).
+    if (
+      target.closest(
+        "button, a, input, textarea, select, option, [role='button'], .tab",
+      )
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    void appWindow.startDragging();
+  };
 
   const handleMinimize = () => {
     appWindow.minimize();
@@ -38,7 +63,7 @@ export function TitleBar({
   };
 
   return (
-    <div className="title-bar" data-tauri-drag-region>
+    <div className="title-bar" onPointerDown={handlePointerDown}>
       <div className="title-bar-left">
         <div className="traffic-lights">
           <button
@@ -46,36 +71,21 @@ export function TitleBar({
             onClick={handleClose}
             aria-label="Close"
           >
-            <X size={10} strokeWidth={3} />
+            <AppIcon icon="material-symbols:close-rounded" size={10} />
           </button>
           <button
             className="traffic-light minimize"
             onClick={handleMinimize}
             aria-label="Minimize"
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-              <line
-                x1="2"
-                y1="5"
-                x2="8"
-                y2="5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              />
-            </svg>
+            <AppIcon icon="material-symbols:minimize-rounded" size={10} />
           </button>
           <button
             className="traffic-light maximize"
             onClick={handleMaximize}
             aria-label="Maximize"
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-              <path
-                d="M3 3 L7 7 M7 3 L3 7"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              />
-            </svg>
+            <AppIcon icon="material-symbolsNoTermll-rounded" size={10} />
           </button>
         </div>
         {tabs.length === 0 && (
@@ -86,7 +96,7 @@ export function TitleBar({
       {tabs.length > 0 && (
         <div className="title-bar-center">
           <div className="title-bar-tabs">
-            {tabs.map((tab) => (
+            {tabs.map((tab, index) => (
               <div
                 key={tab.id}
                 className={`tab ${activeTabId === tab.id ? "active" : ""}`}
@@ -103,12 +113,12 @@ export function TitleBar({
                     onTabClose?.(tab.id);
                   }}
                 >
-                  <X size={12} />
+                  <AppIcon icon="material-symbols:close-rounded" size={12} />
                 </button>
               </div>
             ))}
             <button className="new-tab-btn" onClick={onNewTab} title="新建会话">
-              <Plus size={16} />
+              <AppIcon icon="material-symbols:add-rounded" size={16} />
             </button>
           </div>
         </div>

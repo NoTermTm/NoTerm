@@ -1,9 +1,19 @@
 import { invoke } from '@tauri-apps/api/core';
-import { SshConnection } from '../types/ssh';
+import { SshConnection, SftpEntry } from '../types/ssh';
+
+export interface EndpointCheck {
+  ip: string;
+  port: number;
+  latency_ms: number;
+}
 
 export const sshApi = {
   connect: async (connection: SshConnection): Promise<string> => {
     return await invoke('ssh_connect', { connection });
+  },
+
+  checkEndpoint: async (host: string, port: number): Promise<EndpointCheck> => {
+    return await invoke('ssh_check_endpoint', { host, port });
   },
 
   openShell: async (sessionId: string): Promise<void> => {
@@ -32,5 +42,9 @@ export const sshApi = {
 
   listSessions: async (): Promise<string[]> => {
     return await invoke('ssh_list_sessions');
+  },
+
+  listSftpDir: async (sessionId: string, path: string): Promise<SftpEntry[]> => {
+    return await invoke('ssh_sftp_list_dir', { sessionId, path });
   },
 };

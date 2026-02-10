@@ -1,8 +1,11 @@
-import { useState } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutGrid, List, Folder, User, Settings as SettingsIcon } from 'lucide-react';
-import { TitleBar, Tab } from './TitleBar';
-import './Layout.css';
+import { useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { TitleBar, Tab } from "./TitleBar";
+import { AppIcon } from "./AppIcon";
+import { ConnectionsPage } from "../pages/Connections";
+import { KeysPage } from "../pages/Keys";
+import { SettingsPage } from "../pages/Settings";
+import "./Layout.css";
 
 export function Layout() {
   const navigate = useNavigate();
@@ -10,28 +13,128 @@ export function Layout() {
   const [activePanel, setActivePanel] = useState<string | null>(null);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  
+  // 用于标识特殊的页面标签（如设置、密钥管理等）
+  const SETTINGS_TAB_ID = "__settings__";
+  const KEYS_TAB_ID = "__keys__";
 
   const navItems = [
-    { path: '/sessions', icon: LayoutGrid, label: '会话', panelId: 'sessions' },
-    { path: '/connections', icon: List, label: '连接器管理', panelId: 'connections' },
-    { path: '/files', icon: Folder, label: 'SFTP', panelId: 'files' },
+    {
+      path: "/connections",
+      icon: "material-symbols:settop-component-outline-rounded",
+      label: "连接器管理",
+      panelId: "connections",
+    },
+    {
+      path: "/files",
+      icon: "material-symbols:drive-folder-upload-outline-rounded",
+      label: "SFTP",
+      panelId: "files",
+    },
+    {
+      path: "/keys",
+      icon: "material-symbols:key-rounded",
+      label: "密钥管理",
+      panelId: null,
+    },
   ];
 
   const bottomItems = [
-    { path: '/profile', icon: User, label: '用户', panelId: null },
-    { path: '/settings', icon: SettingsIcon, label: '设置', panelId: null },
+    {
+      path: "/profile",
+      icon: "material-symbols:account-circle",
+      label: "用户",
+      panelId: null,
+    },
+    {
+      path: "/settings",
+      icon: "material-symbols:settings-rounded",
+      label: "设置",
+      panelId: null,
+    },
   ];
 
   const handleNavClick = (path: string, panelId: string | null) => {
+    // 处理连接器管理
+    if (panelId === "connections") {
+      // 检查是否有现存的连接终端 tabs（排除特殊页面）
+      const connectionTabs = tabs.filter(
+        (tab) => tab.id !== SETTINGS_TAB_ID && tab.id !== KEYS_TAB_ID
+      );
+      
+      if (connectionTabs.length > 0) {
+        // 如果有连接 tabs，切换到最后一个连接 tab
+        const lastConnectionTab = connectionTabs[connectionTabs.length - 1];
+        setActiveTabId(lastConnectionTab.id);
+        navigate(path);
+        // 切换面板状态
+        if (activePanel === panelId) {
+          setActivePanel(null);
+        } else {
+          setActivePanel(panelId);
+        }
+      } else {
+        // 没有连接 tabs，打开/关闭面板
+        if (activePanel === panelId) {
+          setActivePanel(null);
+        } else {
+          setActivePanel(panelId);
+        }
+        navigate(path);
+      }
+      return;
+    }
+    
+    // 处理设置页面
+    if (path === "/settings") {
+      // 检查是否已有设置 tab
+      const existingSettingsTab = tabs.find((tab) => tab.id === SETTINGS_TAB_ID);
+      
+      if (!existingSettingsTab) {
+        // 创建设置 tab
+        const settingsTab: Tab = {
+          id: SETTINGS_TAB_ID,
+          title: "设置",
+          subtitle: "应用配置",
+        };
+        setTabs((prev) => [...prev, settingsTab]);
+      }
+      
+      setActiveTabId(SETTINGS_TAB_ID);
+      setActivePanel(null);
+      navigate(path);
+      return;
+    }
+    
+    // 处理密钥管理页面
+    if (path === "/keys") {
+      // 检查是否已有密钥管理 tab
+      const existingKeysTab = tabs.find((tab) => tab.id === KEYS_TAB_ID);
+      
+      if (!existingKeysTab) {
+        // 创建密钥管理 tab
+        const keysTab: Tab = {
+          id: KEYS_TAB_ID,
+          title: "密钥管理",
+          subtitle: "SSH 认证",
+        };
+        setTabs((prev) => [...prev, keysTab]);
+      }
+      
+      setActiveTabId(KEYS_TAB_ID);
+      setActivePanel(null);
+      navigate(path);
+      return;
+    }
+    
+    // 其他页面的处理
     if (panelId) {
-      // 如果点击的是同一个面板，切换开关状态
       if (activePanel === panelId) {
         setActivePanel(null);
       } else {
         setActivePanel(panelId);
       }
     } else {
-      // 设置页面等不需要面板的页面
       setActivePanel(null);
     }
     navigate(path);
@@ -39,13 +142,48 @@ export function Layout() {
 
   const handleTabClick = (id: string) => {
     setActiveTabId(id);
+    
+    // 处理特殊标签页的导航
+    if (id === SETTINGS_TAB_ID) {
+      navigate("/settings");
+      setActivePanel(null);
+    } else if (id === KEYS_TAB_ID) {
+      navigate("/keys");
+      setActivePanel(null);
+    } else {
+      // 普通连接 tab，导航到连接页面
+      navigate("/connections");
+    }
   };
 
   const handleTabClose = (id: string) => {
-    // 标签关闭由子页面处理，这里只更新状态
+    // 关闭标签
     setTabs((prev) => prev.filter((tab) => tab.id !== id));
+    
+    // 如果关闭的是当前激活的标签
     if (activeTabId === id) {
-      setActiveTabId(null);
+      const remainingTabs = tabs.filter((tab) => tab.id !== id);
+      
+      if (remainingTabs.length > 0) {
+        // 切换到最后一个标签
+        const lastTab = remainingTabs[remainingTabs.length - 1];
+        setActiveTabId(lastTab.id);
+        
+        // 根据标签类型导航
+        if (lastTab.id === SETTINGS_TAB_ID) {
+          navigate("/settings");
+          setActivePanel(null);
+        } else if (lastTab.id === KEYS_TAB_ID) {
+          navigate("/keys");
+          setActivePanel(null);
+        } else {
+          navigate("/connections");
+        }
+      } else {
+        // 没有剩余标签
+        setActiveTabId(null);
+        navigate("/connections");
+      }
     }
   };
 
@@ -55,7 +193,7 @@ export function Layout() {
 
   return (
     <div className="app-container">
-      <TitleBar 
+      <TitleBar
         tabs={tabs}
         activeTabId={activeTabId}
         onTabClick={handleTabClick}
@@ -67,40 +205,63 @@ export function Layout() {
           {navItems.map((item) => (
             <button
               key={item.path}
-              className={`sidebar-item ${activePanel === item.panelId ? 'active' : ''}`}
+              className={`sidebar-item ${
+                item.panelId
+                  ? activePanel === item.panelId
+                    ? "active"
+                    : ""
+                  : location.pathname === item.path
+                    ? "active"
+                    : ""
+              }`}
               onClick={() => handleNavClick(item.path, item.panelId)}
               title={item.label}
             >
-              <item.icon size={20} strokeWidth={1.5} />
+              <AppIcon icon={item.icon} size={20} />
             </button>
           ))}
-          
+
           <div className="sidebar-spacer" />
-          
+
           {bottomItems.map((item) => (
             <button
               key={item.path}
-              className={`sidebar-item ${location.pathname === item.path ? 'active' : ''}`}
+              className={`sidebar-item ${location.pathname === item.path ? "active" : ""}`}
               onClick={() => handleNavClick(item.path, item.panelId)}
               title={item.label}
             >
-              <item.icon size={20} strokeWidth={1.5} />
+              <AppIcon icon={item.icon} size={20} />
             </button>
           ))}
         </div>
-        
+
         <div className="main-content">
-          <Outlet context={{ 
-            activePanel, 
-            setActivePanel,
-            tabs,
-            setTabs,
-            activeTabId,
-            setActiveTabId,
-            onTabClick: handleTabClick,
-            onTabClose: handleTabClose,
-            onNewTab: handleNewTab
-          }} />
+          {/* 使用 display 控制显示，避免组件卸载导致状态丢失 */}
+          <div style={{ display: location.pathname === "/connections" ? "block" : "none", height: "100%" }}>
+            <ConnectionsPage
+              activePanel={activePanel}
+              setActivePanel={setActivePanel}
+              tabs={tabs}
+              setTabs={setTabs}
+              activeTabId={activeTabId}
+              setActiveTabId={setActiveTabId}
+              onTabClick={handleTabClick}
+              onTabClose={handleTabClose}
+              onNewTab={handleNewTab}
+            />
+          </div>
+          <div style={{ display: location.pathname === "/keys" ? "block" : "none", height: "100%" }}>
+            <KeysPage />
+          </div>
+          <div style={{ display: location.pathname === "/settings" ? "block" : "none", height: "100%" }}>
+            <SettingsPage />
+          </div>
+          {location.pathname === "/files" && (
+            <div style={{ padding: "24px" }}>SFTP 文件管理 - 开发中</div>
+          )}
+          {location.pathname === "/profile" && (
+            <div style={{ padding: "24px" }}>用户信息 - 开发中</div>
+          )}
         </div>
       </div>
     </div>

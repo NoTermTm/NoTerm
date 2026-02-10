@@ -1,137 +1,139 @@
 .settings-page {
-  padding: 24px;
-  max-width: 800px;
+    padding: 24px;
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
 }
 
 .settings-page h1 {
-  font-size: 24px;
-  font-weight: 600;
-  margin-bottom: 24px;
-  color: var(--text-primary);
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 24px;
+    color: var(--text-primary);
 }
 
 .settings-section {
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 20px;
-  margin-bottom: 16px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 20px;
+    margin-bottom: 16px;
 }
 
 .settings-section h2 {
-  font-size: 16px;
-  font-weight: 600;
-  margin-bottom: 16px;
-  color: var(--text-primary);
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text-primary);
 }
 
 .settings-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-color);
 }
 
 .settings-item:last-child {
-  border-bottom: none;
+    border-bottom: none;
 }
 
 .settings-item-info {
-  flex: 1;
+    flex: 1;
 }
 
 .settings-item-label {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 4px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 4px;
 }
 
 .settings-item-description {
-  font-size: 13px;
-  color: var(--text-secondary);
+    font-size: 13px;
+    color: var(--text-secondary);
 }
 
 .settings-item-control {
-  margin-left: 16px;
+    margin-left: 16px;
 }
 
 .toggle-switch {
-  position: relative;
-  width: 48px;
-  height: 24px;
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.3s ease;
+    position: relative;
+    width: 48px;
+    height: 24px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.3s ease;
 }
 
 .toggle-switch.active {
-  background-color: var(--accent);
-  border-color: var(--accent);
+    background-color: var(--accent);
+    border-color: var(--accent);
 }
 
 .toggle-switch-handle {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  background-color: white;
-  border-radius: 50%;
-  transition: transform 0.3s ease;
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background-color: white;
+    border-radius: 50%;
+    transition: transform 0.3s ease;
 }
 
 .toggle-switch.active .toggle-switch-handle {
-  transform: translateX(24px);
+    transform: translateX(24px);
 }
 
 .settings-select {
-  min-width: 200px;
-  padding: 8px 12px;
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--text-primary);
-  font-size: 14px;
-  cursor: pointer;
+    min-width: 200px;
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 14px;
+    cursor: pointer;
 }
 
 .settings-select:focus {
-  outline: none;
-  border-color: var(--accent);
+    outline: none;
+    border-color: var(--accent);
 }
 
 .settings-input {
-  min-width: 200px;
-  padding: 8px 12px;
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--text-primary);
-  font-size: 14px;
+    min-width: 200px;
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 14px;
 }
 
 .settings-input:focus {
-  outline: none;
-  border-color: var(--accent);
+    outline: none;
+    border-color: var(--accent);
 }
 
 .app-info {
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.6;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
 }
 
 .app-info-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 8px 0;
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
 }
 
 .app-info-label {
-  font-weight: 500;
-  color: var(--text-primary);
+    font-weight: 500;
+    color: var(--text-primary);
 }

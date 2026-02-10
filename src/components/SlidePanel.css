@@ -1,60 +1,96 @@
 .slide-panel {
-  width: 280px;
-  background-color: var(--bg-primary);
-  border-right: 1px solid var(--border-light);
-  display: flex;
-  flex-direction: column;
-  transition: all 0.2s ease;
-  position: relative;
-  z-index: 10;
-  flex-shrink: 0;
+    width: var(--panel-width);
+    background-color: var(--bg-primary);
+    border-right: 1px solid var(--border-light);
+    display: flex;
+    flex-direction: column;
+    transition: all 0.2s ease;
+    position: relative;
+    z-index: 10;
+    flex-shrink: 0;
 }
 
-.slide-panel:not(.open) {
-  width: 0;
-  border-right: none;
-  overflow: hidden;
+.slide-panel:not(.open):not(.slide-panel--dock-window) {
+    width: 0;
+    border-right: none;
+    overflow: hidden;
+}
+
+.slide-panel--dock-window {
+    position: fixed;
+    left: var(--sidebar-width);
+    top: 0;
+    height: 100vh;
+    /* Keep panel above content but below the left sidebar to avoid flicker. */
+    z-index: 15;
+    /* Let the panel visually "own" the top area behind the titlebar. */
+    padding-top: var(--titlebar-h);
+    box-sizing: border-box;
+    transition:
+        transform 0.2s ease,
+        opacity 0.2s ease;
+    will-change: transform;
+}
+
+.slide-panel--dock-window:not(.open) {
+    /* Hide to the left of main-content (panel slides from the content edge). */
+    transform: translateX(calc(-1 * var(--panel-width)));
+    border-right: none;
+    pointer-events: none;
+    opacity: 0;
+}
+
+.slide-panel--dock-window.open {
+    transform: translateX(0);
+    pointer-events: auto;
+    opacity: 1;
 }
 
 .slide-panel-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-light);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background-color: var(--bg-primary);
-  min-height: 48px;
+    padding: 12px 16px;
+    /*border-bottom: 1px solid var(--border-light);*/
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background-color: var(--bg-primary);
+    min-height: 48px;
 }
 
 .slide-panel-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.slide-panel-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .slide-panel-add-btn {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background-color: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--text-secondary);
-  transition: all 0.15s ease;
-  cursor: pointer;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    transition: all 0.15s ease;
+    cursor: pointer;
 }
 
 .slide-panel-add-btn:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
 }
 
 .slide-panel-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
 }

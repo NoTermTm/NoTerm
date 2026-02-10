@@ -9,7 +9,9 @@
     flex-shrink: 0;
     user-select: none;
     -webkit-user-select: none;
-    -webkit-app-region: drag;
+    -webkit-app-region: no-drag;
+    position: relative;
+    z-index: 30;
     border-top-left-radius: var(--window-radius);
     border-top-right-radius: var(--window-radius);
 }
@@ -18,7 +20,6 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    -webkit-app-region: drag;
 }
 
 .traffic-lights {
@@ -41,12 +42,12 @@
     position: relative;
 }
 
-.traffic-light svg {
+.traffic-light .app-icon {
     opacity: 0;
     transition: opacity 0.15s ease;
 }
 
-.title-bar:hover .traffic-light svg {
+.title-bar:hover .traffic-light .app-icon {
     opacity: 1;
 }
 
@@ -58,7 +59,7 @@
     background-color: #ff3b30;
 }
 
-.traffic-light.close svg {
+.traffic-light.close .app-icon {
     color: #8b0000;
 }
 
@@ -70,7 +71,7 @@
     background-color: #ffb400;
 }
 
-.traffic-light.minimize svg {
+.traffic-light.minimize .app-icon {
     color: #996500;
 }
 
@@ -82,7 +83,7 @@
     background-color: #1fb437;
 }
 
-.traffic-light.maximize svg {
+.traffic-light.maximize .app-icon {
     color: #006400;
 }
 
@@ -90,15 +91,13 @@
     font-size: 13px;
     font-weight: 500;
     color: var(--text-secondary);
-    -webkit-app-region: drag;
 }
 
 .title-bar-center {
     flex: 1;
     display: flex;
     align-items: center;
-    justify-content: center;
-    -webkit-app-region: drag;
+    justify-content: flex-start;
     min-width: 0;
     padding: 0 20px;
 }
@@ -108,7 +107,6 @@
     align-items: center;
     gap: 4px;
     max-width: 600px;
-    -webkit-app-region: drag;
 }
 
 .title-bar-right {
@@ -157,10 +155,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-.tab.active .tab-title {
-    color: var(--accent-primary);
 }
 
 .tab-subtitle {

@@ -3,7 +3,9 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { ConnectionsPage } from "./pages/Connections";
+import { KeysPage } from "./pages/Keys";
 import { SettingsPage } from "./pages/Settings";
+import "./icons/materialSymbols";
 import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
@@ -12,7 +14,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/connections" replace />} />
-          <Route path="sessions" element={<div style={{ padding: '24px' }}>会话管理 - 开发中</div>} />
+          <Route path="sessions" element={<Navigate to="/keys" replace />} />
+          <Route path="keys" element={<KeysPage />} />
           <Route path="connections" element={<ConnectionsPage />} />
           <Route path="files" element={<div style={{ padding: '24px' }}>SFTP 文件管理 - 开发中</div>} />
           <Route path="profile" element={<div style={{ padding: '24px' }}>用户信息 - 开发中</div>} />

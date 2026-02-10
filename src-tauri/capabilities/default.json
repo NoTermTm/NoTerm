@@ -6,6 +6,10 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
     "store:allow-load",
     "store:allow-get",
     "store:allow-set",

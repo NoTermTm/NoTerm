@@ -21,13 +21,25 @@ pub struct SshConnection {
 #[serde(tag = "type")]
 pub enum AuthType {
     Password { password: String },
-    PrivateKey { key_path: String, passphrase: Option<String> },
+    PrivateKey { 
+        key_path: String, 
+        key_content: Option<String>,
+        passphrase: Option<String> 
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshSession {
     pub connection_id: String,
     pub connected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SftpEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: Option<u64>,
+    pub modified: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -62,14 +74,52 @@ impl SshManager {
             AuthType::Password { password } => {
                 sess.userauth_password(&connection.username, password)?;
             }
-            AuthType::PrivateKey { key_path, passphrase } => {
+            AuthType::PrivateKey { key_path, key_content, passphrase } => {
                 let passphrase_str = passphrase.as_deref();
-                sess.userauth_pubkey_file(
-                    &connection.username,
-                    None,
-                    Path::new(key_path),
-                    passphrase_str,
-                )?;
+                
+                // 如果有 key_content，使用内存中的私钥；否则使用文件路径
+                if let Some(content) = key_content {
+                    if !content.is_empty() {
+                        // 使用内存中的私钥
+                        // 先尝试直接使用私钥内容
+                        let result = sess.userauth_pubkey_memory(
+                            &connection.username,
+                            None,  // 不提供公钥，让 ssh2 自动提取
+                            content,
+                            passphrase_str,
+                        );
+                        
+                        if let Err(e) = result {
+                            // 如果失败，返回更详细的错误信息
+                            return Err(anyhow::anyhow!(
+                                "Private key authentication failed: {}. Please check: 1) Key format (must be valid PEM), 2) Passphrase if key is encrypted, 3) Username is correct",
+                                e
+                            ));
+                        }
+                    } else {
+                        // key_content 为空，使用 key_path
+                        if key_path.is_empty() {
+                            return Err(anyhow::anyhow!("Both key_path and key_content are empty"));
+                        }
+                        sess.userauth_pubkey_file(
+                            &connection.username,
+                            None,
+                            Path::new(key_path),
+                            passphrase_str,
+                        )?;
+                    }
+                } else {
+                    // 没有 key_content，使用 key_path
+                    if key_path.is_empty() {
+                        return Err(anyhow::anyhow!("key_path is empty"));
+                    }
+                    sess.userauth_pubkey_file(
+                        &connection.username,
+                        None,
+                        Path::new(key_path),
+                        passphrase_str,
+                    )?;
+                }
             }
         }
 
@@ -197,6 +247,51 @@ impl SshManager {
     pub fn list_sessions(&self) -> Vec<String> {
         let sessions = self.sessions.lock().unwrap();
         sessions.keys().cloned().collect()
+    }
+
+    pub fn sftp_list_dir(&self, session_id: &str, path: &str) -> anyhow::Result<Vec<SftpEntry>> {
+        let sessions = self.sessions.lock().unwrap();
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found"))?
+            .clone();
+        drop(sessions);
+
+        let mut sess = session.lock().unwrap();
+        // SFTP initialization needs blocking mode to avoid WouldBlock.
+        sess.set_blocking(true);
+        let sftp = sess.sftp()?;
+        sess.set_blocking(false);
+
+        let clean_path = if path.trim().is_empty() { "." } else { path.trim() };
+        let entries = sftp.readdir(Path::new(clean_path))?;
+
+        let mut output: Vec<SftpEntry> = entries
+            .into_iter()
+            .filter_map(|(p, stat)| {
+                let name = p.file_name()?.to_string_lossy().to_string();
+                if name.is_empty() || name == "." || name == ".." {
+                    return None;
+                }
+
+                Some(SftpEntry {
+                    name,
+                    is_dir: stat.is_dir(),
+                    size: stat.size,
+                    modified: stat.mtime,
+                })
+            })
+            .collect();
+
+        output.sort_by(|a, b| {
+            match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            }
+        });
+
+        Ok(output)
     }
 
     pub fn resize_pty(&self, session_id: &str, cols: u32, rows: u32) -> anyhow::Result<()> {

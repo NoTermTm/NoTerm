@@ -1,116 +1,120 @@
 .top-bar {
-  height: 40px;
-  background-color: var(--bg-primary);
-  border-bottom: 1px solid var(--border-light);
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  flex-shrink: 0;
+    height: 40px;
+    background-color: var(--bg-primary);
+    border-bottom: 1px solid var(--border-light);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    flex-shrink: 0;
 }
 
 .tabs-container {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: hidden;
 }
 
 .tabs-container::-webkit-scrollbar {
-  height: 0;
+    height: 0;
 }
 
 .tab {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background-color: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  min-width: 140px;
-  max-width: 200px;
-  position: relative;
-  user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    min-width: 140px;
+    max-width: 200px;
+    position: relative;
+    user-select: none;
 }
 
 .tab:hover {
-  background-color: var(--bg-hover);
+    background-color: var(--bg-hover);
 }
 
 .tab.active {
-  background-color: var(--bg-secondary);
-  border-color: var(--border-color);
+    background-color: var(--bg-secondary);
+    border-color: var(--border-color);
 }
 
 .tab-content {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .tab-title {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tab-title-index {
+    margin-right: 5px;
 }
 
 .tab-subtitle {
-  font-size: 10px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .tab-close {
-  width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  border-radius: 3px;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition: all 0.15s ease;
-  opacity: 0;
-  flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    border-radius: 3px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    opacity: 0;
+    flex-shrink: 0;
 }
 
 .tab:hover .tab-close {
-  opacity: 1;
+    opacity: 1;
 }
 
 .tab-close:hover {
-  background-color: var(--bg-tertiary);
-  color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
 }
 
 .new-tab-btn {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  border-radius: 4px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.15s ease;
-  flex-shrink: 0;
-  margin-left: 4px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+    margin-left: 4px;
 }
 
 .new-tab-btn:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
 }

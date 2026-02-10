@@ -1,5 +1,5 @@
-import { X, Plus } from "lucide-react";
 import "./TopBar.css";
+import { AppIcon } from "./AppIcon";
 
 export interface Tab {
   id: string;
@@ -44,12 +44,12 @@ export function TopBar({
                 onTabClose(tab.id);
               }}
             >
-              <X size={12} />
+              <AppIcon icon="material-symbols:close-rounded" size={12} />
             </button>
           </div>
         ))}
         <button className="new-tab-btn" onClick={onNewTab} title="新建会话">
-          <Plus size={16} />
+          <AppIcon icon="material-symbols:add-rounded" size={16} />
         </button>
       </div>
     </div>

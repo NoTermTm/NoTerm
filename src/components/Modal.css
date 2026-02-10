@@ -1,0 +1,90 @@
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 72px 24px 24px;
+    background: rgba(12, 14, 24, 0.28);
+    backdrop-filter: blur(8px);
+}
+
+.modal-dialog {
+    width: min(720px, calc(100vw - 48px));
+    max-height: calc(100vh - 96px);
+    overflow: hidden;
+    border-radius: 14px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-light);
+    box-shadow: 0 20px 60px rgba(15, 15, 45, 0.28);
+    display: flex;
+    flex-direction: column;
+    transform: translateY(0);
+    animation: modal-in 0.18s ease;
+}
+
+.modal-header {
+    height: 44px;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 12px 0 16px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-primary);
+}
+
+.modal-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.modal-close {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    transition:
+        background-color 0.15s ease,
+        transform 0.15s ease,
+        color 0.15s ease;
+}
+
+.modal-close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.modal-close:active {
+    transform: scale(0.99);
+}
+
+.modal-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 16px;
+}
+
+@keyframes modal-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px) scale(0.99);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+

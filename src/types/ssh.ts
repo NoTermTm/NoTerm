@@ -9,7 +9,14 @@ export interface SshConnection {
 
 export type AuthType =
   | { type: 'Password'; password: string }
-  | { type: 'PrivateKey'; key_path: string; passphrase?: string };
+  | { type: 'PrivateKey'; key_path: string; key_content?: string; passphrase?: string };
+
+export interface SftpEntry {
+  name: string;
+  is_dir: boolean;
+  size?: number;
+  modified?: number;
+}
 
 export interface SshSession {
   connection_id: string;

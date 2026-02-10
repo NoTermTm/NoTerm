@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "SSH Manager",
+        "title": "NoTerm",
         "width": 1200,
         "height": 800,
         "minWidth": 800,

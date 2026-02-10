@@ -1,0 +1,331 @@
+.xterminal {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bg-primary);
+    overflow: hidden;
+    position: relative;
+    --xterminal-toolbar-h: 32px;
+}
+
+.xterminal-topbar {
+    height: 36px;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.xterminal-topbar-left {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+}
+
+.xterminal-topbar-status {
+    color: var(--text-tertiary);
+    flex: 0 0 auto;
+}
+
+.xterminal-topbar-status--spin .app-icon {
+    animation: xterminal-spin 0.9s linear infinite;
+}
+
+.xterminal-topbar-text {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-secondary);
+}
+
+.xterminal-topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 auto;
+}
+
+.xterminal-topbar-meta {
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.xterminal-topbar-btn {
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    transition:
+        transform 0.15s ease,
+        background-color 0.15s ease,
+        border-color 0.15s ease;
+}
+
+.xterminal-topbar-btn:hover {
+    background: var(--bg-hover);
+}
+
+.xterminal-topbar-btn:active {
+    transform: scale(0.99);
+}
+
+.xterminal-topbar-btn .app-icon {
+    color: var(--text-tertiary);
+}
+
+.xterminal-topbar-btn--active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(15, 143, 255, 0.08);
+}
+
+.xterminal-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--xterminal-xterm-bg, var(--bg-secondary));
+}
+
+.xterminal-pane {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    min-width: 0;
+}
+
+.xterminal-pad {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    padding: 12px;
+    box-sizing: border-box;
+    min-width: 0;
+}
+
+.xterminal-sftp {
+    width: 280px;
+    border-left: 1px solid var(--border-light);
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+}
+
+.xterminal-sftp-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-primary);
+}
+
+.xterminal-sftp-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.xterminal-sftp-refresh {
+    border: none;
+    background: transparent;
+    padding: 4px;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.xterminal-sftp-refresh:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.xterminal-sftp-path {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.xterminal-sftp-path input {
+    width: 100%;
+    height: 28px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 12px;
+    outline: none;
+}
+
+.xterminal-sftp-path input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(15, 143, 255, 0.2);
+}
+
+.xterminal-sftp-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+.xterminal-sftp-state {
+    padding: 16px 12px;
+    color: var(--text-tertiary);
+    font-size: 12px;
+}
+
+.xterminal-sftp-state--error {
+    color: var(--danger);
+}
+
+.xterminal-sftp-list {
+    list-style: none;
+    margin: 0;
+    padding: 6px 6px 10px;
+}
+
+.xterminal-sftp-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 6px;
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.xterminal-sftp-item:hover {
+    background: var(--bg-hover);
+}
+
+.xterminal-sftp-icon {
+    color: var(--text-tertiary);
+    flex: 0 0 auto;
+}
+
+.xterminal-sftp-name {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.xterminal-sftp-meta {
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+    flex: 0 0 auto;
+}
+
+.xterminal-mount {
+    flex: 1;
+    min-height: 0;
+    box-sizing: border-box;
+    background: var(--xterminal-xterm-bg, var(--bg-secondary));
+    overflow: hidden;
+    min-width: 0;
+}
+
+.xterminal-mount .xterm {
+    height: 100%;
+}
+
+.xterminal-mount .xterm-screen {
+    background: var(--xterminal-xterm-bg, var(--bg-secondary));
+}
+
+.xterminal-toolbar {
+    height: var(--xterminal-toolbar-h);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 12px;
+    border-top: 1px solid var(--border-light);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    user-select: none;
+    -webkit-user-select: none;
+    flex: 0 0 auto;
+}
+
+.xterminal-toolbar-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.xterminal-toolbar .app-icon {
+    color: var(--text-tertiary);
+    flex: 0 0 auto;
+}
+
+.xterminal-toolbar-label {
+    color: var(--text-tertiary);
+}
+
+.xterminal-toolbar-value {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 320px;
+}
+
+.xterminal-toolbar-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--border-color);
+    flex: 0 0 auto;
+}
+
+.xterminal-latency--unknown {
+    color: var(--text-tertiary);
+}
+
+.xterminal-latency--ok {
+    color: var(--text-primary);
+}
+
+.xterminal-latency--warn {
+    color: var(--warning);
+}
+
+.xterminal-latency--bad {
+    color: var(--danger);
+}
+
+@keyframes xterminal-spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}

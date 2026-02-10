@@ -1,29 +1,58 @@
-import { ReactNode } from 'react';
-import './SlidePanel.css';
+import { ReactNode } from "react";
+import { AppIcon } from "./AppIcon";
+import "./SlidePanel.css";
 
 interface SlidePanelProps {
   isOpen: boolean;
   title: string;
   children: ReactNode;
   onAdd?: () => void;
+  closePanel?: () => void;
+  dockToWindow?: boolean;
 }
 
-export function SlidePanel({ isOpen, title, children, onAdd }: SlidePanelProps) {
+export function SlidePanel({
+  isOpen,
+  title,
+  children,
+  onAdd,
+  closePanel,
+  dockToWindow,
+}: SlidePanelProps) {
   return (
-    <div className={`slide-panel ${isOpen ? 'open' : ''}`}>
+    <div
+      className={[
+        "slide-panel",
+        isOpen ? "open" : "",
+        dockToWindow ? "slide-panel--dock-window" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <div className="slide-panel-header">
         <h2 className="slide-panel-title">{title}</h2>
-        {onAdd && (
-          <button className="slide-panel-add-btn" onClick={onAdd} title="Add new">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-          </button>
-        )}
+        <div className="slide-panel-bar">
+          {onAdd && (
+            <button
+              className="slide-panel-add-btn"
+              onClick={onAdd}
+              title="Add new"
+            >
+              <AppIcon icon="material-symbols:add-rounded" size={18} />
+            </button>
+          )}
+          {closePanel && (
+            <button
+              className="slide-panel-add-btn"
+              title="Close Slider"
+              onClick={closePanel}
+            >
+              <AppIcon icon="material-symbols:close-small" size={18} />
+            </button>
+          )}
+        </div>
       </div>
-      <div className="slide-panel-content">
-        {children}
-      </div>
+      <div className="slide-panel-content">{children}</div>
     </div>
   );
 }
