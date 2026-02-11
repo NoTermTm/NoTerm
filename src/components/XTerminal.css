@@ -25,6 +25,75 @@
     -webkit-user-select: none;
 }
 
+.xterminal-toolbar-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    border-radius: px;
+    padding: 4px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    /*transition: background-color 0.15s ease, border-color 0.15s ease;
+    -webkit-transition: background-color 0.15s ease, border-color 0.15s ease;
+    -moz-transition: background-color 0.15s ease, border-color 0.15s ease;
+    -ms-transition: background-color 0.15s ease, border-color 0.15s ease;
+    -o-transition: background-color 0.15s ease, border-color 0.15s ease;
+    */
+}
+
+.xterminal-toolbar-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent);
+}
+
+.xterminal-term-menu-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    pointer-events: auto;
+}
+
+.xterminal-term-menu {
+    position: fixed;
+    z-index: 1201;
+    min-width: 160px;
+    padding: 6px;
+    border-radius: 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 12px 24px rgba(15, 15, 45, 0.12);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.xterminal-term-menu-item {
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.xterminal-term-menu-item:hover {
+    background: var(--bg-hover);
+}
+
+.xterminal-term-menu-item:disabled {
+    color: var(--text-tertiary);
+    cursor: not-allowed;
+    background: transparent;
+}
+
 .xterminal-topbar-left {
     min-width: 0;
     display: flex;
@@ -76,19 +145,20 @@
 
 .xterminal-topbar-btn {
     height: 26px;
-    padding: 0 10px;
-    border-radius: 8px;
-    border: 1px solid var(--border-color);
+    padding: 5px;
+    border-radius: 4px;
+    border: none;
     background: var(--bg-primary);
     color: var(--text-primary);
     display: inline-flex;
     align-items: center;
     gap: 6px;
     font-size: 12px;
-    transition:
-        transform 0.15s ease,
-        background-color 0.15s ease,
-        border-color 0.15s ease;
+    transition:        transform 0.15s ease,        background-color 0.15s ease,        border-color 0.15s ease;
+    -webkit-border-radius: 4px;
+    -moz-border-radius: 4px;
+    -ms-border-radius: 4px;
+    -o-border-radius: 4px;
 }
 
 .xterminal-topbar-btn:hover {
@@ -478,6 +548,10 @@
     background: var(--xterminal-xterm-bg, var(--bg-secondary));
 }
 
+.xterminal-mount .xterm-viewport {
+    background: var(--xterminal-xterm-bg, var(--bg-secondary));
+}
+
 .xterminal-toolbar {
     height: var(--xterminal-toolbar-h);
     display: flex;
@@ -491,6 +565,112 @@
     user-select: none;
     -webkit-user-select: none;
     flex: 0 0 auto;
+}
+
+.xterminal-script-panel {
+    border-top: 1px solid var(--border-light);
+    background: #ffffff;
+    padding: 10px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.xterminal-script-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.xterminal-script-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.xterminal-script-link {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 6px;
+}
+
+.xterminal-script-link:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+
+.xterminal-script-target {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.xterminal-script-target select {
+    border: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.xterminal-script-body {
+    position: relative;
+}
+
+.xterminal-script-body textarea {
+    width: 100%;
+    min-height: 140px;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    padding: 10px 12px 36px;
+    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    resize: vertical;
+    outline: none;
+}
+
+.xterminal-script-body textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(15, 143, 255, 0.2);
+}
+
+.xterminal-script-send {
+    position: absolute;
+    right: 12px;
+    bottom: 10px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border-radius: 10px;
+    padding: 4px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.xterminal-script-send:hover {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+}
+
+.xterminal-script-shortcut {
+    font-size: 11px;
+    color: var(--text-tertiary);
 }
 
 .xterminal-toolbar-item {

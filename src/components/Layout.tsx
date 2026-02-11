@@ -5,6 +5,7 @@ import { AppIcon } from "./AppIcon";
 import { ConnectionsPage } from "../pages/Connections";
 import { KeysPage } from "../pages/Keys";
 import { SettingsPage } from "../pages/Settings";
+import { SpacePage } from "../pages/Space";
 import "./Layout.css";
 
 export function Layout() {
@@ -19,6 +20,12 @@ export function Layout() {
   const KEYS_TAB_ID = "__keys__";
 
   useEffect(() => {
+    if (location.pathname === "/") {
+      navigate("/connections", { replace: true });
+    }
+  }, [location.pathname, navigate]);
+
+  useEffect(() => {
     const isEditableTarget = (target: EventTarget | null) => {
       if (!(target instanceof HTMLElement)) return false;
       if (target.isContentEditable) return true;
@@ -26,24 +33,71 @@ export function Layout() {
       return tag === "input" || tag === "textarea" || tag === "select";
     };
 
+    const isTerminalTarget = (event: Event) => {
+      const path = event.composedPath?.() ?? [];
+      let isSftp = false;
+      let isTerminal = false;
+      for (const node of path) {
+        if (!(node instanceof Element)) continue;
+        if (node.closest(".xterminal-sftp, .xterminal-sftp-menu")) {
+          isSftp = true;
+        }
+        if (node.closest(".xterminal-mount, .xterm")) {
+          isTerminal = true;
+        }
+      }
+      if (isSftp) return false;
+      return isTerminal;
+    };
+
     const onContextMenu = (event: Event) => {
+      if (isTerminalTarget(event)) return;
       event.preventDefault();
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
+      const isCmdOrCtrl = event.metaKey || event.ctrlKey;
 
       const isReload =
         key === "f5" ||
-        ((event.metaKey || event.ctrlKey) && key === "r");
+        (isCmdOrCtrl && key === "r");
 
       const isBackForward =
         key === "browserback" ||
         key === "browserforward" ||
         (event.altKey && (key === "arrowleft" || key === "arrowright")) ||
-        ((event.metaKey || event.ctrlKey) && (key === "[" || key === "]"));
+        (isCmdOrCtrl && (key === "[" || key === "]"));
 
       const isBackspaceNav = key === "backspace" && !isEditableTarget(event.target);
+
+      const isNewSessionShortcut = isCmdOrCtrl && key === "t";
+      const isSplitShortcut = isCmdOrCtrl && key === "d";
+
+      if (isNewSessionShortcut) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleNewTab();
+        return;
+      }
+
+      if (isSplitShortcut) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (activeTabId && activeTabId !== SETTINGS_TAB_ID && activeTabId !== KEYS_TAB_ID) {
+          navigate("/connections");
+          setActivePanel(null);
+          window.dispatchEvent(
+            new CustomEvent("open-split-picker", {
+              detail: {
+                sessionId: activeTabId,
+                direction: "vertical",
+              },
+            }),
+          );
+        }
+        return;
+      }
 
       if (isReload || isBackForward || isBackspaceNav) {
         event.preventDefault();
@@ -52,9 +106,9 @@ export function Layout() {
     };
 
     const onPointerDown = (event: PointerEvent) => {
-      if (event.button === 3 || event.button === 4) {
-        event.preventDefault();
-      }
+      if (event.button !== 3 && event.button !== 4) return;
+      if (isTerminalTarget(event)) return;
+      event.preventDefault();
     };
 
     window.addEventListener("contextmenu", onContextMenu, { capture: true });
@@ -65,7 +119,7 @@ export function Layout() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
       window.removeEventListener("pointerdown", onPointerDown, { capture: true });
     };
-  }, []);
+  }, [activeTabId, activePanel, navigate]);
 
   const navItems = [
     {
@@ -75,10 +129,10 @@ export function Layout() {
       panelId: "connections",
     },
     {
-      path: "/files",
-      icon: "material-symbols:drive-folder-upload-outline-rounded",
-      label: "SFTP",
-      panelId: "files",
+      path: "/space",
+      icon: "material-symbols:folder-special-outline-rounded",
+      label: "空间",
+      panelId: null,
     },
     {
       path: "/keys",
@@ -171,6 +225,12 @@ export function Layout() {
       }
       
       setActiveTabId(KEYS_TAB_ID);
+      setActivePanel(null);
+      navigate(path);
+      return;
+    }
+
+    if (path === "/space") {
       setActivePanel(null);
       navigate(path);
       return;
@@ -306,6 +366,9 @@ export function Layout() {
           </div>
           <div style={{ display: location.pathname === "/settings" ? "block" : "none", height: "100%" }}>
             <SettingsPage />
+          </div>
+          <div style={{ display: location.pathname === "/space" ? "block" : "none", height: "100%" }}>
+            <SpacePage />
           </div>
           {location.pathname === "/files" && (
             <div style={{ padding: "24px" }}>SFTP 文件管理 - 开发中</div>

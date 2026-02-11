@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { AppIcon } from "../components/AppIcon";
 import { SshConnection } from "../types/ssh";
 import { sshApi } from "../api/ssh";
@@ -106,6 +106,7 @@ interface ActiveSession {
   sessionId: string;
   connectionId: string;
   connection: SshConnection;
+  kind: "ssh" | "local";
 }
 
 interface SplitLayout {
@@ -121,6 +122,7 @@ export function ConnectionsPage({
   activeTabId,
   setActiveTabId,
 }: ConnectionsPageProps) {
+  const localSessionIdRef = useRef<string | null>(null);
   const [connections, setConnections] = useState<SshConnection[]>([]);
   const [selectedConnection, setSelectedConnection] =
     useState<SshConnection | null>(null);
@@ -144,11 +146,19 @@ export function ConnectionsPage({
   const [splitPickerBaseSessionId, setSplitPickerBaseSessionId] =
     useState<string | null>(null);
   const [connectPickerOpen, setConnectPickerOpen] = useState(false);
+  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  const [testMessage, setTestMessage] = useState<string | null>(null);
 
   useEffect(() => {
     loadConnections();
     loadAuthProfiles();
   }, []);
+
+  useEffect(() => {
+    if (!editingConnection) return;
+    setTestStatus("idle");
+    setTestMessage(null);
+  }, [editingConnection]);
 
   useEffect(() => {
     const onOpen = () => setConnectPickerOpen(true);
@@ -157,6 +167,25 @@ export function ConnectionsPage({
       window.removeEventListener("open-connection-picker", onOpen);
     };
   }, []);
+
+  useEffect(() => {
+    const onOpenSplit = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        sessionId?: string;
+        direction?: SplitLayout["direction"];
+      }>).detail;
+      if (!detail?.sessionId) return;
+      if (!activeSessions.has(detail.sessionId)) return;
+      setSplitPickerBaseSessionId(detail.sessionId);
+      setSplitPickerDirection(detail.direction ?? "vertical");
+      setSplitPickerOpen(true);
+    };
+
+    window.addEventListener("open-split-picker", onOpenSplit);
+    return () => {
+      window.removeEventListener("open-split-picker", onOpenSplit);
+    };
+  }, [activeSessions]);
 
   const loadConnections = async () => {
     const s = await getStore();
@@ -305,6 +334,7 @@ export function ConnectionsPage({
     connection: SshConnection,
     withTab: boolean,
     activateTab: boolean,
+    kind: "ssh" | "local" = "ssh",
   ) => {
     const sessionId = crypto.randomUUID();
     const sessionCount =
@@ -332,6 +362,7 @@ export function ConnectionsPage({
         sessionId,
         connectionId: connection.id,
         connection,
+        kind,
       });
       return next;
     });
@@ -343,6 +374,20 @@ export function ConnectionsPage({
   const handleConnect = async (connection: SshConnection) => {
     createSession(connection, true, true);
   };
+
+  useEffect(() => {
+    if (localSessionIdRef.current) return;
+    const localConnection: SshConnection = {
+      id: "local",
+      name: "本地终端",
+      host: "local",
+      port: 0,
+      username: "local",
+      auth_type: { type: "Password", password: "" },
+    };
+    const sessionId = createSession(localConnection, true, true, "local");
+    localSessionIdRef.current = sessionId;
+  }, []);
 
   const openSplitPicker = (baseSessionId: string, direction: SplitLayout["direction"]) => {
     setSplitPickerBaseSessionId(baseSessionId);
@@ -377,6 +422,15 @@ export function ConnectionsPage({
   };
 
 
+  const disconnectSession = async (targetSessionId: string) => {
+    const session = activeSessions.get(targetSessionId);
+    if (session?.kind === "local") {
+      await sshApi.localDisconnect(targetSessionId);
+      return;
+    }
+    await sshApi.disconnect(targetSessionId);
+  };
+
   const handleDisconnect = async (sessionId: string) => {
     try {
       const splitForPrimary = splitLayouts.get(sessionId);
@@ -385,10 +439,10 @@ export function ConnectionsPage({
       );
 
       if (splitForPrimary) {
-        await sshApi.disconnect(splitForPrimary.secondarySessionId);
+        await disconnectSession(splitForPrimary.secondarySessionId);
       }
 
-      await sshApi.disconnect(sessionId);
+      await disconnectSession(sessionId);
 
       setActiveSessions((prev) => {
         const next = new Map(prev);
@@ -416,6 +470,77 @@ export function ConnectionsPage({
       }
     } catch (error) {
       console.error("Disconnect error:", error);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!editingConnection) return;
+
+    const trimmedHost = editingConnection.host.trim();
+    const trimmedUser = editingConnection.username.trim();
+    const port = Number.isFinite(editingConnection.port)
+      ? editingConnection.port
+      : 22;
+
+    if (!trimmedHost) {
+      setTestStatus("error");
+      setTestMessage("请输入主机地址");
+      return;
+    }
+
+    if (!trimmedUser) {
+      setTestStatus("error");
+      setTestMessage("请输入用户名");
+      return;
+    }
+
+    if (editingConnection.auth_type.type === "Password") {
+      const password = (editingConnection.auth_type as any).password?.trim();
+      if (!password) {
+        setTestStatus("error");
+        setTestMessage("请输入密码");
+        return;
+      }
+    }
+
+    if (editingConnection.auth_type.type === "PrivateKey") {
+      const keyContent = (editingConnection.auth_type as any).key_content?.trim();
+      const keyPath = (editingConnection.auth_type as any).key_path?.trim();
+
+      if (keyContent) {
+        const validation = validatePemKey(keyContent);
+        if (!validation.valid) {
+          setTestStatus("error");
+          setTestMessage(validation.message);
+          return;
+        }
+      } else if (!keyPath) {
+        setTestStatus("error");
+        setTestMessage("请输入私钥路径或私钥内容");
+        return;
+      }
+    }
+
+    setTestStatus("testing");
+    setTestMessage("正在测试连接...");
+
+    const testConnection: SshConnection = {
+      ...editingConnection,
+      id: crypto.randomUUID(),
+      host: trimmedHost,
+      username: trimmedUser,
+      port,
+    };
+
+    try {
+      const sessionId = await sshApi.connect(testConnection);
+      await sshApi.disconnect(sessionId);
+      setTestStatus("success");
+      setTestMessage("连接成功");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTestStatus("error");
+      setTestMessage(message || "连接失败");
     }
   };
 
@@ -744,6 +869,14 @@ export function ConnectionsPage({
         )}
 
         <div className="connection-detail-actions">
+          <button
+            className="btn btn-secondary"
+            type="button"
+            onClick={() => void handleTestConnection()}
+            disabled={testStatus === "testing"}
+          >
+            {testStatus === "testing" ? "测试中..." : "测试连接"}
+          </button>
           <button className="btn btn-primary" onClick={handleSaveConnection}>
             保存
           </button>
@@ -756,6 +889,13 @@ export function ConnectionsPage({
           >
             取消
           </button>
+          {testMessage && (
+            <span
+              className={`connection-test-status connection-test-status--${testStatus}`}
+            >
+              {testMessage}
+            </span>
+          )}
         </div>
       </div>
     );
@@ -769,7 +909,31 @@ export function ConnectionsPage({
       onCloseSession?: () => void,
       onRequestSplit?: (direction: SplitLayout["direction"]) => void,
     ) => {
+      const sendScript = async (content: string, scope: "current" | "all") => {
+        if (scope === "all") {
+          const targets = Array.from(activeSessions.keys());
+          await Promise.all(
+            targets.map((id) => {
+              const targetSession = activeSessions.get(id);
+              if (targetSession?.kind === "local") {
+                return sshApi.localWriteToShell(id, content).catch(() => {});
+              }
+              return sshApi.writeToShell(id, content).catch(() => {});
+            }),
+          );
+          return;
+        }
+        if (session.kind === "local") {
+          await sshApi.localWriteToShell(sessionId, content).catch(() => {});
+          return;
+        }
+        await sshApi.writeToShell(sessionId, content).catch(() => {});
+      };
       const handleTerminalConnect = async () => {
+        if (session.kind === "local") {
+          await sshApi.localOpenShell(sessionId);
+          return;
+        }
         const backendSessionId = await sshApi.connect({
           ...session.connection,
           id: sessionId,
@@ -782,10 +946,12 @@ export function ConnectionsPage({
           sessionId={sessionId}
           host={session.connection.host}
           port={session.connection.port}
+          isLocal={session.kind === "local"}
           onConnect={handleTerminalConnect}
           onRequestSplit={onRequestSplit}
           onCloseSession={onCloseSession}
           isSplit={isSplit}
+          onSendScript={sendScript}
         />
       );
     };

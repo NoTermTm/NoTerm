@@ -227,6 +227,25 @@
     border-color: var(--accent);
 }
 
+.shortcut-keys {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.shortcut-key {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 4px 8px;
+    min-height: 24px;
+    display: inline-flex;
+    align-items: center;
+}
+
 .app-info {
     font-size: 13px;
     color: var(--text-secondary);

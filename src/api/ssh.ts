@@ -20,16 +20,32 @@ export const sshApi = {
     return await invoke('ssh_open_shell', { sessionId });
   },
 
+  localOpenShell: async (sessionId: string, shell?: string): Promise<void> => {
+    return await invoke('local_open_shell', { sessionId, shell });
+  },
+
   writeToShell: async (sessionId: string, data: string): Promise<void> => {
     return await invoke('ssh_write_to_shell', { sessionId, data });
+  },
+
+  localWriteToShell: async (sessionId: string, data: string): Promise<void> => {
+    return await invoke('local_write_to_shell', { sessionId, data });
   },
 
   resizePty: async (sessionId: string, cols: number, rows: number): Promise<void> => {
     return await invoke('ssh_resize_pty', { sessionId, cols, rows });
   },
 
+  localResizePty: async (sessionId: string, cols: number, rows: number): Promise<void> => {
+    return await invoke('local_resize_pty', { sessionId, cols, rows });
+  },
+
   disconnect: async (sessionId: string): Promise<void> => {
     return await invoke('ssh_disconnect', { sessionId });
+  },
+
+  localDisconnect: async (sessionId: string): Promise<void> => {
+    return await invoke('local_disconnect', { sessionId });
   },
 
   executeCommand: async (sessionId: string, command: string): Promise<string> => {

@@ -17,10 +17,6 @@ interface TitleBarProps {
   onNewTab?: () => void;
 }
 
-// 用于标识特殊的页面标签（如设置、密钥管理等）
-const SETTINGS_TAB_ID = "__settings__";
-const KEYS_TAB_ID = "__keys__";
-
 export function TitleBar({
   tabs = [],
   activeTabId,
@@ -78,14 +74,14 @@ export function TitleBar({
             onClick={handleMinimize}
             aria-label="Minimize"
           >
-            <AppIcon icon="material-symbols:minimize-rounded" size={10} />
+            <AppIcon icon="material-symbols:check-indeterminate-small-rounded" size={10} />
           </button>
           <button
             className="traffic-light maximize"
             onClick={handleMaximize}
             aria-label="Maximize"
           >
-            <AppIcon icon="material-symbolsNoTermll-rounded" size={10} />
+            <AppIcon icon="material-symbols:collapse-content-rounded" size={10} />
           </button>
         </div>
         {tabs.length === 0 && (
@@ -96,7 +92,7 @@ export function TitleBar({
       {tabs.length > 0 && (
         <div className="title-bar-center">
           <div className="title-bar-tabs">
-            {tabs.map((tab, index) => (
+            {tabs.map((tab) => (
               <div
                 key={tab.id}
                 className={`tab ${activeTabId === tab.id ? "active" : ""}`}

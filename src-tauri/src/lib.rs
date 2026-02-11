@@ -1,6 +1,8 @@
+mod local_pty;
 mod ssh_manager;
 
 use serde::Serialize;
+use local_pty::LocalPtyManager;
 use ssh_manager::{SftpEntry, SshConnection, SshManager};
 use std::fs;
 use std::sync::Mutex;
@@ -12,6 +14,7 @@ use tauri::Manager;
 
 struct AppState {
     ssh_manager: Mutex<SshManager>,
+    local_pty_manager: Mutex<LocalPtyManager>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -221,6 +224,53 @@ fn ssh_resize_pty(
 }
 
 #[tauri::command]
+async fn local_open_shell(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    session_id: String,
+    shell: Option<String>,
+) -> Result<(), String> {
+    let manager = state.local_pty_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || manager.open_shell(&session_id, app_handle, shell))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn local_write_to_shell(
+    state: State<AppState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    let manager = state.local_pty_manager.lock().unwrap();
+    manager
+        .write_to_shell(&session_id, &data)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn local_resize_pty(
+    state: State<AppState>,
+    session_id: String,
+    cols: u32,
+    rows: u32,
+) -> Result<(), String> {
+    let manager = state.local_pty_manager.lock().unwrap();
+    manager
+        .resize_pty(&session_id, cols, rows)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn local_disconnect(state: State<AppState>, session_id: String) -> Result<(), String> {
+    let manager = state.local_pty_manager.lock().unwrap();
+    manager
+        .disconnect(&session_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn ssh_disconnect(state: State<AppState>, session_id: String) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap();
     manager
@@ -364,6 +414,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(AppState {
             ssh_manager: Mutex::new(SshManager::new()),
+            local_pty_manager: Mutex::new(LocalPtyManager::new()),
         })
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -374,6 +425,10 @@ pub fn run() {
             ssh_write_to_shell,
             ssh_resize_pty,
             ssh_disconnect,
+            local_open_shell,
+            local_write_to_shell,
+            local_resize_pty,
+            local_disconnect,
             ssh_execute_command,
             ssh_is_connected,
             ssh_list_sessions,

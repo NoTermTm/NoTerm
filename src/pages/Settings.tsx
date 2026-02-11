@@ -334,6 +334,34 @@ export function SettingsPage() {
       </div>
 
       <div className="settings-section">
+        <h2>快捷键</h2>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">新增会话</div>
+            <div className="settings-item-description">打开连接选择器</div>
+          </div>
+          <div className="settings-item-control">
+            <div className="shortcut-keys">
+              <span className="shortcut-key">Ctrl/Command</span>
+              <span className="shortcut-key">T</span>
+            </div>
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">左右分屏</div>
+            <div className="settings-item-description">为当前会话选择分屏服务器</div>
+          </div>
+          <div className="settings-item-control">
+            <div className="shortcut-keys">
+              <span className="shortcut-key">Ctrl/Command</span>
+              <span className="shortcut-key">D</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
         <h2>关于</h2>
         <div className="app-info">
           <div className="app-info-row">

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -10,6 +11,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./XTerminal.css";
 import { AppIcon } from "./AppIcon";
 import { Modal } from "./Modal";
+import { ScriptPicker } from "./ScriptPicker";
 import {
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
@@ -21,10 +23,12 @@ interface XTerminalProps {
   sessionId: string;
   host: string;
   port: number;
+  isLocal?: boolean;
   onConnect?: () => Promise<void>;
   onRequestSplit?: (direction: "vertical" | "horizontal") => void;
   onCloseSession?: () => void;
   isSplit?: boolean;
+  onSendScript?: (content: string, scope: "current" | "all") => Promise<void> | void;
 }
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
@@ -33,10 +37,12 @@ export function XTerminal({
   sessionId,
   host,
   port,
+  isLocal = false,
   onConnect,
   onRequestSplit,
   onCloseSession,
   isSplit = false,
+  onSendScript,
 }: XTerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminalInstance = useRef<Terminal | null>(null);
@@ -69,6 +75,67 @@ export function XTerminal({
   const sftpMenuRef = useRef<HTMLDivElement>(null);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
+  const [scriptPanelOpen, setScriptPanelOpen] = useState(false);
+  const [scriptTarget, setScriptTarget] = useState<"current" | "all">("current");
+  const [scriptText, setScriptText] = useState("");
+  const [termMenu, setTermMenu] = useState<{ x: number; y: number } | null>(null);
+  const termMenuRef = useRef<HTMLDivElement>(null);
+
+  const writeToShell = (data: string) => {
+    if (isLocal) {
+      return sshApi.localWriteToShell(sessionId, data);
+    }
+    return sshApi.writeToShell(sessionId, data);
+  };
+
+  const resizePty = (cols: number, rows: number) => {
+    if (isLocal) {
+      return sshApi.localResizePty(sessionId, cols, rows);
+    }
+    return sshApi.resizePty(sessionId, cols, rows);
+  };
+
+  const disconnectShell = () => {
+    if (isLocal) {
+      return sshApi.localDisconnect(sessionId);
+    }
+    return sshApi.disconnect(sessionId);
+  };
+
+  const clipboardWrite = async (text: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fallback for restricted clipboard environments.
+    }
+
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "true");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+    } catch {
+      // ignore
+    } finally {
+      document.body.removeChild(ta);
+    }
+  };
+
+  const clipboardRead = async () => {
+    try {
+      return await navigator.clipboard.readText();
+    } catch {
+      return "";
+    }
+  };
 
   useEffect(() => {
     onConnectRef.current = onConnect;
@@ -111,7 +178,7 @@ export function XTerminal({
     setConnError(null);
 
     // Best-effort reset before reconnect.
-    await sshApi.disconnect(sessionId).catch(() => {});
+    await disconnectShell().catch(() => {});
 
     try {
       await doConnect();
@@ -274,7 +341,7 @@ export function XTerminal({
     if (!sftpMenu) return;
 
     const closeMenu = () => setSftpMenu(null);
-    const onPointerDown = (event: PointerEvent) => {
+    const onPointerDown = (event: Event) => {
       const target = event.target as Node | null;
       if (sftpMenuRef.current && target && sftpMenuRef.current.contains(target)) {
         return;
@@ -349,6 +416,46 @@ export function XTerminal({
     if (value > max) return max;
     return value;
   };
+
+  useEffect(() => {
+    if (!termMenu) return;
+
+    const closeMenu = () => setTermMenu(null);
+    const onPointerDown = (event: Event) => {
+      const target = event.target as Node | null;
+      if (termMenuRef.current && target && termMenuRef.current.contains(target)) {
+        return;
+      }
+      closeMenu();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("contextmenu", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("contextmenu", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [termMenu]);
+
+  useLayoutEffect(() => {
+    if (!termMenu || !termMenuRef.current) return;
+
+    const menuEl = termMenuRef.current;
+    const rect = menuEl.getBoundingClientRect();
+    const margin = 8;
+    const maxX = window.innerWidth - rect.width - margin;
+    const maxY = window.innerHeight - rect.height - margin;
+    const nextX = clamp(termMenu.x, margin, Math.max(margin, maxX));
+    const nextY = clamp(termMenu.y, margin, Math.max(margin, maxY));
+
+    if (nextX === termMenu.x && nextY === termMenu.y) return;
+    setTermMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
+  }, [termMenu]);
 
   useLayoutEffect(() => {
     if (!sftpMenu || !sftpMenuRef.current) return;
@@ -433,6 +540,50 @@ export function XTerminal({
     }
   };
 
+  const handleInsertScript = (content: string) => {
+    if (!content) return;
+    setScriptText(content.trimEnd());
+    setScriptPanelOpen(true);
+  };
+
+  const handleSendScript = async () => {
+    const trimmed = scriptText.trim();
+    if (!trimmed) return;
+    const payload = trimmed + "\n";
+    if (onSendScript) {
+      await onSendScript(payload, scriptTarget);
+      return;
+    }
+    writeToShell(payload).catch(() => {});
+  };
+
+  const handleTermCopy = async () => {
+    const term = terminalInstance.current;
+    if (!term || !term.hasSelection()) return;
+    await clipboardWrite(term.getSelection());
+    setTermMenu(null);
+  };
+
+  const handleTermPaste = async () => {
+    const term = terminalInstance.current;
+    if (!term) return;
+    const text = await clipboardRead();
+    if (!text) return;
+    term.paste(text);
+    setTermMenu(null);
+  };
+
+  const handleTermClear = () => {
+    const term = terminalInstance.current;
+    if (!term) return;
+    term.clear();
+    setTermMenu(null);
+  };
+
+  const handleTermMenuClose = () => {
+    setTermMenu(null);
+  };
+
   useEffect(() => {
     if (!terminalRef.current) return;
 
@@ -456,41 +607,7 @@ export function XTerminal({
       if (!paneRef.current) return;
       if (paneRef.current.offsetParent === null) return; // hidden (e.g. inactive tab)
       fit.fit();
-      sshApi.resizePty(sessionId, term.cols, term.rows).catch(() => {});
-    };
-
-    const clipboardWrite = async (text: string) => {
-      if (!text) return;
-      try {
-        await navigator.clipboard.writeText(text);
-        return;
-      } catch {
-        // Fallback for restricted clipboard environments.
-      }
-
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "true");
-      ta.style.position = "fixed";
-      ta.style.left = "-9999px";
-      ta.style.top = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        document.execCommand("copy");
-      } catch {
-        // ignore
-      } finally {
-        document.body.removeChild(ta);
-      }
-    };
-
-    const clipboardRead = async () => {
-      try {
-        return await navigator.clipboard.readText();
-      } catch {
-        return "";
-      }
+      resizePty(term.cols, term.rows).catch(() => {});
     };
 
     const init = async () => {
@@ -584,24 +701,14 @@ export function XTerminal({
         return true;
       });
 
-      // Right click: copy if selection exists, otherwise paste.
+      // Right click: open terminal menu.
       if (term.element) {
         const el = term.element;
         const onContextMenu = (ev: MouseEvent) => {
           if (!term) return;
           ev.preventDefault();
           ev.stopPropagation();
-
-          if (term.hasSelection()) {
-            void clipboardWrite(term.getSelection());
-            return;
-          }
-
-          void clipboardRead().then((text) => {
-            if (!term || disposed) return;
-            if (!text) return;
-            term.paste(text);
-          });
+          setTermMenu({ x: ev.clientX, y: ev.clientY });
         };
 
         el.addEventListener("contextmenu", onContextMenu);
@@ -624,7 +731,7 @@ export function XTerminal({
 
       // Handle user input
       disposable = term.onData((data) => {
-        sshApi.writeToShell(sessionId, data).catch((err) => {
+        writeToShell(data).catch((err) => {
           console.error("Error writing to shell:", err);
         });
       });
@@ -749,6 +856,12 @@ export function XTerminal({
   }, [sessionId]);
 
   useEffect(() => {
+    if (isLocal) {
+      setEndpointIp("本地");
+      setLatencyMs(null);
+      return;
+    }
+
     let disposed = false;
     let timer: number | null = null;
 
@@ -773,7 +886,7 @@ export function XTerminal({
       disposed = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [host, port]);
+  }, [host, port, isLocal]);
 
   const statusIcon = useMemo(() => {
     if (connStatus === "connecting") return "material-symbols:sync-rounded";
@@ -840,8 +953,7 @@ export function XTerminal({
                 title="左右分屏"
                 aria-label="左右分屏"
               >
-                <AppIcon icon="material-symbols:vertical-split-rounded" size={18} />
-                左右
+                <AppIcon icon="material-symbols:vertical-split-outline-rounded" size={18} />
               </button>
               <button
                 className="xterminal-topbar-btn"
@@ -850,22 +962,9 @@ export function XTerminal({
                 title="上下分屏"
                 aria-label="上下分屏"
               >
-                <AppIcon icon="material-symbols:horizontal-split-rounded" size={18} />
-                上下
+                <AppIcon icon="material-symbols:horizontal-split-outline-rounded" size={18} />
               </button>
             </>
-          )}
-          {onCloseSession && (
-            <button
-              className="xterminal-topbar-btn"
-              type="button"
-              onClick={onCloseSession}
-              title="关闭终端"
-              aria-label="关闭终端"
-            >
-              <AppIcon icon="material-symbols:close-rounded" size={18} />
-              关闭
-            </button>
           )}
           <button
             className={`xterminal-topbar-btn ${sftpOpen ? "xterminal-topbar-btn--active" : ""}`}
@@ -879,9 +978,19 @@ export function XTerminal({
             }}
             title="打开 SFTP 文件列表"
           >
-            <AppIcon icon="material-symbols:folder-open-rounded" size={18} />
-            SFTP
+            <AppIcon icon="material-symbols:folder-open-outline-rounded" size={18} />
           </button>
+          {onCloseSession && (
+            <button
+              className="xterminal-topbar-btn"
+              type="button"
+              onClick={onCloseSession}
+              title="关闭终端"
+              aria-label="关闭终端"
+            >
+              <AppIcon icon="material-symbols:close-rounded" size={18} />
+            </button>
+          )}
           {connStatus === "error" && (
             <button
               className="xterminal-topbar-btn"
@@ -1197,10 +1306,136 @@ export function XTerminal({
             <span className="xterminal-toolbar-label">服务器 IP</span>
             <span className="xterminal-toolbar-value">{endpointLabel}</span>
           </div>
+
+          <button
+            type="button"
+            className="xterminal-toolbar-btn"
+            onClick={() => setScriptPanelOpen((prev) => !prev)}
+            title="脚本"
+          >
+            <AppIcon icon="material-symbols:terminal-rounded" size={16} />
+            快捷操作
+          </button>
         </div>
+
+        {scriptPanelOpen && (
+          <div className="xterminal-script-panel">
+            <div className="xterminal-script-header">
+              <div className="xterminal-script-actions">
+                <button
+                  type="button"
+                  className="xterminal-script-link"
+                  onClick={() => setScriptPickerOpen(true)}
+                >
+                  <AppIcon icon="material-symbols:code-blocks-rounded" size={16} />
+                  脚本库
+                </button>
+                <button
+                  type="button"
+                  className="xterminal-script-link"
+                  onClick={() => setScriptText("")}
+                >
+                  <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
+                  清空
+                </button>
+              </div>
+              <div className="xterminal-script-target">
+                <span>发送给:</span>
+                <select
+                  value={scriptTarget}
+                  onChange={(event) => setScriptTarget(event.target.value as "current" | "all")}
+                >
+                  <option value="current">当前会话</option>
+                  <option value="all">所有会话</option>
+                </select>
+              </div>
+            </div>
+            <div className="xterminal-script-body">
+              <textarea
+                value={scriptText}
+                onChange={(event) => setScriptText(event.target.value)}
+                placeholder="输入命令，Enter 换行，Cmd+Enter 执行"
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    void handleSendScript();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="xterminal-script-send"
+                onClick={() => void handleSendScript()}
+              >
+                执行
+                <span className="xterminal-script-shortcut">⌘ Enter</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       </div>
 
+        {termMenu &&
+          createPortal(
+            <div
+              className="xterminal-term-menu-layer"
+              onMouseDown={handleTermMenuClose}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              <div
+                className="xterminal-term-menu"
+                ref={termMenuRef}
+                style={{ left: termMenu.x, top: termMenu.y }}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                <button
+                  type="button"
+                  className="xterminal-term-menu-item"
+                  onClick={() => void handleTermCopy()}
+                  disabled={!terminalInstance.current?.hasSelection()}
+                >
+                  <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
+                  复制
+                </button>
+                <button
+                  type="button"
+                  className="xterminal-term-menu-item"
+                  onClick={() => void handleTermPaste()}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onMouseUp={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                >
+                  <AppIcon icon="material-symbols:content-paste-rounded" size={16} />
+                  粘贴
+                </button>
+                <button
+                  type="button"
+                  className="xterminal-term-menu-item"
+                  onClick={handleTermClear}
+                >
+                  <AppIcon icon="material-symbols:delete-sweep-rounded" size={16} />
+                  清屏
+                </button>
+              </div>
+            </div>,
+            document.body,
+          )}
       <Modal
         open={!!renameEntry}
         title={renameEntry ? `重命名：${renameEntry.name}` : "重命名"}
@@ -1351,6 +1586,12 @@ export function XTerminal({
           </div>
         </div>
       </Modal>
+
+      <ScriptPicker
+        open={scriptPickerOpen}
+        onClose={() => setScriptPickerOpen(false)}
+        onSelect={(script) => handleInsertScript(script.content)}
+      />
     </>
   );
 }
