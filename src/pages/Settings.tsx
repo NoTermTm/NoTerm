@@ -7,6 +7,7 @@ import {
   DEFAULT_TERMINAL_FONT_FAMILY,
 } from "../store/appSettings";
 import { TERMINAL_THEME_OPTIONS, getXtermTheme } from "../terminal/xtermThemes";
+import { sendAiChat, type AiMessage } from "../api/ai";
 import './Settings.css';
 
 const TERMINAL_FONT_OPTIONS = [
@@ -26,10 +27,27 @@ const TERMINAL_FONT_WEIGHT_OPTIONS = [
   { label: "Bold", value: 700 },
 ];
 
+const OPENAI_MODEL_OPTIONS = [
+  { label: "gpt-4o", value: "gpt-4o" },
+  { label: "gpt-4o-mini", value: "gpt-4o-mini" },
+  { label: "gpt-4.1", value: "gpt-4.1" },
+  { label: "gpt-4.1-mini", value: "gpt-4.1-mini" },
+  { label: "gpt-4.1-nano", value: "gpt-4.1-nano" },
+];
+
+const ANTHROPIC_MODEL_OPTIONS = [
+  { label: "claude-sonnet-4-5-20250929", value: "claude-sonnet-4-5-20250929" },
+  { label: "claude-opus-4-20250514", value: "claude-opus-4-20250514" },
+  { label: "claude-3-5-sonnet-20240620", value: "claude-3-5-sonnet-20240620" },
+  { label: "claude-3-5-haiku-20241022", value: "claude-3-5-haiku-20241022" },
+];
+
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const previewTheme = getXtermTheme(settings["terminal.theme"]);
   const previewSelection = previewTheme.selectionBackground ?? "rgba(15, 143, 255, 0.18)";
+  const [aiTestStatus, setAiTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  const [aiTestMessage, setAiTestMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -69,6 +87,27 @@ export function SettingsPage() {
         "terminal.lineHeight":
           (await store.get<number>("terminal.lineHeight")) ??
           DEFAULT_APP_SETTINGS["terminal.lineHeight"],
+        "ai.enabled":
+          (await store.get<boolean>("ai.enabled")) ??
+          DEFAULT_APP_SETTINGS["ai.enabled"],
+        "ai.provider":
+          (await store.get<AppSettings["ai.provider"]>("ai.provider")) ??
+          DEFAULT_APP_SETTINGS["ai.provider"],
+        "ai.openai.baseUrl":
+          (await store.get<string>("ai.openai.baseUrl")) ??
+          DEFAULT_APP_SETTINGS["ai.openai.baseUrl"],
+        "ai.openai.apiKey":
+          (await store.get<string>("ai.openai.apiKey")) ??
+          DEFAULT_APP_SETTINGS["ai.openai.apiKey"],
+        "ai.anthropic.baseUrl":
+          (await store.get<string>("ai.anthropic.baseUrl")) ??
+          DEFAULT_APP_SETTINGS["ai.anthropic.baseUrl"],
+        "ai.anthropic.apiKey":
+          (await store.get<string>("ai.anthropic.apiKey")) ??
+          DEFAULT_APP_SETTINGS["ai.anthropic.apiKey"],
+        "ai.model":
+          (await store.get<string>("ai.model")) ??
+          DEFAULT_APP_SETTINGS["ai.model"],
       };
       if (!disposed) setSettings(next);
     };
@@ -95,6 +134,90 @@ export function SettingsPage() {
       void writeAppSetting(key, value);
       return { ...prev, [key]: value };
     });
+  };
+
+  useEffect(() => {
+    setAiTestStatus("idle");
+    setAiTestMessage(null);
+  }, [
+    settings["ai.enabled"],
+    settings["ai.provider"],
+    settings["ai.openai.baseUrl"],
+    settings["ai.openai.apiKey"],
+    settings["ai.anthropic.baseUrl"],
+    settings["ai.anthropic.apiKey"],
+    settings["ai.model"],
+  ]);
+
+  const handleAiTest = async () => {
+    if (!settings["ai.enabled"]) {
+      setAiTestStatus("error");
+      setAiTestMessage("请先开启 AI");
+      return;
+    }
+
+    if (!settings["ai.model"].trim()) {
+      setAiTestStatus("error");
+      setAiTestMessage("请填写模型名称");
+      return;
+    }
+
+    if (settings["ai.provider"] === "openai") {
+      if (!settings["ai.openai.baseUrl"].trim()) {
+        setAiTestStatus("error");
+        setAiTestMessage("请填写 OpenAI API 地址");
+        return;
+      }
+      if (!settings["ai.openai.apiKey"].trim()) {
+        setAiTestStatus("error");
+        setAiTestMessage("请填写 OpenAI API 密钥");
+        return;
+      }
+    } else {
+      if (!settings["ai.anthropic.baseUrl"].trim()) {
+        setAiTestStatus("error");
+        setAiTestMessage("请填写 Anthropic API 地址");
+        return;
+      }
+      if (!settings["ai.anthropic.apiKey"].trim()) {
+        setAiTestStatus("error");
+        setAiTestMessage("请填写 Anthropic API 密钥");
+        return;
+      }
+    }
+
+    setAiTestStatus("testing");
+    setAiTestMessage("正在测试...");
+
+    const messages: AiMessage[] = [
+      { role: "system", content: "你是连通性测试助手，只需回复 OK" },
+      { role: "user", content: "OK" },
+    ];
+
+    try {
+      await sendAiChat(
+        {
+          enabled: settings["ai.enabled"],
+          provider: settings["ai.provider"],
+          model: settings["ai.model"],
+          openai: {
+            baseUrl: settings["ai.openai.baseUrl"],
+            apiKey: settings["ai.openai.apiKey"],
+          },
+          anthropic: {
+            baseUrl: settings["ai.anthropic.baseUrl"],
+            apiKey: settings["ai.anthropic.apiKey"],
+          },
+        },
+        messages,
+      );
+      setAiTestStatus("success");
+      setAiTestMessage("连接成功");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAiTestStatus("error");
+      setAiTestMessage(message || "连接失败");
+    }
   };
 
   return (
@@ -357,6 +480,160 @@ export function SettingsPage() {
               <span className="shortcut-key">Ctrl/Command</span>
               <span className="shortcut-key">D</span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h2>AI 配置</h2>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">启用 AI</div>
+            <div className="settings-item-description">开启后可在终端内使用 AI 问答</div>
+          </div>
+          <div className="settings-item-control">
+            <div
+              className={`toggle-switch ${settings["ai.enabled"] ? "active" : ""}`}
+              onClick={() => toggleSetting("ai.enabled")}
+            >
+              <div className="toggle-switch-handle" />
+            </div>
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">提供商</div>
+            <div className="settings-item-description">选择 AI 服务商</div>
+          </div>
+          <div className="settings-item-control">
+            <select
+              className="settings-select"
+              value={settings["ai.provider"]}
+              onChange={(e) =>
+                updateSetting("ai.provider", e.target.value as AppSettings["ai.provider"])
+              }
+              disabled={!settings["ai.enabled"]}
+            >
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </div>
+        </div>
+        {settings["ai.provider"] === "openai" ? (
+          <>
+            <div className="settings-item">
+              <div className="settings-item-info">
+                <div className="settings-item-label">API 地址</div>
+                <div className="settings-item-description">OpenAI 兼容接口地址</div>
+              </div>
+              <div className="settings-item-control">
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={settings["ai.openai.baseUrl"]}
+                  onChange={(e) => updateSetting("ai.openai.baseUrl", e.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                />
+              </div>
+            </div>
+            <div className="settings-item">
+              <div className="settings-item-info">
+                <div className="settings-item-label">API 密钥</div>
+                <div className="settings-item-description">用于鉴权的密钥</div>
+              </div>
+              <div className="settings-item-control">
+                <input
+                  type="password"
+                  className="settings-input"
+                  value={settings["ai.openai.apiKey"]}
+                  onChange={(e) => updateSetting("ai.openai.apiKey", e.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                />
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="settings-item">
+              <div className="settings-item-info">
+                <div className="settings-item-label">API 地址</div>
+                <div className="settings-item-description">Anthropic 接口地址</div>
+              </div>
+              <div className="settings-item-control">
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={settings["ai.anthropic.baseUrl"]}
+                  onChange={(e) => updateSetting("ai.anthropic.baseUrl", e.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                />
+              </div>
+            </div>
+            <div className="settings-item">
+              <div className="settings-item-info">
+                <div className="settings-item-label">API 密钥</div>
+                <div className="settings-item-description">用于鉴权的密钥</div>
+              </div>
+              <div className="settings-item-control">
+                <input
+                  type="password"
+                  className="settings-input"
+                  value={settings["ai.anthropic.apiKey"]}
+                  onChange={(e) => updateSetting("ai.anthropic.apiKey", e.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                />
+              </div>
+            </div>
+          </>
+        )}
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">模型</div>
+            <div className="settings-item-description">用于对话的模型名称</div>
+          </div>
+          <div className="settings-item-control">
+            <select
+              className="settings-select"
+              value={settings["ai.model"]}
+              onChange={(e) => updateSetting("ai.model", e.target.value)}
+              disabled={!settings["ai.enabled"]}
+            >
+              {(settings["ai.provider"] === "openai"
+                ? OPENAI_MODEL_OPTIONS
+                : ANTHROPIC_MODEL_OPTIONS
+              ).map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+              {!((settings["ai.provider"] === "openai"
+                ? OPENAI_MODEL_OPTIONS
+                : ANTHROPIC_MODEL_OPTIONS
+              ).some((opt) => opt.value === settings["ai.model"])) && (
+                <option value={settings["ai.model"]}>{settings["ai.model"]}</option>
+              )}
+            </select>
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">连通性测试</div>
+            <div className="settings-item-description">验证 AI 服务是否可用</div>
+          </div>
+          <div className="settings-item-control settings-item-control--stack">
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              onClick={() => void handleAiTest()}
+              disabled={!settings["ai.enabled"] || aiTestStatus === "testing"}
+            >
+              {aiTestStatus === "testing" ? "测试中..." : "测试连接"}
+            </button>
+            {aiTestMessage && (
+              <span className={`settings-test-status settings-test-status--${aiTestStatus}`}>
+                {aiTestMessage}
+              </span>
+            )}
           </div>
         </div>
       </div>

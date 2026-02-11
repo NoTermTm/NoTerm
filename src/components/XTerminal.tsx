@@ -12,6 +12,7 @@ import "./XTerminal.css";
 import { AppIcon } from "./AppIcon";
 import { Modal } from "./Modal";
 import { ScriptPicker } from "./ScriptPicker";
+import { sendAiChat, type AiMessage } from "../api/ai";
 import {
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
@@ -77,8 +78,13 @@ export function XTerminal({
   const [newFolderName, setNewFolderName] = useState("");
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptPanelOpen, setScriptPanelOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
   const [scriptTarget, setScriptTarget] = useState<"current" | "all">("current");
   const [scriptText, setScriptText] = useState("");
+  const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
+  const [aiInput, setAiInput] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [termMenu, setTermMenu] = useState<{ x: number; y: number } | null>(null);
   const termMenuRef = useRef<HTMLDivElement>(null);
 
@@ -135,6 +141,37 @@ export function XTerminal({
     } catch {
       return "";
     }
+  };
+
+  const readAiSettings = async () => {
+    const store = await getAppSettingsStore();
+    return {
+      enabled:
+        (await store.get<boolean>("ai.enabled")) ??
+        DEFAULT_APP_SETTINGS["ai.enabled"],
+      provider:
+        (await store.get<"openai" | "anthropic">("ai.provider")) ??
+        DEFAULT_APP_SETTINGS["ai.provider"],
+      model:
+        (await store.get<string>("ai.model")) ??
+        DEFAULT_APP_SETTINGS["ai.model"],
+      openai: {
+        baseUrl:
+          (await store.get<string>("ai.openai.baseUrl")) ??
+          DEFAULT_APP_SETTINGS["ai.openai.baseUrl"],
+        apiKey:
+          (await store.get<string>("ai.openai.apiKey")) ??
+          DEFAULT_APP_SETTINGS["ai.openai.apiKey"],
+      },
+      anthropic: {
+        baseUrl:
+          (await store.get<string>("ai.anthropic.baseUrl")) ??
+          DEFAULT_APP_SETTINGS["ai.anthropic.baseUrl"],
+        apiKey:
+          (await store.get<string>("ai.anthropic.apiKey")) ??
+          DEFAULT_APP_SETTINGS["ai.anthropic.apiKey"],
+      },
+    };
   };
 
   useEffect(() => {
@@ -544,6 +581,80 @@ export function XTerminal({
     if (!content) return;
     setScriptText(content.trimEnd());
     setScriptPanelOpen(true);
+  };
+
+  const getTerminalContext = (lineCount = 40) => {
+    const term = terminalInstance.current;
+    if (!term) return "";
+    const selection = term.getSelection();
+    if (selection && selection.trim()) {
+      return selection.trim();
+    }
+    const buffer = term.buffer.active;
+    const start = Math.max(0, buffer.length - lineCount);
+    const lines: string[] = [];
+    for (let i = start; i < buffer.length; i += 1) {
+      const line = buffer.getLine(i)?.translateToString(true).trimEnd();
+      if (line) lines.push(line);
+    }
+    return lines.join("\n").trim();
+  };
+
+  const buildAiPrompt = (mode: "ask" | "fix", context: string) => {
+    if (mode === "fix") {
+      return [
+        "请根据以下终端输出定位问题并给出修复建议。",
+        "如果能提供具体命令或步骤，请直接给出。",
+        "",
+        context,
+      ].join("\n");
+    }
+    return [
+      "请解释以下终端输出或现象，并给出建议。",
+      "",
+      context,
+    ].join("\n");
+  };
+
+  const sendAiMessage = async (content: string) => {
+    if (!content.trim()) return;
+    setAiError(null);
+    setAiBusy(true);
+
+    const userMessage: AiMessage = { role: "user", content };
+    const nextMessages = [...aiMessages, userMessage];
+    setAiMessages(nextMessages);
+
+    try {
+      const settings = await readAiSettings();
+      const systemMessage: AiMessage = {
+        role: "system",
+        content: "你是终端助手，回答要简洁、可执行。",
+      };
+      const response = await sendAiChat(settings, [systemMessage, ...nextMessages]);
+      setAiMessages((prev) => [...prev, { role: "assistant", content: response }]);
+    } catch (error) {
+      const message = formatError(error);
+      setAiError(message);
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const openAiFromTerminal = async (mode: "ask" | "fix") => {
+    setTermMenu(null);
+    const context = getTerminalContext();
+    if (!context) {
+      setAiError("未检测到终端内容，请先选择文本或产生输出");
+      setScriptPanelOpen(true);
+      setPanelTab("ai");
+      return;
+    }
+
+    const prompt = buildAiPrompt(mode, context);
+    setAiOpen(true);
+    setAiInput("");
+    await sendAiMessage(prompt);
   };
 
   const handleSendScript = async () => {
@@ -980,6 +1091,14 @@ export function XTerminal({
           >
             <AppIcon icon="material-symbols:folder-open-outline-rounded" size={18} />
           </button>
+          <button
+            className={`xterminal-topbar-btn ${aiOpen ? "xterminal-topbar-btn--active" : ""}`}
+            type="button"
+            onClick={() => setAiOpen((prev) => !prev)}
+            title="AI 对话"
+          >
+            <AppIcon icon="material-symbols:forum-rounded" size={18} />
+          </button>
           {onCloseSession && (
             <button
               className="xterminal-topbar-btn"
@@ -1283,6 +1402,66 @@ export function XTerminal({
               )}
             </div>
           )}
+          {aiOpen && (
+            <div className="xterminal-ai">
+              <div className="xterminal-ai-header">
+                <div className="xterminal-ai-title">AI 对话</div>
+                <button
+                  type="button"
+                  className="xterminal-ai-close"
+                  onClick={() => setAiOpen(false)}
+                  title="关闭"
+                >
+                  <AppIcon icon="material-symbols:close-rounded" size={16} />
+                </button>
+              </div>
+              <div className="xterminal-ai-body">
+                <div className="xterminal-ai-history">
+                  {aiMessages.length === 0 && (
+                    <div className="xterminal-ai-empty">暂无对话，可从右键菜单发送终端内容</div>
+                  )}
+                  {aiMessages.map((msg, index) => (
+                    <div
+                      key={`${msg.role}-${index}`}
+                      className={`xterminal-ai-message xterminal-ai-message--${msg.role}`}
+                    >
+                      <div className="xterminal-ai-role">
+                        {msg.role === "user" ? "我" : msg.role === "assistant" ? "AI" : "系统"}
+                      </div>
+                      <div className="xterminal-ai-content">{msg.content}</div>
+                    </div>
+                  ))}
+                </div>
+                {aiError && <div className="xterminal-ai-error">{aiError}</div>}
+                <div className="xterminal-ai-input">
+                  <textarea
+                    value={aiInput}
+                    onChange={(event) => setAiInput(event.target.value)}
+                    placeholder="输入你的问题，Cmd+Enter 发送"
+                    onKeyDown={(event) => {
+                      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                        event.preventDefault();
+                        void sendAiMessage(aiInput);
+                        setAiInput("");
+                      }
+                    }}
+                    disabled={aiBusy}
+                  />
+                  <button
+                    type="button"
+                    className="xterminal-ai-send"
+                    onClick={() => {
+                      void sendAiMessage(aiInput);
+                      setAiInput("");
+                    }}
+                    disabled={aiBusy || !aiInput.trim()}
+                  >
+                    {aiBusy ? "发送中..." : "发送"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="xterminal-toolbar">
@@ -1343,7 +1522,9 @@ export function XTerminal({
                 <span>发送给:</span>
                 <select
                   value={scriptTarget}
-                  onChange={(event) => setScriptTarget(event.target.value as "current" | "all")}
+                  onChange={(event) =>
+                    setScriptTarget(event.target.value as "current" | "all")
+                  }
                 >
                   <option value="current">当前会话</option>
                   <option value="all">所有会话</option>
@@ -1431,6 +1612,23 @@ export function XTerminal({
                 >
                   <AppIcon icon="material-symbols:delete-sweep-rounded" size={16} />
                   清屏
+                </button>
+                <div className="xterminal-term-menu-divider" />
+                <button
+                  type="button"
+                  className="xterminal-term-menu-item"
+                  onClick={() => void openAiFromTerminal("fix")}
+                >
+                  <AppIcon icon="material-symbols:build-rounded" size={16} />
+                  发送给 AI（修复）
+                </button>
+                <button
+                  type="button"
+                  className="xterminal-term-menu-item"
+                  onClick={() => void openAiFromTerminal("ask")}
+                >
+                  <AppIcon icon="material-symbols:forum-rounded" size={16} />
+                  发送给 AI（提问）
                 </button>
               </div>
             </div>,

@@ -59,6 +59,34 @@
     margin-left: 16px;
 }
 
+.settings-item-control--stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+}
+
+.settings-test-status {
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+}
+
+.settings-test-status--success {
+    color: var(--success);
+    background: rgba(22, 130, 93, 0.12);
+    border-color: rgba(22, 130, 93, 0.2);
+}
+
+.settings-test-status--error {
+    color: var(--danger);
+    background: rgba(229, 20, 0, 0.08);
+    border-color: rgba(229, 20, 0, 0.2);
+}
+
 .settings-card {
     border-radius: 12px;
     display: flex;

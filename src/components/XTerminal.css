@@ -94,6 +94,12 @@
     background: transparent;
 }
 
+.xterminal-term-menu-divider {
+    height: 1px;
+    background: var(--border-light);
+    margin: 4px 6px;
+}
+
 .xterminal-topbar-left {
     min-width: 0;
     display: flex;
@@ -576,6 +582,56 @@
     gap: 8px;
 }
 
+
+.xterminal-ai {
+    width: 320px;
+    border-left: 1px solid var(--border-light);
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+}
+
+.xterminal-ai-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-primary);
+}
+
+.xterminal-ai-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.xterminal-ai-close {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 4px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.xterminal-ai-close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.xterminal-ai-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+}
+
 .xterminal-script-header {
     display: flex;
     align-items: center;
@@ -671,6 +727,111 @@
 .xterminal-script-shortcut {
     font-size: 11px;
     color: var(--text-tertiary);
+}
+
+.xterminal-ai-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.xterminal-ai-history {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-right: 2px;
+}
+
+.xterminal-ai-empty {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    padding: 8px 2px;
+}
+
+.xterminal-ai-message {
+    border-radius: 10px;
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.xterminal-ai-message--assistant {
+    background: rgba(15, 143, 255, 0.08);
+    border-color: rgba(15, 143, 255, 0.2);
+}
+
+.xterminal-ai-message--system {
+    background: rgba(0, 0, 0, 0.04);
+}
+
+.xterminal-ai-role {
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+.xterminal-ai-content {
+    font-size: 12px;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    line-height: 1.5;
+}
+
+.xterminal-ai-error {
+    font-size: 12px;
+    color: var(--danger);
+    background: rgba(229, 20, 0, 0.08);
+    border: 1px solid rgba(229, 20, 0, 0.2);
+    padding: 8px 10px;
+    border-radius: 8px;
+}
+
+.xterminal-ai-input {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.xterminal-ai-input textarea {
+    width: 100%;
+    min-height: 120px;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    padding: 10px 12px;
+    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    resize: vertical;
+    outline: none;
+}
+
+.xterminal-ai-input textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(15, 143, 255, 0.2);
+}
+
+.xterminal-ai-send {
+    align-self: flex-end;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border-radius: 10px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.xterminal-ai-send:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .xterminal-toolbar-item {
