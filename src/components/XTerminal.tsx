@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -9,6 +9,7 @@ import type { SftpEntry } from "../types/ssh";
 import "@xterm/xterm/css/xterm.css";
 import "./XTerminal.css";
 import { AppIcon } from "./AppIcon";
+import { Modal } from "./Modal";
 import {
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
@@ -21,6 +22,9 @@ interface XTerminalProps {
   host: string;
   port: number;
   onConnect?: () => Promise<void>;
+  onRequestSplit?: (direction: "vertical" | "horizontal") => void;
+  onCloseSession?: () => void;
+  isSplit?: boolean;
 }
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
@@ -30,6 +34,9 @@ export function XTerminal({
   host,
   port,
   onConnect,
+  onRequestSplit,
+  onCloseSession,
+  isSplit = false,
 }: XTerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminalInstance = useRef<Terminal | null>(null);
@@ -48,6 +55,20 @@ export function XTerminal({
   const [sftpLoading, setSftpLoading] = useState(false);
   const [sftpError, setSftpError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  const [renameEntry, setRenameEntry] = useState<SftpEntry | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [chmodEntry, setChmodEntry] = useState<SftpEntry | null>(null);
+  const [chmodValue, setChmodValue] = useState("");
+  const [sftpActionError, setSftpActionError] = useState<string | null>(null);
+  const [sftpActionBusy, setSftpActionBusy] = useState(false);
+  const [sftpMenu, setSftpMenu] = useState<{
+    entry: SftpEntry | null;
+    x: number;
+    y: number;
+  } | null>(null);
+  const sftpMenuRef = useRef<HTMLDivElement>(null);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
 
   useEffect(() => {
     onConnectRef.current = onConnect;
@@ -126,6 +147,154 @@ export function XTerminal({
     }
   };
 
+  const buildRemotePath = (name: string) => {
+    const base = sftpPath || "/";
+    return base.endsWith("/") ? `${base}${name}` : `${base}/${name}`;
+  };
+
+  const formatPermValue = (perm?: number, isDir?: boolean) => {
+    if (typeof perm === "number") {
+      return (perm & 0o7777).toString(8);
+    }
+    return isDir ? "755" : "644";
+  };
+
+  const openRename = (entry: SftpEntry) => {
+    if (entry.name === "..") return;
+    setRenameEntry(entry);
+    setRenameValue(entry.name);
+    setSftpActionError(null);
+  };
+
+  const openChmod = (entry: SftpEntry) => {
+    if (entry.name === "..") return;
+    setChmodEntry(entry);
+    setChmodValue(formatPermValue(entry.perm, entry.is_dir));
+    setSftpActionError(null);
+  };
+
+  const handleRenameSubmit = async () => {
+    if (!renameEntry) return;
+    const nextName = renameValue.trim();
+    if (!nextName) {
+      setSftpActionError("请输入新名称");
+      return;
+    }
+    if (nextName.includes("/")) {
+      setSftpActionError("名称不能包含 '/'");
+      return;
+    }
+
+    const fromPath = buildRemotePath(renameEntry.name);
+    const toPath = buildRemotePath(nextName);
+
+    setSftpActionBusy(true);
+    setSftpActionError(null);
+    try {
+      await sshApi.renameSftpEntry(sessionId, fromPath, toPath);
+      setRenameEntry(null);
+      await loadSftpEntries();
+    } catch (error) {
+      setSftpActionError(formatError(error));
+    } finally {
+      setSftpActionBusy(false);
+    }
+  };
+
+  const handleChmodSubmit = async () => {
+    if (!chmodEntry) return;
+    const value = chmodValue.trim();
+    if (!/^[0-7]{3,4}$/.test(value)) {
+      setSftpActionError("请输入 3-4 位八进制权限，例如 644 或 755");
+      return;
+    }
+
+    const mode = parseInt(value, 8);
+    const path = buildRemotePath(chmodEntry.name);
+
+    setSftpActionBusy(true);
+    setSftpActionError(null);
+    try {
+      await sshApi.chmodSftpEntry(sessionId, path, mode);
+      setChmodEntry(null);
+      await loadSftpEntries();
+    } catch (error) {
+      setSftpActionError(formatError(error));
+    } finally {
+      setSftpActionBusy(false);
+    }
+  };
+
+  const handleDeleteEntry = async (entry: SftpEntry) => {
+    if (entry.name === "..") return;
+    const path = buildRemotePath(entry.name);
+    const label = entry.is_dir ? "文件夹" : "文件";
+    const ok = window.confirm(`确定删除${label} “${entry.name}” 吗？`);
+    if (!ok) return;
+
+    setSftpActionBusy(true);
+    setSftpActionError(null);
+    try {
+      await sshApi.deleteSftpEntry(sessionId, path, entry.is_dir);
+      await loadSftpEntries();
+    } catch (error) {
+      setSftpActionError(formatError(error));
+    } finally {
+      setSftpActionBusy(false);
+    }
+  };
+
+  const handleNewFolderSubmit = async () => {
+    const name = newFolderName.trim();
+    if (!name) {
+      setSftpActionError("请输入文件夹名称");
+      return;
+    }
+    if (name.includes("/")) {
+      setSftpActionError("名称不能包含 '/'");
+      return;
+    }
+
+    const path = buildRemotePath(name);
+    setSftpActionBusy(true);
+    setSftpActionError(null);
+    try {
+      await sshApi.mkdirSftpEntry(sessionId, path);
+      setNewFolderOpen(false);
+      setNewFolderName("");
+      await loadSftpEntries();
+    } catch (error) {
+      setSftpActionError(formatError(error));
+    } finally {
+      setSftpActionBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!sftpMenu) return;
+
+    const closeMenu = () => setSftpMenu(null);
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (sftpMenuRef.current && target && sftpMenuRef.current.contains(target)) {
+        return;
+      }
+      closeMenu();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("contextmenu", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("contextmenu", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [sftpMenu]);
+
   const handleEntryClick = (entry: SftpEntry) => {
     if (!entry.is_dir) return; // 只处理文件夹点击
 
@@ -155,6 +324,46 @@ export function XTerminal({
 
     void loadSftpEntries(newPath);
   };
+
+  const openSftpMenu = (
+    event: { preventDefault: () => void; stopPropagation: () => void; clientX: number; clientY: number },
+    entry?: SftpEntry | null,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (entry?.name === "..") return;
+    setSftpMenu({
+      entry: entry ?? null,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const isSftpItemTarget = (target: EventTarget | null) => {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest(".xterminal-sftp-item");
+  };
+
+  const clamp = (value: number, min: number, max: number) => {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+  };
+
+  useLayoutEffect(() => {
+    if (!sftpMenu || !sftpMenuRef.current) return;
+
+    const menuEl = sftpMenuRef.current;
+    const rect = menuEl.getBoundingClientRect();
+    const margin = 8;
+    const maxX = window.innerWidth - rect.width - margin;
+    const maxY = window.innerHeight - rect.height - margin;
+    const nextX = clamp(sftpMenu.x, margin, Math.max(margin, maxX));
+    const nextY = clamp(sftpMenu.y, margin, Math.max(margin, maxY));
+
+    if (nextX === sftpMenu.x && nextY === sftpMenu.y) return;
+    setSftpMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
+  }, [sftpMenu]);
 
   const handleDownloadFile = async (entry: SftpEntry) => {
     if (entry.is_dir) return; // 只下载文件
@@ -234,6 +443,10 @@ export function XTerminal({
     let unlistenTheme: (() => void) | null = null;
     let unlistenFontSize: (() => void) | null = null;
     let unlistenFontFamily: (() => void) | null = null;
+    let unlistenFontWeight: (() => void) | null = null;
+    let unlistenCursorStyle: (() => void) | null = null;
+    let unlistenCursorBlink: (() => void) | null = null;
+    let unlistenLineHeight: (() => void) | null = null;
     let disposable: { dispose: () => void } | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let removeContextMenu: (() => void) | null = null;
@@ -291,6 +504,18 @@ export function XTerminal({
       const fontFamily =
         (await store.get<string>("terminal.fontFamily")) ??
         DEFAULT_APP_SETTINGS["terminal.fontFamily"];
+      const fontWeight =
+        (await store.get<number>("terminal.fontWeight")) ??
+        DEFAULT_APP_SETTINGS["terminal.fontWeight"];
+      const cursorStyle =
+        (await store.get<"block" | "underline" | "bar">("terminal.cursorStyle")) ??
+        DEFAULT_APP_SETTINGS["terminal.cursorStyle"];
+      const cursorBlink =
+        (await store.get<boolean>("terminal.cursorBlink")) ??
+        DEFAULT_APP_SETTINGS["terminal.cursorBlink"];
+      const lineHeight =
+        (await store.get<number>("terminal.lineHeight")) ??
+        DEFAULT_APP_SETTINGS["terminal.lineHeight"];
 
       if (disposed || !terminalRef.current) return;
 
@@ -298,7 +523,10 @@ export function XTerminal({
       setXtermBg(xtermTheme.background);
 
       term = new Terminal({
-        cursorBlink: true,
+        cursorBlink,
+        cursorStyle,
+        lineHeight,
+        fontWeight,
         fontSize,
         fontFamily,
         theme: xtermTheme,
@@ -452,6 +680,39 @@ export function XTerminal({
           });
         },
       );
+      unlistenFontWeight = await store.onKeyChange<number>(
+        "terminal.fontWeight",
+        (v) => {
+          if (!term || disposed) return;
+          term.options.fontWeight = v ?? DEFAULT_APP_SETTINGS["terminal.fontWeight"];
+          requestAnimationFrame(() => {
+            fitAndResize();
+          });
+        },
+      );
+      unlistenCursorStyle = await store.onKeyChange<
+        "block" | "underline" | "bar"
+      >("terminal.cursorStyle", (v) => {
+        if (!term || disposed) return;
+        term.options.cursorStyle = v ?? DEFAULT_APP_SETTINGS["terminal.cursorStyle"];
+      });
+      unlistenCursorBlink = await store.onKeyChange<boolean>(
+        "terminal.cursorBlink",
+        (v) => {
+          if (!term || disposed) return;
+          term.options.cursorBlink = v ?? DEFAULT_APP_SETTINGS["terminal.cursorBlink"];
+        },
+      );
+      unlistenLineHeight = await store.onKeyChange<number>(
+        "terminal.lineHeight",
+        (v) => {
+          if (!term || disposed) return;
+          term.options.lineHeight = v ?? DEFAULT_APP_SETTINGS["terminal.lineHeight"];
+          requestAnimationFrame(() => {
+            fitAndResize();
+          });
+        },
+      );
 
       // Initial resize (after fonts are applied)
       setTimeout(() => {
@@ -479,6 +740,10 @@ export function XTerminal({
       unlistenFontFamily?.();
       unlistenOutput?.();
       removeContextMenu?.();
+      unlistenFontWeight?.();
+      unlistenCursorStyle?.();
+      unlistenCursorBlink?.();
+      unlistenLineHeight?.();
       term?.dispose();
     };
   }, [sessionId]);
@@ -526,18 +791,23 @@ export function XTerminal({
   }, [connStatus]);
 
   return (
-    <div
-      className="xterminal"
-      style={
-        xtermBg
-          ? ({
-              ["--xterminal-xterm-bg"]: xtermBg,
-            } as CSSProperties)
-          : undefined
-      }
-    >
+    <>
+      <div
+        className="xterminal"
+        style={
+          xtermBg
+            ? ({
+                ["--xterminal-xterm-bg"]: xtermBg,
+              } as CSSProperties)
+            : undefined
+        }
+      >
       <div className="xterminal-topbar">
-        <div className="xterminal-topbar-left" title={connError ?? undefined}>
+        <div className= {[
+          "xterminal-topbar-left",
+          `xterminal-topbar-left--${connStatus}`
+        ].filter(Boolean).join(" ")}
+          title={connError ?? undefined}>
           <span
             className={[
               "xterminal-topbar-status",
@@ -558,9 +828,45 @@ export function XTerminal({
         </div>
 
         <div className="xterminal-topbar-right">
-          <span className="xterminal-topbar-meta">
+          {/* <span className="xterminal-topbar-meta">
             {host}:{port}
-          </span>
+          </span> */}
+          {!isSplit && onRequestSplit && (
+            <>
+              <button
+                className="xterminal-topbar-btn"
+                type="button"
+                onClick={() => onRequestSplit("vertical")}
+                title="左右分屏"
+                aria-label="左右分屏"
+              >
+                <AppIcon icon="material-symbols:vertical-split-rounded" size={18} />
+                左右
+              </button>
+              <button
+                className="xterminal-topbar-btn"
+                type="button"
+                onClick={() => onRequestSplit("horizontal")}
+                title="上下分屏"
+                aria-label="上下分屏"
+              >
+                <AppIcon icon="material-symbols:horizontal-split-rounded" size={18} />
+                上下
+              </button>
+            </>
+          )}
+          {onCloseSession && (
+            <button
+              className="xterminal-topbar-btn"
+              type="button"
+              onClick={onCloseSession}
+              title="关闭终端"
+              aria-label="关闭终端"
+            >
+              <AppIcon icon="material-symbols:close-rounded" size={18} />
+              关闭
+            </button>
+          )}
           <button
             className={`xterminal-topbar-btn ${sftpOpen ? "xterminal-topbar-btn--active" : ""}`}
             type="button"
@@ -599,23 +905,44 @@ export function XTerminal({
           {sftpOpen && (
             <div className="xterminal-sftp">
               <div className="xterminal-sftp-header">
-                <div className="xterminal-sftp-title">SFTP</div>
+                <div className="xterminal-sftp-title">文件管理器</div>
+                <div className="xterminal-sftp-actions">
+                  <button
+                    type="button"
+                    className="xterminal-sftp-icon-btn"
+                    onClick={handleFileSelect}
+                    disabled={sftpLoading || !!uploadProgress}
+                    title="上传文件"
+                  >
+                    <AppIcon icon="material-symbols:upload-rounded" size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="xterminal-sftp-icon-btn"
+                    onClick={() => void loadSftpEntries()}
+                    disabled={sftpLoading}
+                    title="刷新"
+                  >
+                    <AppIcon icon="material-symbols:refresh-rounded" size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="xterminal-sftp-icon-btn"
+                    onClick={() => setSftpOpen(false)}
+                    title="关闭"
+                  >
+                    <AppIcon icon="material-symbols:close-rounded" size={16} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="xterminal-sftp-pathbar">
                 <button
                   type="button"
-                  className="xterminal-sftp-refresh"
-                  onClick={handleFileSelect}
-                  disabled={sftpLoading || !!uploadProgress}
-                  title="上传文件"
-                >
-                  <AppIcon icon="material-symbols:upload-rounded" size={16} />
-                </button>
-                <button
-                  type="button"
-                  className="xterminal-sftp-refresh"
+                  className="xterminal-sftp-icon-btn"
                   onClick={() => {
-                    // 返回上级目录
                     const currentPath = sftpPath || "/";
-                    const parts = currentPath.split("/").filter(p => p);
+                    const parts = currentPath.split("/").filter((p) => p);
                     if (parts.length > 0) {
                       parts.pop();
                       const newPath = parts.length > 0 ? "/" + parts.join("/") : "/";
@@ -625,39 +952,54 @@ export function XTerminal({
                   disabled={sftpLoading || sftpPath === "/" || !sftpPath}
                   title="返回上级目录"
                 >
-                  <AppIcon icon="material-symbols:arrow-upward-rounded" size={16} />
+                  <AppIcon icon="material-symbols:keyboard-return-rounded" size={16} />
                 </button>
-                <button
-                  type="button"
-                  className="xterminal-sftp-refresh"
-                  onClick={() => void loadSftpEntries()}
-                  disabled={sftpLoading}
-                  title="刷新"
-                >
-                  <AppIcon icon="material-symbols:refresh-rounded" size={16} />
-                </button>
+                <div className="xterminal-sftp-path-input">
+                  <input
+                    type="text"
+                    value={sftpPath}
+                    onChange={(event) => setSftpPath(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        void loadSftpEntries();
+                      }
+                    }}
+                    placeholder="/"
+                  />
+                </div>
               </div>
-              <div className="xterminal-sftp-path">
-                <input
-                  type="text"
-                  value={sftpPath}
-                  onChange={(event) => setSftpPath(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      void loadSftpEntries();
-                    }
-                  }}
-                  placeholder="路径，例如 /var/log"
-                />
+
+              <div className="xterminal-sftp-table-header">
+                <span className="xterminal-sftp-check" aria-hidden="true" />
+                <span className="xterminal-sftp-col-name">文件名</span>
+                <span className="xterminal-sftp-col-size">大小</span>
               </div>
               {uploadProgress && (
                 <div className="xterminal-sftp-progress">
                   {uploadProgress}
                 </div>
               )}
-              <div className="xterminal-sftp-body">
+              <div
+                className="xterminal-sftp-body"
+                onPointerDown={(event) => {
+                  if (event.button !== 2) return;
+                  if (isSftpItemTarget(event.target)) return;
+                  openSftpMenu(event, null);
+                }}
+                onContextMenu={(event) => {
+                  if (isSftpItemTarget(event.target)) return;
+                  openSftpMenu(event, null);
+                }}
+              >
                 {sftpLoading && (
-                  <div className="xterminal-sftp-state">加载中…</div>
+                  <div className="xterminal-sftp-state">
+                    <AppIcon
+                        className="xterminal-sftp-loading-icon"
+                        icon="material-symbols:refresh"
+                        size={16}
+                    />
+                    <span>加载中</span>
+                    </div>
                 )}
                 {!sftpLoading && sftpError && (
                   <div className="xterminal-sftp-state xterminal-sftp-state--error">
@@ -681,7 +1023,13 @@ export function XTerminal({
                         key={entry.name}
                         className={`xterminal-sftp-item ${entry.is_dir ? "xterminal-sftp-item--dir" : "xterminal-sftp-item--file"}`}
                         onClick={() => handleEntryClick(entry)}
+                        onPointerDown={(event) => {
+                          if (event.button !== 2) return;
+                          openSftpMenu(event, entry);
+                        }}
+                        onContextMenu={(event) => openSftpMenu(event, entry)}
                       >
+                        <span className="xterminal-sftp-check" aria-hidden="true" />
                         <span className="xterminal-sftp-icon" aria-hidden="true">
                           <AppIcon
                             icon={
@@ -698,24 +1046,132 @@ export function XTerminal({
                             {entry.size.toLocaleString()} B
                           </span>
                         )}
-                        {!entry.is_dir && (
-                          <button
-                            type="button"
-                            className="xterminal-sftp-download"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void handleDownloadFile(entry);
-                            }}
-                            title="下载文件"
-                          >
-                            <AppIcon icon="material-symbols:download-rounded" size={14} />
-                          </button>
-                        )}
+                        {entry.is_dir && <span className="xterminal-sftp-meta">-</span>}
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
+              {sftpMenu && (
+                <div
+                  className="xterminal-sftp-menu"
+                  style={{ top: sftpMenu.y, left: sftpMenu.x }}
+                  ref={sftpMenuRef}
+                >
+                  {!sftpMenu.entry && (
+                    <>
+                      <button
+                        type="button"
+                        className="xterminal-sftp-menu-item"
+                        onClick={() => {
+                          void handleFileSelect();
+                          setSftpMenu(null);
+                        }}
+                      >
+                        <AppIcon icon="material-symbols:upload-rounded" size={16} />
+                        上传
+                      </button>
+                      <button
+                        type="button"
+                        className="xterminal-sftp-menu-item"
+                        onClick={() => {
+                          void loadSftpEntries();
+                          setSftpMenu(null);
+                        }}
+                      >
+                        <AppIcon icon="material-symbols:refresh-rounded" size={16} />
+                        刷新
+                      </button>
+                    </>
+                  )}
+                  {sftpMenu.entry && (
+                    <>
+                      <button
+                        type="button"
+                        className="xterminal-sftp-menu-item"
+                        onClick={() => {
+                          if (!sftpMenu.entry) return;
+                          openRename(sftpMenu.entry);
+                          setSftpMenu(null);
+                        }}
+                      >
+                        <AppIcon icon="material-symbols:edit-outline-rounded" size={16} />
+                        重命名
+                      </button>
+                      <button
+                        type="button"
+                        className="xterminal-sftp-menu-item"
+                        onClick={() => {
+                          if (!sftpMenu.entry) return;
+                          openChmod(sftpMenu.entry);
+                          setSftpMenu(null);
+                        }}
+                      >
+                        <AppIcon icon="material-symbols:lock-person-outline-rounded" size={16} />
+                        修改权限
+                      </button>
+                      <button
+                        type="button"
+                        className="xterminal-sftp-menu-item"
+                        onClick={async () => {
+                          if (!sftpMenu.entry) return;
+                          const path = buildRemotePath(sftpMenu.entry.name);
+                          try {
+                            await navigator.clipboard.writeText(path);
+                          } catch {
+                            // ignore
+                          }
+                          setSftpMenu(null);
+                        }}
+                      >
+                        <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
+                        复制路径
+                      </button>
+                      {!sftpMenu.entry.is_dir && (
+                        <button
+                          type="button"
+                          className="xterminal-sftp-menu-item"
+                          onClick={() => {
+                            if (!sftpMenu.entry) return;
+                            void handleDownloadFile(sftpMenu.entry);
+                            setSftpMenu(null);
+                          }}
+                        >
+                          <AppIcon icon="material-symbols:download-rounded" size={16} />
+                          下载
+                        </button>
+                      )}
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="xterminal-sftp-menu-item"
+                    onClick={() => {
+                      setNewFolderOpen(true);
+                      setNewFolderName("");
+                      setSftpActionError(null);
+                      setSftpMenu(null);
+                    }}
+                  >
+                    <AppIcon icon="material-symbols:create-new-folder-outline-rounded" size={16} />
+                    新建文件夹
+                  </button>
+                  {sftpMenu.entry && (
+                    <button
+                      type="button"
+                      className="xterminal-sftp-menu-item xterminal-sftp-menu-item--danger"
+                      onClick={() => {
+                        if (!sftpMenu.entry) return;
+                        void handleDeleteEntry(sftpMenu.entry);
+                        setSftpMenu(null);
+                      }}
+                    >
+                      <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
+                      删除
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -743,6 +1199,158 @@ export function XTerminal({
           </div>
         </div>
       </div>
-    </div>
+      </div>
+
+      <Modal
+        open={!!renameEntry}
+        title={renameEntry ? `重命名：${renameEntry.name}` : "重命名"}
+        onClose={() => {
+          setRenameEntry(null);
+          setSftpActionError(null);
+        }}
+        width={420}
+      >
+        <div className="xterminal-sftp-modal">
+          <div className="form-group">
+            <label>新名称</label>
+            <input
+              type="text"
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  void handleRenameSubmit();
+                }
+              }}
+              placeholder="请输入新名称"
+            />
+          </div>
+          {sftpActionError && (
+            <div className="xterminal-sftp-modal-error">{sftpActionError}</div>
+          )}
+          <div className="xterminal-sftp-modal-actions">
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => void handleRenameSubmit()}
+              disabled={sftpActionBusy}
+            >
+              保存
+            </button>
+            <button
+              className="btn btn-secondary"
+              type="button"
+              onClick={() => {
+                setRenameEntry(null);
+                setSftpActionError(null);
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!chmodEntry}
+        title={chmodEntry ? `修改权限：${chmodEntry.name}` : "修改权限"}
+        onClose={() => {
+          setChmodEntry(null);
+          setSftpActionError(null);
+        }}
+        width={420}
+      >
+        <div className="xterminal-sftp-modal">
+          <div className="form-group">
+            <label>权限（八进制）</label>
+            <input
+              type="text"
+              value={chmodValue}
+              onChange={(event) => setChmodValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  void handleChmodSubmit();
+                }
+              }}
+              placeholder="例如 644 或 755"
+            />
+            <div className="xterminal-sftp-modal-hint">格式：三位或四位八进制（如 644、755、0755）</div>
+          </div>
+          {sftpActionError && (
+            <div className="xterminal-sftp-modal-error">{sftpActionError}</div>
+          )}
+          <div className="xterminal-sftp-modal-actions">
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => void handleChmodSubmit()}
+              disabled={sftpActionBusy}
+            >
+              保存
+            </button>
+            <button
+              className="btn btn-secondary"
+              type="button"
+              onClick={() => {
+                setChmodEntry(null);
+                setSftpActionError(null);
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={newFolderOpen}
+        title="新建文件夹"
+        onClose={() => {
+          setNewFolderOpen(false);
+          setSftpActionError(null);
+        }}
+        width={420}
+      >
+        <div className="xterminal-sftp-modal">
+          <div className="form-group">
+            <label>文件夹名称</label>
+            <input
+              type="text"
+              value={newFolderName}
+              onChange={(event) => setNewFolderName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  void handleNewFolderSubmit();
+                }
+              }}
+              placeholder="例如 logs"
+            />
+          </div>
+          {sftpActionError && (
+            <div className="xterminal-sftp-modal-error">{sftpActionError}</div>
+          )}
+          <div className="xterminal-sftp-modal-actions">
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => void handleNewFolderSubmit()}
+              disabled={sftpActionBusy}
+            >
+              创建
+            </button>
+            <button
+              className="btn btn-secondary"
+              type="button"
+              onClick={() => {
+                setNewFolderOpen(false);
+                setSftpActionError(null);
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </>
   );
 }

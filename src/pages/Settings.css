@@ -59,6 +59,111 @@
     margin-left: 16px;
 }
 
+.settings-card {
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+
+.settings-card-body {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(260px, 1fr);
+    gap: 20px;
+}
+
+.settings-card-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.settings-row {
+    display: grid;
+    gap: 12px;
+}
+
+.settings-row--single {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-row--two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-row--three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.settings-field-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.settings-card-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.settings-preview-header {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-weight: 600;
+}
+
+.settings-preview-window {
+    border-radius: 10px;
+    border: 1px solid var(--border-light);
+    background: transparent;
+    overflow: hidden;
+}
+
+.settings-preview-titlebar {
+    height: 26px;
+    background: #e3e5ea;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+}
+
+.settings-preview-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.settings-preview-dot--red {
+    background: #ff5f57;
+}
+
+.settings-preview-dot--yellow {
+    background: #febc2e;
+}
+
+.settings-preview-dot--green {
+    background: #28c840;
+}
+
+.settings-preview-content {
+    margin: 0;
+    padding: 12px 14px 16px;
+    background: transparent;
+    color: inherit;
+    line-height: 1.6;
+    white-space: pre-wrap;
+}
+
 .toggle-switch {
     position: relative;
     width: 48px;
@@ -91,8 +196,9 @@
 }
 
 .settings-select {
-    min-width: 200px;
+    width: 100%;
     padding: 8px 12px;
+    height: 35px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-color);
     border-radius: 4px;

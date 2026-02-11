@@ -33,13 +33,24 @@
     flex: 1;
 }
 
+.xterminal-topbar-left--error span {
+    color: var(--danger) !important;
+}
+
+.xterminal-topbar-left--connected span {
+    color: var(--text-green) !important;
+}
+
 .xterminal-topbar-status {
     color: var(--text-tertiary);
     flex: 0 0 auto;
+    display: flex;
+    align-items: center;
 }
 
 .xterminal-topbar-status--spin .app-icon {
     animation: xterminal-spin 0.9s linear infinite;
+    -webkit-animation: xterminal-spin 0.9s linear infinite;
 }
 
 .xterminal-topbar-text {
@@ -153,7 +164,13 @@
     color: var(--text-primary);
 }
 
-.xterminal-sftp-refresh {
+.xterminal-sftp-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.xterminal-sftp-icon-btn {
     border: none;
     background: transparent;
     padding: 4px;
@@ -164,31 +181,61 @@
     justify-content: center;
 }
 
-.xterminal-sftp-refresh:hover {
+.xterminal-sftp-icon-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
 }
 
-.xterminal-sftp-path {
+.xterminal-sftp-pathbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border-light);
+    background: var(--bg-secondary);
 }
 
-.xterminal-sftp-path input {
+.xterminal-sftp-path-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.xterminal-sftp-path-input input {
     width: 100%;
     height: 28px;
     padding: 4px 8px;
     border-radius: 8px;
     border: 1px solid var(--border-color);
-    background: var(--bg-secondary);
+    background: var(--bg-primary);
     color: var(--text-primary);
     font-size: 12px;
     outline: none;
 }
 
-.xterminal-sftp-path input:focus {
+.xterminal-sftp-path-input input:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 1px rgba(15, 143, 255, 0.2);
+}
+
+.xterminal-sftp-table-header {
+    display: grid;
+    grid-template-columns: 18px 22px 1fr 64px;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-primary);
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-weight: 600;
+}
+
+.xterminal-sftp-col-name {
+    grid-column: 3 / 4;
+}
+
+.xterminal-sftp-col-size {
+    text-align: right;
 }
 
 .xterminal-sftp-progress {
@@ -211,9 +258,30 @@
 
 .xterminal-sftp-state {
     padding: 16px 12px;
-    color: var(--text-tertiary);
+    color: var(--accent);
     font-size: 12px;
     position: relative;
+    width: 100%;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+@keyframes xterminal-spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+
+.xterminal-sftp-loading-icon {
+    animation: xterminal-spin 0.9s linear infinite;
+    color: var(--accent);
 }
 
 .xterminal-sftp-state--error {
@@ -244,11 +312,12 @@
 .xterminal-sftp-list {
     list-style: none;
     margin: 0;
-    padding: 6px 6px 10px;
+    padding: 4px 6px 10px;
 }
 
 .xterminal-sftp-item {
-    display: flex;
+    display: grid;
+    grid-template-columns: 18px 22px 1fr 64px;
     align-items: center;
     gap: 8px;
     padding: 6px 6px;
@@ -317,7 +386,79 @@
 .xterminal-sftp-meta {
     color: var(--text-tertiary);
     font-variant-numeric: tabular-nums;
-    flex: 0 0 auto;
+    text-align: right;
+}
+
+
+.xterminal-sftp-check {
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+}
+
+.xterminal-sftp-menu {
+    position: fixed;
+    z-index: 2000;
+    min-width: 160px;
+    padding: 6px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-light);
+    border-radius: 10px;
+    box-shadow: 0 12px 24px rgba(15, 15, 45, 0.18);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.xterminal-sftp-menu-item {
+    border: none;
+    background: transparent;
+    padding: 8px 10px;
+    border-radius: 8px;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.xterminal-sftp-menu-item:hover {
+    background: var(--bg-hover);
+}
+
+.xterminal-sftp-menu-item--danger {
+    color: var(--danger);
+}
+
+.xterminal-sftp-menu-item--danger:hover {
+    background: rgba(229, 20, 0, 0.08);
+}
+
+.xterminal-sftp-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.xterminal-sftp-modal-error {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--danger);
+    background: rgba(229, 20, 0, 0.08);
+    border: 1px solid rgba(229, 20, 0, 0.2);
+    padding: 8px 10px;
+    border-radius: 8px;
+}
+
+.xterminal-sftp-modal-hint {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-tertiary);
 }
 
 .xterminal-mount {

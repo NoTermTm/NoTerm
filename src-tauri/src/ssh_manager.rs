@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
+use ssh2::FileStat;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -41,6 +42,7 @@ pub struct SftpEntry {
     pub is_dir: bool,
     pub size: Option<u64>,
     pub modified: Option<u64>,
+    pub perm: Option<u32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -358,6 +360,7 @@ impl SshManager {
                     is_dir: stat.is_dir(),
                     size: stat.size,
                     modified: stat.mtime,
+                    perm: stat.perm,
                 })
             })
             .collect();
@@ -369,6 +372,7 @@ impl SshManager {
                 is_dir: true,
                 size: None,
                 modified: None,
+                perm: None,
             });
         }
 
@@ -389,6 +393,72 @@ impl SshManager {
         });
 
         Ok(output)
+    }
+
+    pub fn sftp_rename(&self, session_id: &str, from_path: &str, to_path: &str) -> anyhow::Result<()> {
+        let sftp_session = self.get_or_create_sftp(session_id)?;
+        let sess = sftp_session.lock().unwrap();
+
+        let sftp = sess.sftp()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
+
+        sftp.rename(Path::new(from_path), Path::new(to_path), None)
+            .map_err(|e| anyhow::anyhow!("Failed to rename '{}': {}", from_path, e))?;
+
+        Ok(())
+    }
+
+    pub fn sftp_chmod(&self, session_id: &str, path: &str, mode: u32) -> anyhow::Result<()> {
+        let sftp_session = self.get_or_create_sftp(session_id)?;
+        let sess = sftp_session.lock().unwrap();
+
+        let sftp = sess.sftp()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
+
+        let stat = FileStat {
+            size: None,
+            uid: None,
+            gid: None,
+            perm: Some(mode),
+            atime: None,
+            mtime: None,
+        };
+
+        sftp.setstat(Path::new(path), stat)
+            .map_err(|e| anyhow::anyhow!("Failed to chmod '{}': {}", path, e))?;
+
+        Ok(())
+    }
+
+    pub fn sftp_delete(&self, session_id: &str, path: &str, is_dir: bool) -> anyhow::Result<()> {
+        let sftp_session = self.get_or_create_sftp(session_id)?;
+        let sess = sftp_session.lock().unwrap();
+
+        let sftp = sess.sftp()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
+
+        if is_dir {
+            sftp.rmdir(Path::new(path))
+                .map_err(|e| anyhow::anyhow!("Failed to remove directory '{}': {}", path, e))?;
+        } else {
+            sftp.unlink(Path::new(path))
+                .map_err(|e| anyhow::anyhow!("Failed to delete file '{}': {}", path, e))?;
+        }
+
+        Ok(())
+    }
+
+    pub fn sftp_mkdir(&self, session_id: &str, path: &str) -> anyhow::Result<()> {
+        let sftp_session = self.get_or_create_sftp(session_id)?;
+        let sess = sftp_session.lock().unwrap();
+
+        let sftp = sess.sftp()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
+
+        sftp.mkdir(Path::new(path), 0o755)
+            .map_err(|e| anyhow::anyhow!("Failed to create directory '{}': {}", path, e))?;
+
+        Ok(())
     }
 
     pub fn resize_pty(&self, session_id: &str, cols: u32, rows: u32) -> anyhow::Result<()> {

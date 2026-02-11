@@ -297,10 +297,68 @@ async fn ssh_sftp_upload_file(
     .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn ssh_sftp_rename(
+    state: State<'_, AppState>,
+    session_id: String,
+    from_path: String,
+    to_path: String,
+) -> Result<(), String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || {
+        manager.sftp_rename(&session_id, &from_path, &to_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_sftp_chmod(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    mode: u32,
+) -> Result<(), String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || manager.sftp_chmod(&session_id, &path, mode))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_sftp_delete(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    is_dir: bool,
+) -> Result<(), String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || manager.sftp_delete(&session_id, &path, is_dir))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_sftp_mkdir(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || manager.sftp_mkdir(&session_id, &path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -321,7 +379,11 @@ pub fn run() {
             ssh_list_sessions,
             ssh_sftp_list_dir,
             ssh_sftp_download_file,
-            ssh_sftp_upload_file
+            ssh_sftp_upload_file,
+            ssh_sftp_rename,
+            ssh_sftp_chmod,
+            ssh_sftp_delete,
+            ssh_sftp_mkdir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

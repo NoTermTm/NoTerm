@@ -55,4 +55,20 @@ export const sshApi = {
   uploadFile: async (sessionId: string, localPath: string, remotePath: string): Promise<void> => {
     return await invoke('ssh_sftp_upload_file', { sessionId, localPath, remotePath });
   },
+
+  renameSftpEntry: async (sessionId: string, fromPath: string, toPath: string): Promise<void> => {
+    return await invoke('ssh_sftp_rename', { sessionId, fromPath, toPath });
+  },
+
+  chmodSftpEntry: async (sessionId: string, path: string, mode: number): Promise<void> => {
+    return await invoke('ssh_sftp_chmod', { sessionId, path, mode });
+  },
+
+  deleteSftpEntry: async (sessionId: string, path: string, isDir: boolean): Promise<void> => {
+    return await invoke('ssh_sftp_delete', { sessionId, path, isDir });
+  },
+
+  mkdirSftpEntry: async (sessionId: string, path: string): Promise<void> => {
+    return await invoke('ssh_sftp_mkdir', { sessionId, path });
+  },
 };

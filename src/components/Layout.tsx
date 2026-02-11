@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { TitleBar, Tab } from "./TitleBar";
 import { AppIcon } from "./AppIcon";
@@ -17,6 +17,55 @@ export function Layout() {
   // 用于标识特殊的页面标签（如设置、密钥管理等）
   const SETTINGS_TAB_ID = "__settings__";
   const KEYS_TAB_ID = "__keys__";
+
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      const tag = target.tagName.toLowerCase();
+      return tag === "input" || tag === "textarea" || tag === "select";
+    };
+
+    const onContextMenu = (event: Event) => {
+      event.preventDefault();
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+
+      const isReload =
+        key === "f5" ||
+        ((event.metaKey || event.ctrlKey) && key === "r");
+
+      const isBackForward =
+        key === "browserback" ||
+        key === "browserforward" ||
+        (event.altKey && (key === "arrowleft" || key === "arrowright")) ||
+        ((event.metaKey || event.ctrlKey) && (key === "[" || key === "]"));
+
+      const isBackspaceNav = key === "backspace" && !isEditableTarget(event.target);
+
+      if (isReload || isBackForward || isBackspaceNav) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button === 3 || event.button === 4) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener("contextmenu", onContextMenu, { capture: true });
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    window.addEventListener("pointerdown", onPointerDown, { capture: true });
+    return () => {
+      window.removeEventListener("contextmenu", onContextMenu, { capture: true });
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+      window.removeEventListener("pointerdown", onPointerDown, { capture: true });
+    };
+  }, []);
 
   const navItems = [
     {
@@ -188,7 +237,9 @@ export function Layout() {
   };
 
   const handleNewTab = () => {
-    // 新建标签由子页面处理
+    navigate("/connections");
+    setActivePanel(null);
+    window.dispatchEvent(new CustomEvent("open-connection-picker"));
   };
 
   return (

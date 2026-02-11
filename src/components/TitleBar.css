@@ -40,11 +40,13 @@
     transition: all 0.15s ease;
     padding: 0;
     position: relative;
+    line-height: 0;
 }
 
 .traffic-light .app-icon {
     opacity: 0;
     transition: opacity 0.15s ease;
+    display: block;
 }
 
 .title-bar:hover .traffic-light .app-icon {

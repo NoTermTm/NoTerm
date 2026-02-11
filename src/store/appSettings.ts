@@ -1,6 +1,15 @@
 import { Store } from "@tauri-apps/plugin-store";
 
-export type TerminalThemeName = "dark" | "light" | "monokai" | "solarized";
+export type TerminalThemeName =
+  | "light"
+  | "dark"
+  | "monokai"
+  | "solarized"
+  | "nord"
+  | "dracula"
+  | "gruvbox"
+  | "tokyo"
+  | "catppuccin";
 
 export type AppSettings = {
   "connection.autoConnect": boolean;
@@ -10,6 +19,10 @@ export type AppSettings = {
   "terminal.theme": TerminalThemeName;
   "terminal.fontSize": number;
   "terminal.fontFamily": string;
+  "terminal.fontWeight": number;
+  "terminal.cursorStyle": "block" | "underline" | "bar";
+  "terminal.cursorBlink": boolean;
+  "terminal.lineHeight": number;
 };
 
 export const DEFAULT_TERMINAL_FONT_FAMILY =
@@ -23,6 +36,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "terminal.theme": "light",
   "terminal.fontSize": 13,
   "terminal.fontFamily": DEFAULT_TERMINAL_FONT_FAMILY,
+  "terminal.fontWeight": 400,
+  "terminal.cursorStyle": "block",
+  "terminal.cursorBlink": true,
+  "terminal.lineHeight": 1.4,
 };
 
 const STORE_PATH = "settings.json";

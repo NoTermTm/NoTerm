@@ -16,6 +16,7 @@ export interface SftpEntry {
   is_dir: boolean;
   size?: number;
   modified?: number;
+  perm?: number;
 }
 
 export interface SshSession {

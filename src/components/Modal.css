@@ -7,7 +7,6 @@
     justify-content: center;
     padding: 72px 24px 24px;
     background: rgba(12, 14, 24, 0.28);
-    backdrop-filter: blur(8px);
 }
 
 .modal-dialog {

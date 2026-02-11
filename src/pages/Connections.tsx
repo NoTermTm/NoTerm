@@ -108,9 +108,15 @@ interface ActiveSession {
   connection: SshConnection;
 }
 
+interface SplitLayout {
+  direction: "vertical" | "horizontal";
+  secondarySessionId: string;
+}
+
 export function ConnectionsPage({
   activePanel,
   setActivePanel,
+  tabs,
   setTabs,
   activeTabId,
   setActiveTabId,
@@ -131,10 +137,25 @@ export function ConnectionsPage({
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [pkMode, setPkMode] = useState<"path" | "manual">("path");
   const [pemValidation, setPemValidation] = useState<{ valid: boolean; message: string } | null>(null);
+  const [splitLayouts, setSplitLayouts] = useState<Map<string, SplitLayout>>(new Map());
+  const [splitPickerOpen, setSplitPickerOpen] = useState(false);
+  const [splitPickerDirection, setSplitPickerDirection] =
+    useState<SplitLayout["direction"]>("vertical");
+  const [splitPickerBaseSessionId, setSplitPickerBaseSessionId] =
+    useState<string | null>(null);
+  const [connectPickerOpen, setConnectPickerOpen] = useState(false);
 
   useEffect(() => {
     loadConnections();
     loadAuthProfiles();
+  }, []);
+
+  useEffect(() => {
+    const onOpen = () => setConnectPickerOpen(true);
+    window.addEventListener("open-connection-picker", onOpen);
+    return () => {
+      window.removeEventListener("open-connection-picker", onOpen);
+    };
   }, []);
 
   const loadConnections = async () => {
@@ -280,27 +301,30 @@ export function ConnectionsPage({
     }
   };
 
-  const handleConnect = async (connection: SshConnection) => {
-    // 生成唯一的 session ID
+  const createSession = (
+    connection: SshConnection,
+    withTab: boolean,
+    activateTab: boolean,
+  ) => {
     const sessionId = crypto.randomUUID();
-
-    // 计算会话编号
     const sessionCount =
       Array.from(activeSessions.values()).filter(
         (s) => s.connectionId === connection.id,
       ).length + 1;
 
-    const tabTitle =
-      sessionCount > 1
-        ? `${connection.name} (${sessionCount})`
-        : connection.name;
-
-    // 立即创建标签页和会话记录
-    const newTab: Tab = {
-      id: sessionId,
-      title: tabTitle,
-      subtitle: `${connection.username}@${connection.host}`,
-    };
+    if (withTab) {
+      const tabTitle =
+        sessionCount > 1
+          ? `${connection.name} (${sessionCount})`
+          : connection.name;
+      const newTab: Tab = {
+        id: sessionId,
+        title: tabTitle,
+        subtitle: `${connection.username}@${connection.host}`,
+      };
+      setTabs((prev) => [...prev, newTab]);
+      if (activateTab) setActiveTabId(sessionId);
+    }
 
     setActiveSessions((prev) => {
       const next = new Map(prev);
@@ -312,20 +336,77 @@ export function ConnectionsPage({
       return next;
     });
 
-    setTabs((prev) => [...prev, newTab]);
-    setActiveTabId(sessionId);
     setSelectedConnection(connection);
+    return sessionId;
   };
+
+  const handleConnect = async (connection: SshConnection) => {
+    createSession(connection, true, true);
+  };
+
+  const openSplitPicker = (baseSessionId: string, direction: SplitLayout["direction"]) => {
+    setSplitPickerBaseSessionId(baseSessionId);
+    setSplitPickerDirection(direction);
+    setSplitPickerOpen(true);
+  };
+
+  const handleCreateSplit = async (connection: SshConnection) => {
+    if (!splitPickerBaseSessionId) return;
+
+    const existing = splitLayouts.get(splitPickerBaseSessionId);
+    if (existing) {
+      await handleDisconnect(existing.secondarySessionId);
+      setSplitLayouts((prev) => {
+        const next = new Map(prev);
+        next.delete(splitPickerBaseSessionId);
+        return next;
+      });
+    }
+
+    const secondarySessionId = createSession(connection, false, false);
+    setSplitLayouts((prev) => {
+      const next = new Map(prev);
+      next.set(splitPickerBaseSessionId, {
+        direction: splitPickerDirection,
+        secondarySessionId,
+      });
+      return next;
+    });
+    setSplitPickerOpen(false);
+    setSplitPickerBaseSessionId(null);
+  };
+
 
   const handleDisconnect = async (sessionId: string) => {
     try {
+      const splitForPrimary = splitLayouts.get(sessionId);
+      const splitForSecondary = Array.from(splitLayouts.entries()).find(
+        ([, layout]) => layout.secondarySessionId === sessionId,
+      );
+
+      if (splitForPrimary) {
+        await sshApi.disconnect(splitForPrimary.secondarySessionId);
+      }
+
       await sshApi.disconnect(sessionId);
 
       setActiveSessions((prev) => {
         const next = new Map(prev);
         next.delete(sessionId);
+        if (splitForPrimary) {
+          next.delete(splitForPrimary.secondarySessionId);
+        }
         return next;
       });
+
+      if (splitForPrimary || splitForSecondary) {
+        setSplitLayouts((prev) => {
+          const next = new Map(prev);
+          if (splitForPrimary) next.delete(sessionId);
+          if (splitForSecondary) next.delete(splitForSecondary[0]);
+          return next;
+        });
+      }
 
       // 移除标签页
       setTabs((prev) => prev.filter((tab) => tab.id !== sessionId));
@@ -681,43 +762,111 @@ export function ConnectionsPage({
   };
 
   const renderConnectionDetail = () => {
-    // 渲染所有已连接会话的终端（使用 display 控制可见性）
-    const connectedTerminals = Array.from(activeSessions.entries()).map(
-      ([sessionId, session]) => {
-        // 创建连接函数
-        const handleTerminalConnect = async () => {
-          console.log("Connecting to:", session.connection);
+    const renderTerminal = (
+      sessionId: string,
+      session: ActiveSession,
+      isSplit: boolean,
+      onCloseSession?: () => void,
+      onRequestSplit?: (direction: SplitLayout["direction"]) => void,
+    ) => {
+      const handleTerminalConnect = async () => {
+        const backendSessionId = await sshApi.connect({
+          ...session.connection,
+          id: sessionId,
+        });
+        await sshApi.openShell(backendSessionId);
+      };
 
-          // 使用 session ID 作为后端的标识符
-          const backendSessionId = await sshApi.connect({
-            ...session.connection,
-            id: sessionId,
-          });
-          console.log("Connected, session ID:", backendSessionId);
+      return (
+        <XTerminal
+          sessionId={sessionId}
+          host={session.connection.host}
+          port={session.connection.port}
+          onConnect={handleTerminalConnect}
+          onRequestSplit={onRequestSplit}
+          onCloseSession={onCloseSession}
+          isSplit={isSplit}
+        />
+      );
+    };
 
-          // 打开 shell
-          await sshApi.openShell(backendSessionId);
-          console.log("Shell opened for session:", backendSessionId);
-        };
+    const connectedTerminals = tabs
+      .map((tab) => tab.id)
+      .filter((sessionId) => activeSessions.has(sessionId))
+      .map((sessionId) => {
+        const session = activeSessions.get(sessionId);
+        if (!session) return null;
+        const split = splitLayouts.get(sessionId);
+        const show = activeTabId === sessionId ? "flex" : "none";
+
+        if (split) {
+          const secondary = activeSessions.get(split.secondarySessionId);
+          if (!secondary) {
+            return (
+              <div
+                key={sessionId}
+                className="terminal-fullscreen"
+                style={{ display: show }}
+              >
+                <div className="terminal-container">
+                  {renderTerminal(
+                    sessionId,
+                    session,
+                    false,
+                    undefined,
+                    (direction) => openSplitPicker(sessionId, direction),
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={sessionId}
+              className={`terminal-fullscreen terminal-split terminal-split--${split.direction}`}
+              style={{ display: show }}
+            >
+              <div className="terminal-split-pane">
+                {renderTerminal(
+                  sessionId,
+                  session,
+                  true,
+                    () => void handleDisconnect(sessionId),
+                  undefined,
+                )}
+              </div>
+              <div className="terminal-split-pane">
+                  {renderTerminal(
+                    split.secondarySessionId,
+                    secondary,
+                    true,
+                    () => void handleDisconnect(split.secondarySessionId),
+                  )}
+              </div>
+            </div>
+          );
+        }
 
         return (
           <div
             key={sessionId}
             className="terminal-fullscreen"
-            style={{ display: activeTabId === sessionId ? "flex" : "none" }}
+            style={{ display: show }}
           >
             <div className="terminal-container">
-              <XTerminal
-                sessionId={sessionId}
-                host={session.connection.host}
-                port={session.connection.port}
-                onConnect={handleTerminalConnect}
-              />
+              {renderTerminal(
+                sessionId,
+                session,
+                false,
+                () => void handleDisconnect(sessionId),
+                (direction) => openSplitPicker(sessionId, direction),
+              )}
             </div>
           </div>
         );
-      },
-    );
+      })
+      .filter(Boolean);
 
     // 如果有已连接的终端，渲染它们
     if (connectedTerminals.length > 0) {
@@ -730,8 +879,8 @@ export function ConnectionsPage({
           <AppIcon icon="material-symbols:terminal-rounded" size={64} />
         </span>
         <div>
-          <h3>暂无会话</h3>
-          <p>在左侧选择服务器，然后点击“连接”按钮开始会话</p>
+          <h3>准备好连接服务器</h3>
+          <p style={{ marginTop: 20 }}>在左侧选择服务器，然后点击“连接”按钮开始会话</p>
         </div>
       </div>
     );
@@ -856,6 +1005,64 @@ export function ConnectionsPage({
         width={720}
       >
         {renderConnectionForm()}
+      </Modal>
+
+      <Modal
+        open={splitPickerOpen}
+        title={splitPickerDirection === "vertical" ? "左右分屏" : "上下分屏"}
+        onClose={() => {
+          setSplitPickerOpen(false);
+          setSplitPickerBaseSessionId(null);
+        }}
+        width={520}
+      >
+        <div className="split-picker">
+          {connections.length === 0 && (
+            <div className="split-picker-empty">暂无服务器</div>
+          )}
+          {connections.map((conn) => (
+            <button
+              key={conn.id}
+              type="button"
+              className="split-picker-item"
+              onClick={() => void handleCreateSplit(conn)}
+            >
+              <span className="split-picker-name">{conn.name}</span>
+              <span className="split-picker-meta">
+                {conn.username}@{conn.host}
+              </span>
+            </button>
+          ))}
+        </div>
+      </Modal>
+
+      <Modal
+        open={connectPickerOpen}
+        title="选择服务器"
+        onClose={() => setConnectPickerOpen(false)}
+        width={520}
+      >
+        <div className="connect-picker">
+          {connections.length === 0 && (
+            <div className="connect-picker-empty">暂无服务器</div>
+          )}
+          {connections.map((conn) => (
+            <button
+              key={conn.id}
+              type="button"
+              className="connect-picker-item"
+              onClick={() => {
+                void handleConnect(conn);
+                setConnectPickerOpen(false);
+              }}
+            >
+              <span className="connect-picker-name">{conn.name}</span>
+              <span className="connect-picker-meta">
+                {conn.username}@{conn.host}
+              </span>
+            </button>
+          ))}
+        </div>
       </Modal>
     </>
   );
