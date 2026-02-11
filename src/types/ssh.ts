@@ -5,6 +5,7 @@ export interface SshConnection {
   port: number;
   username: string;
   auth_type: AuthType;
+  encoding?: string;
 }
 
 export type AuthType =

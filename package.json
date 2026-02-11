@@ -24,6 +24,11 @@
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.13.0"
   },
+  "optionalDependencies": {
+    "marked": "^5.1.1",
+    "dompurify": "^3.0.2",
+    "highlight.js": "^11.9.0"
+  },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",

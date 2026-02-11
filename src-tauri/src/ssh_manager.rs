@@ -17,6 +17,7 @@ pub struct SshConnection {
     pub port: u16,
     pub username: String,
     pub auth_type: AuthType,
+    pub encoding: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

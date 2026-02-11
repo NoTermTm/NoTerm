@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { AppIcon } from "../components/AppIcon";
-import { SshConnection } from "../types/ssh";
 import { sshApi } from "../api/ssh";
+import { rdpApi } from "../api/rdp";
+import type { ConnectionConfig, RdpConnectionConfig, SshConnectionConfig } from "../types/connection";
 import { load } from "@tauri-apps/plugin-store";
 import { XTerminal } from "../components/XTerminal";
 import { SlidePanel } from "../components/SlidePanel";
@@ -9,6 +10,89 @@ import { Modal } from "../components/Modal";
 import { Tab } from "../components/TitleBar";
 import type { AuthProfile } from "../types/auth";
 import "./Connections.css";
+
+const ENCODING_OPTIONS = [
+  { value: "utf-8", label: "UTF-8" },
+  { value: "gbk", label: "GBK" },
+  { value: "gb2312", label: "GB2312" },
+  { value: "big5", label: "Big5" },
+  { value: "shift_jis", label: "Shift_JIS" },
+  { value: "euc-kr", label: "EUC-KR" },
+];
+
+const RDP_COLOR_DEPTHS: Array<RdpConnectionConfig["colorDepth"]> = [16, 24, 32];
+
+const createDefaultSshConnection = (): SshConnectionConfig => ({
+  kind: "ssh",
+  id: crypto.randomUUID(),
+  name: "新连接",
+  host: "",
+  port: 22,
+  username: "",
+  auth_type: { type: "Password", password: "" },
+  encoding: "utf-8",
+});
+
+const createDefaultRdpConnection = (): RdpConnectionConfig => ({
+  kind: "rdp",
+  id: crypto.randomUUID(),
+  name: "RDP 连接",
+  host: "",
+  port: 3389,
+  username: "",
+  password: "",
+  gatewayHost: "",
+  gatewayUsername: "",
+  gatewayPassword: "",
+  gatewayDomain: "",
+  resolutionWidth: undefined,
+  resolutionHeight: undefined,
+  colorDepth: 32,
+  certPolicy: "default",
+  redirectClipboard: true,
+  redirectAudio: false,
+  redirectDrives: false,
+});
+
+const normalizeSshConnection = (conn: Partial<SshConnectionConfig>): SshConnectionConfig => ({
+  kind: "ssh",
+  id: conn.id ?? crypto.randomUUID(),
+  name: conn.name ?? "新连接",
+  host: conn.host ?? "",
+  port: Number.isFinite(conn.port as number) ? (conn.port as number) : 22,
+  username: conn.username ?? "",
+  auth_type: conn.auth_type ?? { type: "Password", password: "" },
+  encoding: conn.encoding ?? "utf-8",
+});
+
+const normalizeRdpConnection = (conn: Partial<RdpConnectionConfig>): RdpConnectionConfig => ({
+  kind: "rdp",
+  id: conn.id ?? crypto.randomUUID(),
+  name: conn.name ?? "RDP 连接",
+  host: conn.host ?? "",
+  port: Number.isFinite(conn.port as number) ? (conn.port as number) : 3389,
+  username: conn.username ?? "",
+  password: conn.password ?? "",
+  gatewayHost: conn.gatewayHost ?? "",
+  gatewayUsername: conn.gatewayUsername ?? "",
+  gatewayPassword: conn.gatewayPassword ?? "",
+  gatewayDomain: conn.gatewayDomain ?? "",
+  resolutionWidth: conn.resolutionWidth,
+  resolutionHeight: conn.resolutionHeight,
+  colorDepth: conn.colorDepth ?? 32,
+  certPolicy: conn.certPolicy ?? "default",
+  redirectClipboard: conn.redirectClipboard ?? true,
+  redirectAudio: conn.redirectAudio ?? false,
+  redirectDrives: conn.redirectDrives ?? false,
+});
+
+const normalizeConnection = (conn: any): ConnectionConfig => {
+  if (conn?.kind === "rdp") return normalizeRdpConnection(conn);
+  return normalizeSshConnection(conn);
+};
+
+const isSshConnection = (conn: ConnectionConfig | null | undefined): conn is SshConnectionConfig =>
+  !!conn && conn.kind !== "rdp";
 
 // 验证 PEM 私钥格式
 function validatePemKey(content: string): { valid: boolean; message: string } {
@@ -105,7 +189,7 @@ interface ConnectionsPageProps {
 interface ActiveSession {
   sessionId: string;
   connectionId: string;
-  connection: SshConnection;
+  connection: SshConnectionConfig;
   kind: "ssh" | "local";
 }
 
@@ -123,11 +207,11 @@ export function ConnectionsPage({
   setActiveTabId,
 }: ConnectionsPageProps) {
   const localSessionIdRef = useRef<string | null>(null);
-  const [connections, setConnections] = useState<SshConnection[]>([]);
+  const [connections, setConnections] = useState<ConnectionConfig[]>([]);
   const [selectedConnection, setSelectedConnection] =
-    useState<SshConnection | null>(null);
+    useState<ConnectionConfig | null>(null);
   const [editingConnection, setEditingConnection] =
-    useState<SshConnection | null>(null);
+    useState<ConnectionConfig | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [authProfiles, setAuthProfiles] = useState<AuthProfile[]>([]);
   const [authProfileId, setAuthProfileId] = useState<string>("");
@@ -189,9 +273,9 @@ export function ConnectionsPage({
 
   const loadConnections = async () => {
     const s = await getStore();
-    const saved = await s.get<SshConnection[]>("connections");
+    const saved = await s.get<ConnectionConfig[]>("connections");
     if (saved) {
-      setConnections(saved);
+      setConnections(saved.map(normalizeConnection));
     }
   };
 
@@ -201,7 +285,7 @@ export function ConnectionsPage({
     if (saved) setAuthProfiles(saved);
   };
 
-  const saveConnections = async (conns: SshConnection[]) => {
+  const saveConnections = async (conns: ConnectionConfig[]) => {
     const s = await getStore();
     await s.set("connections", conns);
     await s.save();
@@ -216,14 +300,7 @@ export function ConnectionsPage({
   };
 
   const handleAddConnection = () => {
-    const newConnection: SshConnection = {
-      id: crypto.randomUUID(),
-      name: "新连接",
-      host: "",
-      port: 22,
-      username: "",
-      auth_type: { type: "Password", password: "" },
-    };
+    const newConnection = createDefaultSshConnection();
     setEditingConnection(newConnection);
     setAuthProfileId("");
     setPkMode("path"); // 重置为默认模式
@@ -237,20 +314,22 @@ export function ConnectionsPage({
   const handleSaveConnection = async () => {
     if (!editingConnection) return;
 
+    const normalizedEditing = normalizeConnection(editingConnection);
+
     const existingIndex = connections.findIndex(
-      (c) => c.id === editingConnection.id,
+      (c) => c.id === normalizedEditing.id,
     );
-    let updatedConnections: SshConnection[];
+    let updatedConnections: ConnectionConfig[];
 
     if (existingIndex >= 0) {
       updatedConnections = [...connections];
-      updatedConnections[existingIndex] = editingConnection;
+      updatedConnections[existingIndex] = normalizedEditing;
     } else {
-      updatedConnections = [...connections, editingConnection];
+      updatedConnections = [...connections, normalizedEditing];
     }
 
     await saveConnections(updatedConnections);
-    setSelectedConnection(editingConnection);
+    setSelectedConnection(normalizedEditing);
     setEditingConnection(null);
     setIsEditModalOpen(false);
   };
@@ -261,7 +340,7 @@ export function ConnectionsPage({
   }, [authProfiles, authProfileId]);
 
   useEffect(() => {
-    if (!editingConnection) return;
+    if (!isSshConnection(editingConnection)) return;
     if (!activeAuthProfile) return;
     setEditingConnection((prev) => {
       if (!prev) return prev;
@@ -285,7 +364,7 @@ export function ConnectionsPage({
   }, [activeAuthProfile?.id]);
 
   const canSaveAuthProfileFromEditing = useMemo(() => {
-    if (!editingConnection) return false;
+    if (!isSshConnection(editingConnection)) return false;
     if (!editingConnection.username.trim()) return false;
     if (editingConnection.auth_type.type === "Password") {
       return !!editingConnection.auth_type.password;
@@ -295,7 +374,7 @@ export function ConnectionsPage({
   }, [editingConnection]);
 
   const saveEditingAuthToProfiles = async () => {
-    if (!editingConnection) return;
+    if (!isSshConnection(editingConnection)) return;
     if (!canSaveAuthProfileFromEditing) return;
 
     const nextProfile: AuthProfile = {
@@ -331,7 +410,7 @@ export function ConnectionsPage({
   };
 
   const createSession = (
-    connection: SshConnection,
+    connection: SshConnectionConfig,
     withTab: boolean,
     activateTab: boolean,
     kind: "ssh" | "local" = "ssh",
@@ -371,19 +450,25 @@ export function ConnectionsPage({
     return sessionId;
   };
 
-  const handleConnect = async (connection: SshConnection) => {
+  const handleConnect = async (connection: ConnectionConfig) => {
+    if (connection.kind === "rdp") {
+      await rdpApi.open(connection);
+      return;
+    }
     createSession(connection, true, true);
   };
 
   useEffect(() => {
     if (localSessionIdRef.current) return;
-    const localConnection: SshConnection = {
+    const localConnection: SshConnectionConfig = {
+      kind: "ssh",
       id: "local",
       name: "本地终端",
       host: "local",
       port: 0,
       username: "local",
       auth_type: { type: "Password", password: "" },
+      encoding: "utf-8",
     };
     const sessionId = createSession(localConnection, true, true, "local");
     localSessionIdRef.current = sessionId;
@@ -395,7 +480,7 @@ export function ConnectionsPage({
     setSplitPickerOpen(true);
   };
 
-  const handleCreateSplit = async (connection: SshConnection) => {
+  const handleCreateSplit = async (connection: SshConnectionConfig) => {
     if (!splitPickerBaseSessionId) return;
 
     const existing = splitLayouts.get(splitPickerBaseSessionId);
@@ -474,7 +559,7 @@ export function ConnectionsPage({
   };
 
   const handleTestConnection = async () => {
-    if (!editingConnection) return;
+    if (!isSshConnection(editingConnection)) return;
 
     const trimmedHost = editingConnection.host.trim();
     const trimmedUser = editingConnection.username.trim();
@@ -524,7 +609,7 @@ export function ConnectionsPage({
     setTestStatus("testing");
     setTestMessage("正在测试连接...");
 
-    const testConnection: SshConnection = {
+    const testConnection: SshConnectionConfig = {
       ...editingConnection,
       id: crypto.randomUUID(),
       host: trimmedHost,
@@ -547,15 +632,71 @@ export function ConnectionsPage({
   const renderConnectionForm = () => {
     if (!editingConnection) return null;
 
-    const authType = editingConnection.auth_type.type;
+    const isRdp = editingConnection.kind === "rdp";
+    const authType = isSshConnection(editingConnection) ? editingConnection.auth_type.type : "Password";
 
     // 初始化 pkMode：如果有 key_content 则为 manual，否则为 path
-    const currentPkMode = editingConnection.auth_type.type === "PrivateKey" && editingConnection.auth_type.key_content 
-      ? "manual" 
-      : pkMode;
+    const currentPkMode =
+      isSshConnection(editingConnection) &&
+      editingConnection.auth_type.type === "PrivateKey" &&
+      editingConnection.auth_type.key_content
+        ? "manual"
+        : pkMode;
+
+    const handleKindChange = (nextKind: "ssh" | "rdp") => {
+      setEditingConnection((prev) => {
+        if (!prev) return prev;
+        if (prev.kind === nextKind) return prev;
+        if (nextKind === "ssh") {
+          return normalizeSshConnection({
+            id: prev.id,
+            name: prev.name,
+            host: prev.host,
+            port: 22,
+            username: prev.username,
+          });
+        }
+        return normalizeRdpConnection({
+          id: prev.id,
+          name: prev.name,
+          host: prev.host,
+          port: 3389,
+          username: prev.username,
+        });
+      });
+      setAuthProfileId("");
+      setPkMode("path");
+    };
 
     return (
       <div className="connection-form">
+        <div className="form-row">
+          <div className="form-group">
+            <label>连接类型</label>
+            <select
+              value={editingConnection.kind}
+              onChange={(e) => handleKindChange(e.target.value as "ssh" | "rdp")}
+            >
+              <option value="ssh">SSH</option>
+              <option value="rdp">RDP</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label>连接名称</label>
+            <input
+              type="text"
+              value={editingConnection.name}
+              onChange={(e) =>
+                setEditingConnection({
+                  ...editingConnection,
+                  name: e.target.value,
+                })
+              }
+            />
+          </div>
+        </div>
+
+        {!isRdp && (
         <div className="form-group">
           <label>快速认证</label>
           <div className="quick-auth-row">
@@ -586,20 +727,7 @@ export function ConnectionsPage({
             在“密钥管理”维护认证信息，这里可一键套用到新服务器。
           </div>
         </div>
-
-        <div className="form-group">
-          <label>连接名称</label>
-          <input
-            type="text"
-            value={editingConnection.name}
-            onChange={(e) =>
-              setEditingConnection({
-                ...editingConnection,
-                name: e.target.value,
-              })
-            }
-          />
-        </div>
+        )}
 
         <div className="form-row">
           <div className="form-group">
@@ -631,252 +759,489 @@ export function ConnectionsPage({
           </div>
         </div>
 
-        <div className="form-group">
-          <label>用户名</label>
-          <input
-            type="text"
-            value={editingConnection.username}
-            onChange={(e) =>
-              setEditingConnection({
-                ...editingConnection,
-                username: e.target.value,
-              })
-            }
-            placeholder="root"
-          />
-        </div>
-
-        <div className="form-group">
-          <label>认证方式</label>
-          <div className="auth-type-selector">
-            <button
-              className={`auth-type-btn ${authType === "Password" ? "active" : ""}`}
-              onClick={() =>
-                setEditingConnection({
-                  ...editingConnection,
-                  auth_type: { type: "Password", password: "" },
-                })
-              }
-            >
-              密码
-            </button>
-            <button
-              className={`auth-type-btn ${authType === "PrivateKey" ? "active" : ""}`}
-              onClick={() =>
-                setEditingConnection({
-                  ...editingConnection,
-                  auth_type: {
-                    type: "PrivateKey",
-                    key_path: "",
-                    passphrase: "",
-                  },
-                })
-              }
-            >
-              私钥
-            </button>
-          </div>
-        </div>
-
-        {authType === "Password" && (
+        <div className="form-row">
           <div className="form-group">
-            <label>密码</label>
-            <div className="password-input-wrapper">
-              <input
-                type={showPassword ? "text" : "password"}
-                value={(editingConnection.auth_type as any).password || ""}
+            <label>用户名</label>
+            <input
+              type="text"
+              value={editingConnection.username}
+              onChange={(e) =>
+                setEditingConnection({
+                  ...editingConnection,
+                  username: e.target.value,
+                })
+              }
+              placeholder={isRdp ? "Administrator" : "root"}
+            />
+          </div>
+          {isRdp ? (
+            <div className="form-group">
+              <label>密码</label>
+              <div className="password-input-wrapper">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={(editingConnection as RdpConnectionConfig).password || ""}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      password: e.target.value,
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className="password-toggle-btn"
+                  onClick={() => setShowPassword(!showPassword)}
+                  title={showPassword ? "隐藏密码" : "显示密码"}
+                >
+                  <AppIcon
+                    icon={showPassword ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
+                    size={20}
+                  />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="form-group">
+              <label>编码格式</label>
+              <select
+                value={(editingConnection as SshConnectionConfig).encoding || "utf-8"}
                 onChange={(e) =>
                   setEditingConnection({
-                    ...editingConnection,
-                    auth_type: { type: "Password", password: e.target.value },
+                    ...(editingConnection as SshConnectionConfig),
+                    encoding: e.target.value,
                   })
                 }
-              />
-              <button
-                type="button"
-                className="password-toggle-btn"
-                onClick={() => setShowPassword(!showPassword)}
-                title={showPassword ? "隐藏密码" : "显示密码"}
               >
-                <AppIcon
-                  icon={showPassword ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
-                  size={20}
-                />
-              </button>
+                {ENCODING_OPTIONS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {authType === "PrivateKey" && (
+        {!isRdp && (
           <>
-            <div className="keys-pk-mode">
-              <button
-                type="button"
-                className={`keys-pk-mode-btn ${currentPkMode === "path" ? "active" : ""}`}
-                onClick={() => setPkMode("path")}
-              >
-                使用路径
-              </button>
-              <button
-                type="button"
-                className={`keys-pk-mode-btn ${currentPkMode === "manual" ? "active" : ""}`}
-                onClick={() => setPkMode("manual")}
-              >
-                手动输入
-              </button>
+            <div className="form-group">
+              <label>认证方式</label>
+              <div className="auth-type-selector">
+                <button
+                  className={`auth-type-btn ${authType === "Password" ? "active" : ""}`}
+                  onClick={() =>
+                    setEditingConnection({
+                      ...(editingConnection as SshConnectionConfig),
+                      auth_type: { type: "Password", password: "" },
+                    })
+                  }
+                >
+                  密码
+                </button>
+                <button
+                  className={`auth-type-btn ${authType === "PrivateKey" ? "active" : ""}`}
+                  onClick={() =>
+                    setEditingConnection({
+                      ...(editingConnection as SshConnectionConfig),
+                      auth_type: {
+                        type: "PrivateKey",
+                        key_path: "",
+                        passphrase: "",
+                      },
+                    })
+                  }
+                >
+                  私钥
+                </button>
+              </div>
             </div>
 
-            {currentPkMode === "path" && (
-              <>
-                <div className="form-group">
-                  <label>私钥路径</label>
+            {authType === "Password" && (
+              <div className="form-group">
+                <label>密码</label>
+                <div className="password-input-wrapper">
                   <input
-                    type="text"
-                    value={(editingConnection.auth_type as any).key_path || ""}
+                    type={showPassword ? "text" : "password"}
+                    value={(editingConnection as SshConnectionConfig).auth_type.password || ""}
                     onChange={(e) =>
                       setEditingConnection({
-                        ...editingConnection,
-                        auth_type: {
-                          ...(editingConnection.auth_type as any),
-                          type: "PrivateKey",
-                          key_path: e.target.value,
-                          key_content: undefined, // 清空 content
-                        },
+                        ...(editingConnection as SshConnectionConfig),
+                        auth_type: { type: "Password", password: e.target.value },
                       })
                     }
-                    placeholder="/home/user/.ssh/id_rsa"
                   />
-                </div>
-                <div className="form-group">
-                  <label>私钥密码（可选）</label>
-                  <div className="password-input-wrapper">
-                    <input
-                      type={showPassphrase ? "text" : "password"}
-                      value={(editingConnection.auth_type as any).passphrase || ""}
-                      onChange={(e) =>
-                        setEditingConnection({
-                          ...editingConnection,
-                          auth_type: {
-                            ...(editingConnection.auth_type as any),
-                            type: "PrivateKey",
-                            passphrase: e.target.value,
-                          },
-                        })
-                      }
+                  <button
+                    type="button"
+                    className="password-toggle-btn"
+                    onClick={() => setShowPassword(!showPassword)}
+                    title={showPassword ? "隐藏密码" : "显示密码"}
+                  >
+                    <AppIcon
+                      icon={showPassword ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
+                      size={20}
                     />
-                    <button
-                      type="button"
-                      className="password-toggle-btn"
-                      onClick={() => setShowPassphrase(!showPassphrase)}
-                      title={showPassphrase ? "隐藏密码" : "显示密码"}
-                    >
-                      <AppIcon
-                        icon={showPassphrase ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
-                        size={20}
-                      />
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {currentPkMode === "manual" && (
-              <div className="keys-manual">
-                <div className="form-group">
-                  <label>私钥内容（PEM 格式）</label>
-                  <textarea
-                    className="keys-pem-textarea"
-                    value={(editingConnection.auth_type as any).key_content || ""}
-                    onChange={(e) => {
-                      const content = e.target.value;
-                      setEditingConnection({
-                        ...editingConnection,
-                        auth_type: {
-                          ...(editingConnection.auth_type as any),
-                          type: "PrivateKey",
-                          key_path: "", // 清空 path
-                          key_content: content,
-                        },
-                      });
-                      // 实时验证
-                      if (content.trim()) {
-                        setPemValidation(validatePemKey(content));
-                      } else {
-                        setPemValidation(null);
-                      }
-                    }}
-                    onBlur={(e) => {
-                      const content = e.target.value;
-                      if (content.trim()) {
-                        setPemValidation(validatePemKey(content));
-                      }
-                    }}
-                    placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEpAIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
-                    rows={12}
-                  />
-                  {pemValidation && (
-                    <div className={`keys-validation ${pemValidation.valid ? 'valid' : 'invalid'}`}>
-                      <AppIcon 
-                        icon={pemValidation.valid ? "material-symbols:check-circle-rounded" : "material-symbols:error-rounded"} 
-                        size={16} 
-                      />
-                      {pemValidation.message}
-                    </div>
-                  )}
-                  <div className="keys-hint">
-                    <strong>注意：</strong>粘贴完整的 PEM 格式私钥内容，包括开始和结束标记。支持以下格式：<br/>
-                    • <code>-----BEGIN RSA PRIVATE KEY-----</code> (OpenSSH RSA)<br/>
-                    • <code>-----BEGIN OPENSSH PRIVATE KEY-----</code> (OpenSSH 新格式)<br/>
-                    • <code>-----BEGIN EC PRIVATE KEY-----</code> (ECDSA)<br/>
-                    • 确保包含完整的密钥内容和换行符
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label>私钥密码（可选）</label>
-                  <div className="password-input-wrapper">
-                    <input
-                      type={showPassphrase ? "text" : "password"}
-                      value={(editingConnection.auth_type as any).passphrase || ""}
-                      onChange={(e) =>
-                        setEditingConnection({
-                          ...editingConnection,
-                          auth_type: {
-                            ...(editingConnection.auth_type as any),
-                            type: "PrivateKey",
-                            passphrase: e.target.value,
-                          },
-                        })
-                      }
-                      placeholder="如果私钥已加密，请输入密码"
-                    />
-                    <button
-                      type="button"
-                      className="password-toggle-btn"
-                      onClick={() => setShowPassphrase(!showPassphrase)}
-                      title={showPassphrase ? "隐藏密码" : "显示密码"}
-                    >
-                      <AppIcon
-                        icon={showPassphrase ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
-                        size={20}
-                      />
-                    </button>
-                  </div>
+                  </button>
                 </div>
               </div>
+            )}
+
+            {authType === "PrivateKey" && (
+              <>
+                <div className="keys-pk-mode">
+                  <button
+                    type="button"
+                    className={`keys-pk-mode-btn ${currentPkMode === "path" ? "active" : ""}`}
+                    onClick={() => setPkMode("path")}
+                  >
+                    使用路径
+                  </button>
+                  <button
+                    type="button"
+                    className={`keys-pk-mode-btn ${currentPkMode === "manual" ? "active" : ""}`}
+                    onClick={() => setPkMode("manual")}
+                  >
+                    手动输入
+                  </button>
+                </div>
+
+                {currentPkMode === "path" && (
+                  <>
+                    <div className="form-group">
+                      <label>私钥路径</label>
+                      <input
+                        type="text"
+                        value={(editingConnection as SshConnectionConfig).auth_type.key_path || ""}
+                        onChange={(e) =>
+                          setEditingConnection({
+                            ...(editingConnection as SshConnectionConfig),
+                            auth_type: {
+                              ...((editingConnection as SshConnectionConfig).auth_type as any),
+                              type: "PrivateKey",
+                              key_path: e.target.value,
+                              key_content: undefined,
+                            },
+                          })
+                        }
+                        placeholder="/home/user/.ssh/id_rsa"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>私钥密码（可选）</label>
+                      <div className="password-input-wrapper">
+                        <input
+                          type={showPassphrase ? "text" : "password"}
+                          value={(editingConnection as SshConnectionConfig).auth_type.passphrase || ""}
+                          onChange={(e) =>
+                            setEditingConnection({
+                              ...(editingConnection as SshConnectionConfig),
+                              auth_type: {
+                                ...((editingConnection as SshConnectionConfig).auth_type as any),
+                                type: "PrivateKey",
+                                passphrase: e.target.value,
+                              },
+                            })
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="password-toggle-btn"
+                          onClick={() => setShowPassphrase(!showPassphrase)}
+                          title={showPassphrase ? "隐藏密码" : "显示密码"}
+                        >
+                          <AppIcon
+                            icon={showPassphrase ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
+                            size={20}
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {currentPkMode === "manual" && (
+                  <div className="keys-manual">
+                    <div className="form-group">
+                      <label>私钥内容（PEM 格式）</label>
+                      <textarea
+                        className="keys-pem-textarea"
+                        value={(editingConnection as SshConnectionConfig).auth_type.key_content || ""}
+                        onChange={(e) => {
+                          const content = e.target.value;
+                          setEditingConnection({
+                            ...(editingConnection as SshConnectionConfig),
+                            auth_type: {
+                              ...((editingConnection as SshConnectionConfig).auth_type as any),
+                              type: "PrivateKey",
+                              key_path: "",
+                              key_content: content,
+                            },
+                          });
+                          if (content.trim()) {
+                            setPemValidation(validatePemKey(content));
+                          } else {
+                            setPemValidation(null);
+                          }
+                        }}
+                        onBlur={(e) => {
+                          const content = e.target.value;
+                          if (content.trim()) {
+                            setPemValidation(validatePemKey(content));
+                          }
+                        }}
+                        placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEpAIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
+                        rows={12}
+                      />
+                      {pemValidation && (
+                        <div className={`keys-validation ${pemValidation.valid ? 'valid' : 'invalid'}`}>
+                          <AppIcon
+                            icon={pemValidation.valid ? "material-symbols:check-circle-rounded" : "material-symbols:error-rounded"}
+                            size={16}
+                          />
+                          {pemValidation.message}
+                        </div>
+                      )}
+                      <div className="keys-hint">
+                        <strong>注意：</strong>粘贴完整的 PEM 格式私钥内容，包括开始和结束标记。支持以下格式：<br/>
+                        • <code>-----BEGIN RSA PRIVATE KEY-----</code> (OpenSSH RSA)<br/>
+                        • <code>-----BEGIN OPENSSH PRIVATE KEY-----</code> (OpenSSH 新格式)<br/>
+                        • <code>-----BEGIN EC PRIVATE KEY-----</code> (ECDSA)<br/>
+                        • 确保包含完整的密钥内容和换行符
+                      </div>
+                    </div>
+
+                    <div className="form-group">
+                      <label>私钥密码（可选）</label>
+                      <div className="password-input-wrapper">
+                        <input
+                          type={showPassphrase ? "text" : "password"}
+                          value={(editingConnection as SshConnectionConfig).auth_type.passphrase || ""}
+                          onChange={(e) =>
+                            setEditingConnection({
+                              ...(editingConnection as SshConnectionConfig),
+                              auth_type: {
+                                ...((editingConnection as SshConnectionConfig).auth_type as any),
+                                type: "PrivateKey",
+                                passphrase: e.target.value,
+                              },
+                            })
+                          }
+                          placeholder="如果私钥已加密，请输入密码"
+                        />
+                        <button
+                          type="button"
+                          className="password-toggle-btn"
+                          onClick={() => setShowPassphrase(!showPassphrase)}
+                          title={showPassphrase ? "隐藏密码" : "显示密码"}
+                        >
+                          <AppIcon
+                            icon={showPassphrase ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
+                            size={20}
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
 
+        {isRdp && (
+          <>
+            <div className="form-group">
+              <label>网关地址（可选）</label>
+              <input
+                type="text"
+                value={(editingConnection as RdpConnectionConfig).gatewayHost || ""}
+                onChange={(e) =>
+                  setEditingConnection({
+                    ...(editingConnection as RdpConnectionConfig),
+                    gatewayHost: e.target.value,
+                  })
+                }
+                placeholder="rdp-gateway.example.com"
+              />
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>网关用户名</label>
+                <input
+                  type="text"
+                  value={(editingConnection as RdpConnectionConfig).gatewayUsername || ""}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      gatewayUsername: e.target.value,
+                    })
+                  }
+                />
+              </div>
+              <div className="form-group">
+                <label>网关密码</label>
+                <input
+                  type="password"
+                  value={(editingConnection as RdpConnectionConfig).gatewayPassword || ""}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      gatewayPassword: e.target.value,
+                    })
+                  }
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>网关域（可选）</label>
+                <input
+                  type="text"
+                  value={(editingConnection as RdpConnectionConfig).gatewayDomain || ""}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      gatewayDomain: e.target.value,
+                    })
+                  }
+                />
+              </div>
+              <div className="form-group">
+                <label>证书策略</label>
+                <select
+                  value={(editingConnection as RdpConnectionConfig).certPolicy || "default"}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      certPolicy: e.target.value as RdpConnectionConfig["certPolicy"],
+                    })
+                  }
+                >
+                  <option value="default">默认</option>
+                  <option value="ignore">忽略证书</option>
+                </select>
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>分辨率宽度</label>
+                <input
+                  type="number"
+                  value={(editingConnection as RdpConnectionConfig).resolutionWidth ?? ""}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      resolutionWidth: e.target.value ? Number(e.target.value) : undefined,
+                    })
+                  }
+                  placeholder="例如 1920"
+                />
+              </div>
+              <div className="form-group">
+                <label>分辨率高度</label>
+                <input
+                  type="number"
+                  value={(editingConnection as RdpConnectionConfig).resolutionHeight ?? ""}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      resolutionHeight: e.target.value ? Number(e.target.value) : undefined,
+                    })
+                  }
+                  placeholder="例如 1080"
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>色深</label>
+                <select
+                  value={(editingConnection as RdpConnectionConfig).colorDepth ?? 32}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      colorDepth: Number(e.target.value) as RdpConnectionConfig["colorDepth"],
+                    })
+                  }
+                >
+                  {RDP_COLOR_DEPTHS.map((depth) => (
+                    <option key={depth} value={depth}>
+                      {depth} 位
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label>剪贴板</label>
+                <select
+                  value={(editingConnection as RdpConnectionConfig).redirectClipboard ? "on" : "off"}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      redirectClipboard: e.target.value === "on",
+                    })
+                  }
+                >
+                  <option value="on">开启</option>
+                  <option value="off">关闭</option>
+                </select>
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>音频</label>
+                <select
+                  value={(editingConnection as RdpConnectionConfig).redirectAudio ? "on" : "off"}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      redirectAudio: e.target.value === "on",
+                    })
+                  }
+                >
+                  <option value="on">开启</option>
+                  <option value="off">关闭</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>驱动器重定向</label>
+                <select
+                  value={(editingConnection as RdpConnectionConfig).redirectDrives ? "on" : "off"}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...(editingConnection as RdpConnectionConfig),
+                      redirectDrives: e.target.value === "on",
+                    })
+                  }
+                >
+                  <option value="on">开启</option>
+                  <option value="off">关闭</option>
+                </select>
+              </div>
+            </div>
+          </>
+        )}
+
         <div className="connection-detail-actions">
-          <button
-            className="btn btn-secondary"
-            type="button"
-            onClick={() => void handleTestConnection()}
-            disabled={testStatus === "testing"}
-          >
-            {testStatus === "testing" ? "测试中..." : "测试连接"}
-          </button>
+          {!isRdp && (
+            <button
+              className="btn btn-secondary"
+              type="button"
+              onClick={() => void handleTestConnection()}
+              disabled={testStatus === "testing"}
+            >
+              {testStatus === "testing" ? "测试中..." : "测试连接"}
+            </button>
+          )}
+          {isRdp && (
+            <button
+              className="btn btn-secondary"
+              type="button"
+              onClick={() => void rdpApi.open(editingConnection as RdpConnectionConfig)}
+            >
+              打开 RDP
+            </button>
+          )}
           <button className="btn btn-primary" onClick={handleSaveConnection}>
             保存
           </button>
@@ -889,7 +1254,7 @@ export function ConnectionsPage({
           >
             取消
           </button>
-          {testMessage && (
+          {!isRdp && testMessage && (
             <span
               className={`connection-test-status connection-test-status--${testStatus}`}
             >
@@ -1039,6 +1404,28 @@ export function ConnectionsPage({
       return <>{connectedTerminals}</>;
     }
 
+    if (selectedConnection?.kind === "rdp") {
+      const rdp = selectedConnection as RdpConnectionConfig;
+      return (
+        <div className="empty-state">
+          <span className="empty-state-icon" aria-hidden="true">
+            <AppIcon icon="material-symbols:desktop-windows-rounded" size={64} />
+          </span>
+          <div>
+            <h3>RDP 远程桌面</h3>
+            <p style={{ marginTop: 12 }}>
+              目标：{rdp.username}@{rdp.host}:{rdp.port}
+            </p>
+            <div style={{ marginTop: 16 }}>
+              <button className="btn btn-primary" onClick={() => void rdpApi.open(rdp)}>
+                打开 RDP
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="empty-state">
         <span className="empty-state-icon" aria-hidden="true">
@@ -1095,12 +1482,15 @@ export function ConnectionsPage({
                 }}
               >
                 <span className="connection-icon" aria-hidden="true">
-                  <AppIcon icon="material-symbols:dns" size={16} />
+                  <AppIcon
+                    icon={conn.kind === "rdp" ? "material-symbols:desktop-windows-rounded" : "material-symbols:dns"}
+                    size={16}
+                  />
                 </span>
                 <div className="connection-info">
                   <div className="connection-name">{conn.name}</div>
                   <div className="connection-details">
-                    {conn.username}@{conn.host}
+                    {conn.username}@{conn.host}{conn.port ? `:${conn.port}` : ""}
                   </div>
                 </div>
                 <div className="connection-actions">
@@ -1124,7 +1514,7 @@ export function ConnectionsPage({
                       setSelectedConnection(conn);
                       setEditingConnection(conn);
                       // 根据连接的 auth_type 设置 pkMode
-                      if (conn.auth_type.type === "PrivateKey") {
+                      if (isSshConnection(conn) && conn.auth_type.type === "PrivateKey") {
                         if (conn.auth_type.key_content) {
                           setPkMode("manual");
                         } else {
@@ -1186,7 +1576,7 @@ export function ConnectionsPage({
           {connections.length === 0 && (
             <div className="split-picker-empty">暂无服务器</div>
           )}
-          {connections.map((conn) => (
+          {connections.filter(isSshConnection).map((conn) => (
             <button
               key={conn.id}
               type="button"

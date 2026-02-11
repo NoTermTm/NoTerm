@@ -13,6 +13,7 @@ import { AppIcon } from "./AppIcon";
 import { Modal } from "./Modal";
 import { ScriptPicker } from "./ScriptPicker";
 import { sendAiChat, type AiMessage } from "../api/ai";
+import AiRenderer from "./AiRenderer2";
 import {
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
@@ -81,7 +82,7 @@ export function XTerminal({
   const [aiOpen, setAiOpen] = useState(false);
   const [scriptTarget, setScriptTarget] = useState<"current" | "all">("current");
   const [scriptText, setScriptText] = useState("");
-  const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
+  const [aiMessages, setAiMessages] = useState<Array<AiMessage & { createdAt: number }>>([]);
   const [aiInput, setAiInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -194,6 +195,12 @@ export function XTerminal({
       return String(error);
     }
   };
+
+  const formatAiTime = (value: number) =>
+    new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
 
   const endpointLabel = useMemo(() => {
     if (!endpointIp) return "--";
@@ -621,7 +628,7 @@ export function XTerminal({
     setAiError(null);
     setAiBusy(true);
 
-    const userMessage: AiMessage = { role: "user", content };
+    const userMessage: AiMessage & { createdAt: number } = { role: "user", content, createdAt: Date.now() };
     const nextMessages = [...aiMessages, userMessage];
     setAiMessages(nextMessages);
 
@@ -631,8 +638,14 @@ export function XTerminal({
         role: "system",
         content: "你是终端助手，回答要简洁、可执行。",
       };
-      const response = await sendAiChat(settings, [systemMessage, ...nextMessages]);
-      setAiMessages((prev) => [...prev, { role: "assistant", content: response }]);
+      const response = await sendAiChat(settings, [
+        systemMessage,
+        ...nextMessages.map(({ role, content }) => ({ role, content })),
+      ]);
+      setAiMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: response, createdAt: Date.now() },
+      ]);
     } catch (error) {
       const message = formatError(error);
       setAiError(message);
@@ -1420,44 +1433,61 @@ export function XTerminal({
                   {aiMessages.length === 0 && (
                     <div className="xterminal-ai-empty">暂无对话，可从右键菜单发送终端内容</div>
                   )}
-                  {aiMessages.map((msg, index) => (
+                  {aiMessages.map((msg, index) => {
+                    const prev = aiMessages[index - 1];
+                    const grouped = prev && prev.role === msg.role;
+                    return (
                     <div
                       key={`${msg.role}-${index}`}
-                      className={`xterminal-ai-message xterminal-ai-message--${msg.role}`}
+                      className={`xterminal-ai-message xterminal-ai-message--${msg.role}${grouped ? " xterminal-ai-message--grouped" : ""}`}
                     >
-                      <div className="xterminal-ai-role">
-                        {msg.role === "user" ? "我" : msg.role === "assistant" ? "AI" : "系统"}
+                      <div className="xterminal-ai-meta">
+                        <div className="xterminal-ai-role">
+                          {msg.role === "user" ? "我" : msg.role === "assistant" ? "AI" : "系统"}
+                        </div>
+                        <div className="xterminal-ai-time">{formatAiTime(msg.createdAt)}</div>
                       </div>
-                      <div className="xterminal-ai-content">{msg.content}</div>
+                      <div className="xterminal-ai-content">
+                        <AiRenderer content={msg.content} sessionId={sessionId} useLocal={isLocal} role={msg.role} />
+                      </div>
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
                 {aiError && <div className="xterminal-ai-error">{aiError}</div>}
                 <div className="xterminal-ai-input">
-                  <textarea
-                    value={aiInput}
-                    onChange={(event) => setAiInput(event.target.value)}
-                    placeholder="输入你的问题，Cmd+Enter 发送"
-                    onKeyDown={(event) => {
-                      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                        event.preventDefault();
-                        void sendAiMessage(aiInput);
-                        setAiInput("");
-                      }
-                    }}
-                    disabled={aiBusy}
-                  />
-                  <button
-                    type="button"
-                    className="xterminal-ai-send"
-                    onClick={() => {
-                      void sendAiMessage(aiInput);
-                      setAiInput("");
-                    }}
-                    disabled={aiBusy || !aiInput.trim()}
-                  >
-                    {aiBusy ? "发送中..." : "发送"}
-                  </button>
+                  <div className="xterminal-ai-input-box">
+                    <textarea
+                      value={aiInput}
+                      onChange={(event) => setAiInput(event.target.value)}
+                      placeholder="输入你的问题，Cmd+Enter 发送"
+                      onKeyDown={(event) => {
+                        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                          event.preventDefault();
+                          void sendAiMessage(aiInput);
+                          setAiInput("");
+                        }
+                      }}
+                      disabled={aiBusy}
+                    />
+                    <div className="xterminal-ai-input-footer">
+                      <div></div>
+                      <button
+                        type="button"
+                        className="xterminal-ai-send"
+                        onClick={() => {
+                          void sendAiMessage(aiInput);
+                          setAiInput("");
+                        }}
+                        disabled={aiBusy || !aiInput.trim()}
+                        title="发送"
+                        aria-label="发送"
+                      >
+                        <AppIcon icon="material-symbols:send-outline-rounded" size={16}/>
+                        {/* {aiBusy ? "发送中..." : "发送"} */}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
