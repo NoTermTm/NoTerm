@@ -74,7 +74,7 @@ export function SettingsPage() {
   const [masterKeyStatus, setMasterKeyStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [masterKeyMessage, setMasterKeyMessage] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
-  const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [_, setExportMessage] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string>("--");
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "up-to-date" | "downloading" | "installed" | "error"
@@ -371,13 +371,13 @@ export function SettingsPage() {
       }
 
       const settingsStore = await getAppSettingsStore();
-      const entries: Partial<AppSettings> = {};
+      const entries = { ...DEFAULT_APP_SETTINGS } as AppSettings;
+      const typedEntries = entries as Record<keyof AppSettings, AppSettings[keyof AppSettings]>;
       for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<
         keyof AppSettings
       >) {
-        entries[key] =
-          (await settingsStore.get<AppSettings[typeof key]>(key)) ??
-          DEFAULT_APP_SETTINGS[key];
+        const stored = await settingsStore.get<AppSettings[typeof key]>(key);
+        typedEntries[key] = (stored ?? DEFAULT_APP_SETTINGS[key]) as AppSettings[typeof key];
       }
 
       const exportSettings = {
@@ -626,8 +626,9 @@ export function SettingsPage() {
   const updateCheckedLabel = updateCheckedAt
     ? new Date(updateCheckedAt).toLocaleString()
     : null;
-  const showDownloadAction =
-    Boolean(updateInfo) && updateStatus !== "downloading" && updateStatus !== "installed";
+  const isDownloading = updateStatus === "downloading";
+  const isChecking = updateStatus === "checking";
+  const showDownloadAction = Boolean(updateInfo) && updateStatus !== "installed";
 
   return (
     <div className="settings-page">
@@ -811,18 +812,18 @@ export function SettingsPage() {
                 className="btn btn-secondary btn-sm"
                 type="button"
                 onClick={() => void handleCheckUpdate()}
-                disabled={updateStatus === "checking" || updateStatus === "downloading"}
+                disabled={isChecking || isDownloading}
               >
-                {updateStatus === "checking" ? "检查中..." : "检查更新"}
+                {isChecking ? "检查中..." : "检查更新"}
               </button>
               {showDownloadAction && (
                 <button
                   className="btn btn-primary btn-sm"
                   type="button"
                   onClick={() => void handleDownloadUpdate()}
-                  disabled={updateStatus === "downloading"}
+                  disabled={isDownloading}
                 >
-                  {updateStatus === "downloading" ? "下载中..." : "下载并安装"}
+                  {isDownloading ? "下载中..." : "下载并安装"}
                 </button>
               )}
             </div>

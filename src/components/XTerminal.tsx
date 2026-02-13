@@ -492,12 +492,6 @@ export function XTerminal({
     }
   };
 
-  const formatAiTime = (value: number) =>
-    new Intl.DateTimeFormat("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(new Date(value));
-
   const formatTransferTime = (value: number) =>
     new Intl.DateTimeFormat("zh-CN", {
       hour: "2-digit",
@@ -1235,7 +1229,7 @@ export function XTerminal({
     if (!context) {
       setAiError("未检测到终端内容，请先选择文本或产生输出");
       setScriptPanelOpen(true);
-      setPanelTab("ai");
+      setAiOpen(true);
       return;
     }
 

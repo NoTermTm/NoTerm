@@ -98,10 +98,6 @@ const parseColorToRgb = (color: string): [number, number, number] | null => {
   return null;
 };
 
-const getReadableTextColor = (r: number, g: number, b: number) => {
-  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  return luminance > 170 ? "#1f2937" : "#ffffff";
-};
 
 const getTagStyle = (color: string) => {
   const rgb = parseColorToRgb(color);

@@ -32,6 +32,7 @@ pub enum AuthType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct SshSession {
     pub connection_id: String,
     pub connected: bool,

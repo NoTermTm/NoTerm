@@ -127,7 +127,7 @@ impl LocalPtyManager {
             .get(session_id)
             .ok_or_else(|| anyhow::anyhow!("Local session not found"))?;
 
-        let mut master = session.master.lock().unwrap();
+        let master = session.master.lock().unwrap();
         let safe_cols = std::cmp::min(cols, u16::MAX as u32) as u16;
         let safe_rows = std::cmp::min(rows, u16::MAX as u32) as u16;
         master.resize(PtySize {
