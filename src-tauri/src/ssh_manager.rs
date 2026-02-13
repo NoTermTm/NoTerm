@@ -7,6 +7,15 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::path::Path;
 use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+use std::fs::OpenOptions;
+#[cfg(target_os = "windows")]
+use std::io::ErrorKind;
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
+#[cfg(target_os = "windows")]
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,14 +123,12 @@ impl SshManager {
 
                 if let Some(content) = key_content {
                     if !content.is_empty() {
-                        let result = sess.userauth_pubkey_memory(
+                        if let Err(e) = userauth_pubkey_memory_compat(
+                            &sess,
                             &effective_username,
-                            None,
                             content,
                             passphrase_str,
-                        );
-
-                        if let Err(e) = result {
+                        ) {
                             return Err(anyhow::anyhow!(
                                 "Private key authentication failed: {}. Please check: 1) Key format (must be valid PEM), 2) Passphrase if key is encrypted, 3) Username is correct",
                                 e
@@ -532,4 +539,54 @@ impl SshManager {
 
         Ok(())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn userauth_pubkey_memory_compat(
+    sess: &Session,
+    username: &str,
+    content: &str,
+    passphrase: Option<&str>,
+) -> anyhow::Result<()> {
+    let key_path = write_temp_key_file(content)?;
+    let result = sess.userauth_pubkey_file(username, None, key_path.as_path(), passphrase);
+    let _ = std::fs::remove_file(&key_path);
+    result.map_err(|e| anyhow::anyhow!(e))
+}
+
+#[cfg(target_os = "windows")]
+fn write_temp_key_file(content: &str) -> anyhow::Result<PathBuf> {
+    let base = std::env::temp_dir();
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+
+    for attempt in 0..6 {
+        let name = format!("noterm-key-{}-{}-{}.pem", pid, nanos, attempt);
+        let path = base.join(name);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(content.as_bytes())?;
+                return Ok(path);
+            }
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(anyhow::anyhow!(err)),
+        }
+    }
+
+    Err(anyhow::anyhow!("Failed to allocate temp key file"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn userauth_pubkey_memory_compat(
+    sess: &Session,
+    username: &str,
+    content: &str,
+    passphrase: Option<&str>,
+) -> anyhow::Result<()> {
+    sess
+        .userauth_pubkey_memory(username, None, content, passphrase)
+        .map_err(|e| anyhow::anyhow!(e))
 }
