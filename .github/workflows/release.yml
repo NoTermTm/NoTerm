@@ -19,7 +19,7 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             bundles: "--bundles dmg"
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             bundles: "--bundles dmg"
           - os: windows-latest
@@ -83,6 +83,23 @@ jobs:
         run: |
           npx --no-install tauri build --target ${{ matrix.target }} ${{ matrix.bundles }}
 
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/**/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
@@ -90,7 +107,6 @@ jobs:
           name: "NoTerm ${{ github.ref_name }}"
           draft: false
           prerelease: false
-          files: |
-            /Users/runner/work/NoTerm/NoTerm/src-tauri/target/${{ matrix.target }}/release/bundle/**/*
+          files: dist/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
