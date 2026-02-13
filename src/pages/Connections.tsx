@@ -2532,32 +2532,34 @@ export function ConnectionsPage({
         onClose={() => setShowMasterKeyPrompt(false)}
         width={520}
       >
-        <div className="settings-item" style={{ padding: "12px 4px 0" }}>
-          <div className="settings-item-info">
-            <div className="settings-item-label">保存敏感信息需要 Master Key</div>
-            <div className="settings-item-description">
-              请先在设置中创建 Master Key，再保存服务器配置。
+        <div className="masterkey-prompt">
+          <div className="settings-item" style={{ padding: "12px 4px 0" }}>
+            <div className="settings-item-info">
+              <div className="settings-item-label">保存敏感信息需要 Master Key</div>
+              <div className="settings-item-description">
+                请先在设置中创建 Master Key，再保存服务器配置。
+              </div>
             </div>
           </div>
-        </div>
-        <div className="connection-form-actions">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => setShowMasterKeyPrompt(false)}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => {
-              setShowMasterKeyPrompt(false);
-              openSettingsTab();
-            }}
-          >
-            前往设置
-          </button>
+          <div className="connection-form-actions masterkey-prompt-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setShowMasterKeyPrompt(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => {
+                setShowMasterKeyPrompt(false);
+                openSettingsTab();
+              }}
+            >
+              前往设置
+            </button>
+          </div>
         </div>
       </Modal>
 

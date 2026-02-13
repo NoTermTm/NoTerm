@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { load } from "@tauri-apps/plugin-store";
 import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
 import { useNavigate, useLocation } from "react-router-dom";
 import { TitleBar, Tab } from "./TitleBar";
@@ -13,8 +14,10 @@ import type { ScriptItem } from "../store/scripts";
 import {
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
+  writeAppSetting,
   type AppSettings,
 } from "../store/appSettings";
+import { writeScriptsData } from "../store/scripts";
 import { verifyMasterKey } from "../utils/security";
 import {
   clearMasterKeySession,
@@ -61,6 +64,8 @@ export function Layout() {
   const [unlockInput, setUnlockInput] = useState("");
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [unlocking, setUnlocking] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const lastActiveAtRef = useRef(Date.now());
   const wasLockedRef = useRef(false);
   const autoUpdateCheckedRef = useRef(false);
@@ -827,6 +832,56 @@ export function Layout() {
     }
   };
 
+  const handleResetMasterKey = async () => {
+    if (resetting) return;
+    setResetting(true);
+    setUnlockError(null);
+    try {
+      for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>) {
+        await writeAppSetting(key, DEFAULT_APP_SETTINGS[key]);
+      }
+
+      const connectionStore = await load("connections.json");
+      await connectionStore.set("connections", []);
+      await connectionStore.save();
+
+      const keysStore = await load("keys.json");
+      await keysStore.set("profiles", []);
+      await keysStore.save();
+
+      await writeScriptsData({ folders: [], scripts: [] });
+
+      clearMasterKeySession();
+      setSecuritySettings({
+        hash: DEFAULT_APP_SETTINGS["security.masterKeyHash"],
+        salt: DEFAULT_APP_SETTINGS["security.masterKeySalt"],
+        timeout: DEFAULT_APP_SETTINGS["security.lockTimeoutMinutes"],
+      });
+      setIsLocked(false);
+      setUnlockInput("");
+      setUnlockError(null);
+      setResetConfirmOpen(false);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: "已重置 Master Key",
+              detail: "所有配置已清空",
+              tone: "info",
+              toast: true,
+              store: false,
+            },
+          }),
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUnlockError(message || "重置失败");
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const forceLock = () => {
     if (!securitySettings.hash) return;
     setIsLocked(true);
@@ -1061,7 +1116,43 @@ export function Layout() {
             >
               {unlocking ? "验证中..." : "解锁"}
             </button>
+            <button
+              type="button"
+              className="lock-forgot-btn"
+              onClick={() => setResetConfirmOpen(true)}
+              disabled={resetting}
+            >
+              忘记密码
+            </button>
           </div>
+          {resetConfirmOpen && (
+            <div className="lock-reset-layer">
+              <div className="lock-reset-card">
+                <div className="lock-reset-title">重置 Master Key？</div>
+                <div className="lock-reset-desc">
+                  所有服务器、密钥与脚本配置将被清空，且无法恢复。
+                </div>
+                <div className="lock-reset-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setResetConfirmOpen(false)}
+                    disabled={resetting}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    onClick={() => void handleResetMasterKey()}
+                    disabled={resetting}
+                  >
+                    {resetting ? "重置中..." : "确认重置"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

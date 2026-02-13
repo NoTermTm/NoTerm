@@ -602,6 +602,16 @@
     padding: 2px 2px 0;
 }
 
+.masterkey-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.masterkey-prompt-actions {
+    padding-top: 8px;
+}
+
 .quick-auth-row {
     display: flex;
     align-items: center;

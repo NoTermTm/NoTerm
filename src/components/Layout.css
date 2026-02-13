@@ -361,6 +361,61 @@
     justify-content: center;
 }
 
+.lock-forgot-btn {
+    margin-top: 10px;
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.lock-forgot-btn:hover {
+    color: var(--text-secondary);
+}
+
+.lock-reset-layer {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(16, 18, 27, 0.35);
+    backdrop-filter: blur(6px);
+}
+
+.lock-reset-card {
+    width: 360px;
+    border-radius: 16px;
+    background: #ffffff;
+    padding: 20px 22px 18px;
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
+    border: 1px solid rgba(214, 219, 229, 0.9);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    text-align: center;
+}
+
+.lock-reset-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.lock-reset-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.lock-reset-actions {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+
 .main-content {
     flex: 1;
     display: flex;
