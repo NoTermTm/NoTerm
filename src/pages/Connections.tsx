@@ -2533,7 +2533,7 @@ export function ConnectionsPage({
         width={520}
       >
         <div className="masterkey-prompt">
-          <div className="settings-item" style={{ padding: "12px 4px 0" }}>
+          <div className="II" style={{ padding: "12px 4px 12px" }}>
             <div className="settings-item-info">
               <div className="settings-item-label">保存敏感信息需要 Master Key</div>
               <div className="settings-item-description">

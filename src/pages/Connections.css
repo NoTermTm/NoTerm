@@ -599,7 +599,9 @@
 
 .connection-form-actions {
     justify-content: flex-end;
-    padding: 2px 2px 0;
+    padding: 12px 2px 0;
+    display: flex;
+    gap: 8px;
 }
 
 .masterkey-prompt {
