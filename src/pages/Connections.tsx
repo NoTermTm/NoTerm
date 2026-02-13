@@ -703,7 +703,12 @@ export function ConnectionsPage({
     await saveConnections(nextConnections);
   };
 
-  const handleAddConnection = () => {
+  const handleAddConnection = async () => {
+    const masterKeyHash = await readAppSetting("security.masterKeyHash");
+    if (!masterKeyHash) {
+      setShowMasterKeyPrompt(true);
+      return;
+    }
     const newConnection = createDefaultSshConnection();
     setEditingConnection(newConnection);
     setAuthProfileId("");
@@ -717,6 +722,10 @@ export function ConnectionsPage({
   };
 
   const openSettingsTab = () => {
+    setIsEditModalOpen(false);
+    setEditingConnection(null);
+    setAuthProfileId("");
+    setShowAdvancedConfig(false);
     setTabs((prev) => {
       if (prev.some((tab) => tab.id === SETTINGS_TAB_ID)) return prev;
       return [
@@ -2216,7 +2225,7 @@ export function ConnectionsPage({
         <SlidePanel
           isOpen={activePanel === "connections"}
           title="连接配置"
-          onAdd={handleAddConnection}
+          onAdd={() => void handleAddConnection()}
           closePanel={handlePanelClose}
           dockToWindow
         >
