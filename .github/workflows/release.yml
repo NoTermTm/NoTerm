@@ -95,10 +95,107 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
+
+      - name: Generate latest.json
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const root = path.resolve("dist");
+          const tag = process.env.GITHUB_REF_NAME;
+          const repo = process.env.GITHUB_REPOSITORY;
+
+          if (!tag || !repo) {
+            throw new Error("Missing GITHUB_REF_NAME or GITHUB_REPOSITORY");
+          }
+
+          const targetToPlatform = (target) => {
+            if (target.startsWith("x86_64-apple-darwin")) return "darwin-x86_64";
+            if (target.startsWith("aarch64-apple-darwin")) return "darwin-aarch64";
+            if (target.startsWith("x86_64-pc-windows-msvc")) return "windows-x86_64";
+            return target;
+          };
+
+          const pickSig = (files, target) => {
+            const sigs = files.filter((f) => f.endsWith(".sig"));
+            if (sigs.length === 0) return null;
+
+            const prefer = [];
+            if (target.includes("windows")) {
+              prefer.push(".nsis.zip.sig", ".msi.zip.sig");
+            } else if (target.includes("apple-darwin")) {
+              prefer.push(".app.tar.gz.sig", ".tar.gz.sig");
+            }
+
+            for (const suffix of prefer) {
+              const found = sigs.find((f) => f.endsWith(suffix));
+              if (found) return found;
+            }
+
+            return sigs[0];
+          };
+
+          const platforms = {};
+          const entries = fs.readdirSync(root, { withFileTypes: true });
+
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            if (!entry.name.startsWith("bundle-")) continue;
+
+            const target = entry.name.replace(/^bundle-/, "");
+            const platform = targetToPlatform(target);
+            const dir = path.join(root, entry.name);
+
+            const allFiles = [];
+            const stack = [dir];
+            while (stack.length) {
+              const current = stack.pop();
+              for (const item of fs.readdirSync(current, { withFileTypes: true })) {
+                const itemPath = path.join(current, item.name);
+                if (item.isDirectory()) {
+                  stack.push(itemPath);
+                } else {
+                  allFiles.push(path.relative(dir, itemPath).replace(/\\\\/g, "/"));
+                }
+              }
+            }
+
+            const sigFile = pickSig(allFiles, target);
+            if (!sigFile) {
+              throw new Error(`No .sig found for ${target}`);
+            }
+
+            const sigPath = path.join(dir, sigFile);
+            const sig = fs.readFileSync(sigPath, "utf8").trim();
+            const assetName = sigFile.replace(/\\.sig$/, "");
+
+            platforms[platform] = {
+              url: `https://github.com/${repo}/releases/download/${tag}/${assetName}`,
+              signature: sig,
+            };
+          }
+
+          const latest = {
+            version: tag,
+            notes: "",
+            pub_date: new Date().toISOString(),
+            platforms,
+          };
+
+          fs.writeFileSync(path.join(root, "latest.json"), JSON.stringify(latest, null, 2));
+          console.log("Generated latest.json with platforms:", Object.keys(platforms));
+          NODE
 
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
@@ -107,6 +204,14 @@ jobs:
           name: "NoTerm ${{ github.ref_name }}"
           draft: false
           prerelease: false
-          files: dist/**/*
+          fail_on_unmatched_files: false
+          files: |
+            dist/latest.json
+            dist/**/*.dmg
+            dist/**/*.exe
+            dist/**/*.msi
+            dist/**/*.zip
+            dist/**/*.tar.gz
+            dist/**/*.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
