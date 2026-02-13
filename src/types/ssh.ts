@@ -1,10 +1,13 @@
 export interface SshConnection {
   id: string;
   name: string;
+  tags?: string[];
+  color?: string;
   host: string;
   port: number;
   username: string;
   auth_type: AuthType;
+  auth_profile_id?: string;
   encoding?: string;
 }
 

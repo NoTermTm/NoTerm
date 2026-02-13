@@ -22,9 +22,11 @@
     "fs:default",
     "fs:allow-read-file",
     "fs:allow-write-file",
+    "fs:allow-write-text-file",
     "fs:allow-read-dir",
     "fs:allow-create",
     "fs:allow-exists",
+    "updater:default",
     {
       "identifier": "fs:scope",
       "allow": [

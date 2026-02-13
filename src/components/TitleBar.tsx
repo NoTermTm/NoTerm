@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { PointerEvent } from "react";
+import type { CSSProperties, PointerEvent } from "react";
 import { AppIcon } from "./AppIcon";
 import "./TitleBar.css";
 
@@ -7,6 +7,7 @@ export interface Tab {
   id: string;
   title: string;
   subtitle?: string;
+  color?: string;
 }
 
 interface TitleBarProps {
@@ -16,6 +17,54 @@ interface TitleBarProps {
   onTabClose?: (id: string) => void;
   onNewTab?: () => void;
 }
+
+const parseColorToRgb = (color: string): [number, number, number] | null => {
+  const normalized = color.trim();
+  const shortHex = normalized.match(/^#([0-9a-fA-F]{3})$/);
+  if (shortHex) {
+    const chars = shortHex[1];
+    return [
+      parseInt(chars[0] + chars[0], 16),
+      parseInt(chars[1] + chars[1], 16),
+      parseInt(chars[2] + chars[2], 16),
+    ];
+  }
+
+  const longHex = normalized.match(/^#([0-9a-fA-F]{6})$/);
+  if (longHex) {
+    const hex = longHex[1];
+    return [
+      parseInt(hex.slice(0, 2), 16),
+      parseInt(hex.slice(2, 4), 16),
+      parseInt(hex.slice(4, 6), 16),
+    ];
+  }
+
+  const rgb = normalized.match(
+    /^rgb\(\s*([01]?\d?\d|2[0-4]\d|25[0-5])\s*,\s*([01]?\d?\d|2[0-4]\d|25[0-5])\s*,\s*([01]?\d?\d|2[0-4]\d|25[0-5])\s*\)$/,
+  );
+  if (rgb) {
+    return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+  }
+
+  return null;
+};
+
+const buildTabColorStyle = (
+  color: string | undefined,
+  isActive: boolean,
+): CSSProperties | undefined => {
+  if (!color) return undefined;
+  const rgb = parseColorToRgb(color);
+  if (!rgb) return undefined;
+  const [r, g, b] = rgb;
+
+  return {
+    "--tab-color-bg": `rgba(${r}, ${g}, ${b}, ${isActive ? 0.24 : 0.14})`,
+    "--tab-color-bg-hover": `rgba(${r}, ${g}, ${b}, ${isActive ? 0.28 : 0.19})`,
+    "--tab-color-border": `rgba(${r}, ${g}, ${b}, ${isActive ? 0.64 : 0.4})`,
+  } as CSSProperties;
+};
 
 export function TitleBar({
   tabs = [],
@@ -95,7 +144,8 @@ export function TitleBar({
             {tabs.map((tab) => (
               <div
                 key={tab.id}
-                className={`tab ${activeTabId === tab.id ? "active" : ""}`}
+                className={`tab ${activeTabId === tab.id ? "active" : ""} ${tab.color ? "tab--colored" : ""}`}
+                style={buildTabColorStyle(tab.color, activeTabId === tab.id)}
                 onClick={() => onTabClick?.(tab.id)}
               >
                 <div className="tab-content">

@@ -3,6 +3,7 @@ import { AppIcon } from "../components/AppIcon";
 import { Modal } from "../components/Modal";
 import type { ScriptFolder, ScriptItem } from "../store/scripts";
 import { readScriptsData, writeScriptsData } from "../store/scripts";
+import type { Tab } from "../components/TitleBar";
 import "./Space.css";
 
 type WorkspaceView = {
@@ -31,7 +32,23 @@ function sortByName<T extends { name: string }>(items: T[]) {
   return [...items].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function SpacePage() {
+interface SpacePageProps {
+  tabs: Tab[];
+  setTabs: (tabs: Tab[] | ((prev: Tab[]) => Tab[])) => void;
+  activeTabId: string | null;
+  onOpenScriptTab: (script: ScriptItem | null) => string;
+  onCloseTab: (id: string) => void;
+}
+
+const SCRIPT_TAB_PREFIX = "__space_script__:";
+
+export function SpacePage({
+  tabs,
+  setTabs,
+  activeTabId,
+  onOpenScriptTab,
+  onCloseTab,
+}: SpacePageProps) {
   const [folders, setFolders] = useState<ScriptFolder[]>([]);
   const [scripts, setScripts] = useState<ScriptItem[]>([]);
   const [view, setView] = useState<WorkspaceView>({
@@ -39,7 +56,7 @@ export function SpacePage() {
     selectedScriptId: null,
   });
   const [folderModalOpen, setFolderModalOpen] = useState(false);
-  const [scriptModalOpen, setScriptModalOpen] = useState(false);
+  const [scriptEditors, setScriptEditors] = useState<Record<string, ScriptFormState>>({});
   const [draggingScriptId, setDraggingScriptId] = useState<string | null>(null);
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(
@@ -50,12 +67,12 @@ export function SpacePage() {
     name: "",
     parentId: null,
   });
-  const [scriptForm, setScriptForm] = useState<ScriptFormState>({
-    id: null,
-    name: "",
-    content: "",
-    folderId: null,
-  });
+  const activeScriptTabId = activeTabId?.startsWith(SCRIPT_TAB_PREFIX)
+    ? activeTabId
+    : null;
+  const activeScriptForm = activeScriptTabId
+    ? scriptEditors[activeScriptTabId]
+    : null;
 
   useEffect(() => {
     let disposed = false;
@@ -70,6 +87,44 @@ export function SpacePage() {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!activeScriptTabId) return;
+    if (scriptEditors[activeScriptTabId]) return;
+    const rawId = activeScriptTabId.slice(SCRIPT_TAB_PREFIX.length);
+    const script =
+      rawId.startsWith("new-") ? null : scripts.find((item) => item.id === rawId) ?? null;
+    const nextForm: ScriptFormState = script
+      ? {
+          id: script.id,
+          name: script.name,
+          content: script.content,
+          folderId: script.folderId,
+        }
+      : {
+          id: null,
+          name: "",
+          content: "",
+          folderId: view.selectedFolderId,
+        };
+    setScriptEditors((prev) => ({ ...prev, [activeScriptTabId]: nextForm }));
+  }, [activeScriptTabId, scriptEditors, scripts, view.selectedFolderId]);
+
+  useEffect(() => {
+    const tabIds = new Set(tabs.map((tab) => tab.id));
+    setScriptEditors((prev) => {
+      let changed = false;
+      const next: Record<string, ScriptFormState> = {};
+      for (const [id, editor] of Object.entries(prev)) {
+        if (tabIds.has(id)) {
+          next[id] = editor;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [tabs]);
 
   const persist = async (nextFolders: ScriptFolder[], nextScripts: ScriptItem[]) => {
     setFolders(nextFolders);
@@ -149,23 +204,51 @@ export function SpacePage() {
       window.alert("请先选择一个文件夹");
       return;
     }
-    setScriptForm({ id: null, name: "", content: "", folderId: view.selectedFolderId });
-    setScriptModalOpen(true);
+    const tabId = onOpenScriptTab(null);
+    setScriptEditors((prev) => {
+      if (prev[tabId]) return prev;
+      return {
+        ...prev,
+        [tabId]: {
+          id: null,
+          name: "",
+          content: "",
+          folderId: view.selectedFolderId,
+        },
+      };
+    });
   };
 
   const openCreateScriptForFolder = (folderId: string) => {
-    setScriptForm({ id: null, name: "", content: "", folderId });
-    setScriptModalOpen(true);
+    const tabId = onOpenScriptTab(null);
+    setScriptEditors((prev) => {
+      if (prev[tabId]) return prev;
+      return {
+        ...prev,
+        [tabId]: {
+          id: null,
+          name: "",
+          content: "",
+          folderId,
+        },
+      };
+    });
   };
 
   const openEditScript = (script: ScriptItem) => {
-    setScriptForm({
-      id: script.id,
-      name: script.name,
-      content: script.content,
-      folderId: script.folderId,
+    const tabId = onOpenScriptTab(script);
+    setScriptEditors((prev) => {
+      if (prev[tabId]) return prev;
+      return {
+        ...prev,
+        [tabId]: {
+          id: script.id,
+          name: script.name,
+          content: script.content,
+          folderId: script.folderId,
+        },
+      };
     });
-    setScriptModalOpen(true);
   };
 
   const handleSaveFolder = async () => {
@@ -207,36 +290,54 @@ export function SpacePage() {
   };
 
   const handleSaveScript = async () => {
-    const name = scriptForm.name.trim();
+    if (!activeScriptTabId || !activeScriptForm) return;
+    const name = activeScriptForm.name.trim();
     if (!name) return;
-    if (!scriptForm.folderId) return;
+    if (!activeScriptForm.folderId) return;
 
     const ts = nowTs();
-    if (scriptForm.id) {
+    if (activeScriptForm.id) {
       const nextScripts = scripts.map((script) =>
-        script.id === scriptForm.id
+        script.id === activeScriptForm.id
           ? {
               ...script,
               name,
-              content: scriptForm.content,
-              folderId: scriptForm.folderId,
+              content: activeScriptForm.content,
+              folderId: activeScriptForm.folderId,
               updatedAt: ts,
             }
           : script,
       );
       await persist(folders, nextScripts);
+      setTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === activeScriptTabId ? { ...tab, title: name } : tab,
+        ),
+      );
     } else {
       const nextScript: ScriptItem = {
         id: crypto.randomUUID(),
         name,
-        content: scriptForm.content,
-        folderId: scriptForm.folderId,
+        content: activeScriptForm.content,
+        folderId: activeScriptForm.folderId,
         createdAt: ts,
         updatedAt: ts,
       };
       await persist(folders, [...scripts, nextScript]);
+      setTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === activeScriptTabId ? { ...tab, title: name } : tab,
+        ),
+      );
+      setScriptEditors((prev) => ({
+        ...prev,
+        [activeScriptTabId]: {
+          ...activeScriptForm,
+          id: nextScript.id,
+          name,
+        },
+      }));
     }
-    setScriptModalOpen(false);
   };
 
   const handleDeleteScript = async (script: ScriptItem) => {
@@ -245,6 +346,16 @@ export function SpacePage() {
     if (view.selectedScriptId === script.id) {
       setView((prev) => ({ ...prev, selectedScriptId: null }));
     }
+    if (activeScriptForm?.id === script.id && activeScriptTabId) {
+      onCloseTab(activeScriptTabId);
+    }
+    setScriptEditors((prev) => {
+      const next: Record<string, ScriptFormState> = {};
+      for (const [id, editor] of Object.entries(prev)) {
+        if (editor.id !== script.id) next[id] = editor;
+      }
+      return next;
+    });
   };
 
   const moveScriptToFolder = async (scriptId: string, folderId: string | null) => {
@@ -440,7 +551,7 @@ export function SpacePage() {
         ))}
       </div>
 
-      <div className="space-content">
+      <div className={`space-content ${activeScriptForm ? "space-content--with-editor" : ""}`}>
         <div className="space-panel">
           <div className="space-panel-header">
             <span>脚本与文件夹</span>
@@ -508,6 +619,71 @@ export function SpacePage() {
             ))}
           </div>
         </div>
+        {activeScriptForm && (
+          <div className="space-panel space-panel--editor">
+            <div className="space-panel-header">
+              <span>脚本设置</span>
+            </div>
+            <div className="space-panel-body space-editor-body">
+              <div className="space-editor-meta">
+                <div className="space-editor-meta-item">
+                  <span className="space-editor-meta-label">所属目录</span>
+                  <span>{getFolderPath(activeScriptForm.folderId)}</span>
+                </div>
+              </div>
+              <div className="form-group">
+                <label>脚本名称</label>
+                <input
+                  type="text"
+                  value={activeScriptForm.name}
+                  onChange={(event) =>
+                    setScriptEditors((prev) => ({
+                      ...prev,
+                      [activeScriptTabId as string]: {
+                        ...prev[activeScriptTabId as string],
+                        name: event.target.value,
+                      },
+                    }))
+                  }
+                  placeholder="例如 deploy-prod"
+                />
+              </div>
+              <div className="form-group">
+                <label>脚本内容（bash）</label>
+                <textarea
+                  value={activeScriptForm.content}
+                  onChange={(event) =>
+                    setScriptEditors((prev) => ({
+                      ...prev,
+                      [activeScriptTabId as string]: {
+                        ...prev[activeScriptTabId as string],
+                        content: event.target.value,
+                      },
+                    }))
+                  }
+                  placeholder="#!/usr/bin/env bash\nset -e\n"
+                  rows={12}
+                />
+              </div>
+              <div className="space-editor-actions">
+                <button className="btn btn-primary" type="button" onClick={() => void handleSaveScript()}>
+                  保存
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={() => {
+                    if (activeScriptTabId) {
+                      onCloseTab(activeScriptTabId);
+                    }
+                  }}
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <Modal
@@ -537,41 +713,6 @@ export function SpacePage() {
         </div>
       </Modal>
 
-      <Modal
-        open={scriptModalOpen}
-        title={scriptForm.id ? "编辑脚本" : "新建脚本"}
-        onClose={() => setScriptModalOpen(false)}
-        width={640}
-      >
-        <div className="space-modal">
-          <div className="form-group">
-            <label>脚本名称</label>
-            <input
-              type="text"
-              value={scriptForm.name}
-              onChange={(event) => setScriptForm((prev) => ({ ...prev, name: event.target.value }))}
-              placeholder="例如 deploy-prod"
-            />
-          </div>
-          <div className="form-group">
-            <label>脚本内容（bash）</label>
-            <textarea
-              value={scriptForm.content}
-              onChange={(event) => setScriptForm((prev) => ({ ...prev, content: event.target.value }))}
-              placeholder="#!/usr/bin/env bash\nset -e\n"
-              rows={10}
-            />
-          </div>
-          <div className="space-modal-actions">
-            <button className="btn btn-primary" type="button" onClick={() => void handleSaveScript()}>
-              保存
-            </button>
-            <button className="btn btn-secondary" type="button" onClick={() => setScriptModalOpen(false)}>
-              取消
-            </button>
-          </div>
-        </div>
-      </Modal>
     </div>
   );
 }

@@ -34,11 +34,11 @@ const AiRenderer2: React.FC<AiRendererProps> = ({ content, sessionId, useLocal, 
     const encoded = escapeAttr(code);
     const showSend = role === "assistant";
     const sendIcon =
-      "<svg class=\"ai-btn-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M2 21l21-9L2 3v7l15 2-15 2z\"/></svg>";
+      "<svg class=\"ai-btn-icon\"  viewBox=\"0 0 24 24\"><path fill=\"currentColor\" d=\"M2 20V4h20v16zm2-2h16V8H4zm3.5-1l-1.4-1.4L8.675 13l-2.6-2.6L7.5 9l4 4zm4.5 0v-2h6v2z\"/></svg>";
     const copyIcon =
       "<svg class=\"ai-btn-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z\"/></svg>";
     const sendButton = showSend
-      ? `<button class=\"ai-send-btn\" data-code=\"${encoded}\" title=\"发送到终端\" aria-label=\"发送到终端\">${sendIcon}</button>`
+      ? `<button type=\"button\" class=\"ai-send-btn\" data-action=\"send\" data-code=\"${encoded}\" title=\"执行\" aria-label=\"执行\">${sendIcon}</button>`
       : "";
     
     // 使用 highlight.js 进行语法高亮
@@ -64,53 +64,59 @@ const AiRenderer2: React.FC<AiRendererProps> = ({ content, sessionId, useLocal, 
       }
     }
     
-    return `\n<div class="ai-code-block">\n  <div class="ai-code-toolbar">\n    ${sendButton}\n    <button class=\"ai-copy-btn\" data-code=\"${encoded}\" title=\"复制\" aria-label=\"复制\">${copyIcon}</button>\n  </div>\n  <pre><code class="language-${lang} hljs">${highlighted}</code></pre>\n</div>\n`;
+    return `\n<div class="ai-code-block">\n<pre><code class="language-${lang} hljs">${highlighted}</code></pre>\n<div class="ai-code-toolbar">\n    ${sendButton}\n    <button type=\"button\" class=\"ai-copy-btn\" data-action=\"copy\" data-code=\"${encoded}\" title=\"复制\" aria-label=\"复制\">${copyIcon}</button>\n  </div>\n </div>\n`;
   };
 
   useEffect(() => {
     const raw = marked.parse(content || "", { renderer });
-    const clean = DOMPurify.sanitize(raw, { SAFE_FOR_TEMPLATES: true });
+    const clean = DOMPurify.sanitize(raw, {
+      SAFE_FOR_TEMPLATES: true,
+      ADD_TAGS: ["button"],
+      ADD_ATTR: ["data-code", "data-action"],
+    });
     const el = containerRef.current;
     if (!el) return;
     el.innerHTML = clean;
+    const handleClick = async (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      const button = target.closest<HTMLButtonElement>(".ai-send-btn, .ai-copy-btn");
+      if (!button) return;
+      const code = decodeURIComponent(button.dataset.code || "");
+      if (!code) return;
 
-    const sendButtons = el.querySelectorAll<HTMLButtonElement>(".ai-send-btn");
-    sendButtons.forEach((btn) => {
-      btn.onclick = async () => {
-        const code = decodeURIComponent(btn.dataset.code || "");
-        if (!code) return;
-        if (!sessionId) {
-          try {
-            await navigator.clipboard.writeText(code);
-          } catch (e) {
-            /* ignore */
-          }
-          return;
-        }
-        try {
-          if (useLocal) {
-            await sshApi.localWriteToShell(sessionId, code + "\n");
-          } else {
-            await sshApi.writeToShell(sessionId, code + "\n");
-          }
-        } catch (e) {
-          console.error("send to terminal failed", e);
-        }
-      };
-    });
-
-    const copyButtons = el.querySelectorAll<HTMLButtonElement>(".ai-copy-btn");
-    copyButtons.forEach((btn) => {
-      btn.onclick = async () => {
-        const code = decodeURIComponent(btn.dataset.code || "");
-        if (!code) return;
+      if (button.dataset.action === "copy") {
         try {
           await navigator.clipboard.writeText(code);
         } catch (e) {
           console.error("copy failed", e);
         }
-      };
-    });
+        return;
+      }
+
+      if (!sessionId) {
+        try {
+          await navigator.clipboard.writeText(code);
+        } catch (e) {
+          /* ignore */
+        }
+        return;
+      }
+      try {
+        if (useLocal) {
+          await sshApi.localWriteToShell(sessionId, code + "\n");
+        } else {
+          await sshApi.writeToShell(sessionId, code + "\n");
+        }
+      } catch (e) {
+        console.error("send to terminal failed", e);
+      }
+    };
+
+    el.addEventListener("click", handleClick);
+    return () => {
+      el.removeEventListener("click", handleClick);
+    };
   }, [content, sessionId, useLocal, role]);
 
   return <div ref={containerRef} className="ai-renderer" />;

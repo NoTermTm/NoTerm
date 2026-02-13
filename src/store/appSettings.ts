@@ -16,6 +16,10 @@ export type AppSettings = {
   "connection.savePassword": boolean;
   "connection.keepAlive": boolean;
   "connection.keepAliveInterval": number;
+  "security.masterKeyHash": string;
+  "security.masterKeySalt": string;
+  "security.masterKeyEncSalt": string;
+  "security.lockTimeoutMinutes": number;
   "terminal.theme": TerminalThemeName;
   "terminal.fontSize": number;
   "terminal.fontFamily": string;
@@ -23,6 +27,7 @@ export type AppSettings = {
   "terminal.cursorStyle": "block" | "underline" | "bar";
   "terminal.cursorBlink": boolean;
   "terminal.lineHeight": number;
+  "terminal.autoCopy": boolean;
   "ai.enabled": boolean;
   "ai.provider": "openai" | "anthropic";
   "ai.openai.baseUrl": string;
@@ -40,6 +45,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "connection.savePassword": true,
   "connection.keepAlive": true,
   "connection.keepAliveInterval": 60,
+  "security.masterKeyHash": "",
+  "security.masterKeySalt": "",
+  "security.masterKeyEncSalt": "",
+  "security.lockTimeoutMinutes": 0,
   "terminal.theme": "light",
   "terminal.fontSize": 13,
   "terminal.fontFamily": DEFAULT_TERMINAL_FONT_FAMILY,
@@ -47,6 +56,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "terminal.cursorStyle": "block",
   "terminal.cursorBlink": true,
   "terminal.lineHeight": 1.4,
+  "terminal.autoCopy": false,
   "ai.enabled": false,
   "ai.provider": "openai",
   "ai.openai.baseUrl": "https://api.openai.com",
@@ -85,5 +95,9 @@ export async function writeAppSetting<K extends keyof AppSettings>(
 ) {
   const store = await getAppSettingsStore();
   await store.set(key, value);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("app-settings-updated", { detail: { key, value } }),
+    );
+  }
 }
-

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   DEFAULT_APP_SETTINGS,
   type AppSettings,
@@ -6,9 +6,20 @@ import {
   getAppSettingsStore,
   DEFAULT_TERMINAL_FONT_FAMILY,
 } from "../store/appSettings";
+import { load } from "@tauri-apps/plugin-store";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { TERMINAL_THEME_OPTIONS, getXtermTheme } from "../terminal/xtermThemes";
 import { sendAiChat, type AiMessage } from "../api/ai";
-import './Settings.css';
+import { generateSalt, hashMasterKey } from "../utils/security";
+import { getModifierKeyName } from "../utils/platform";
+import {
+  clearMasterKeySession,
+  setMasterKeySession,
+} from "../utils/securitySession";
+import { getVersion } from "@tauri-apps/api/app";
+import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
+import "./Settings.css";
 
 const TERMINAL_FONT_OPTIONS = [
   { label: "SF Mono", value: '"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace' },
@@ -42,12 +53,48 @@ const ANTHROPIC_MODEL_OPTIONS = [
   { label: "claude-3-5-haiku-20241022", value: "claude-3-5-haiku-20241022" },
 ];
 
+const LOCK_TIMEOUT_OPTIONS = [
+  { label: "不自动锁定", value: 0 },
+  { label: "5 分钟", value: 5 },
+  { label: "10 分钟", value: 10 },
+  { label: "15 分钟", value: 15 },
+  { label: "30 分钟", value: 30 },
+  { label: "60 分钟", value: 60 },
+  { label: "120 分钟", value: 120 },
+];
+
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const previewTheme = getXtermTheme(settings["terminal.theme"]);
   const previewSelection = previewTheme.selectionBackground ?? "rgba(15, 143, 255, 0.18)";
   const [aiTestStatus, setAiTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [aiTestMessage, setAiTestMessage] = useState<string | null>(null);
+  const [masterKeyInput, setMasterKeyInput] = useState("");
+  const [masterKeyConfirm, setMasterKeyConfirm] = useState("");
+  const [masterKeyStatus, setMasterKeyStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [masterKeyMessage, setMasterKeyMessage] = useState<string | null>(null);
+  const [exportStatus, setExportStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string>("--");
+  const [updateStatus, setUpdateStatus] = useState<
+    "idle" | "checking" | "available" | "up-to-date" | "downloading" | "installed" | "error"
+  >("idle");
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<{
+    version?: string;
+    date?: string;
+    notes?: string;
+  } | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  const [updateCheckedAt, setUpdateCheckedAt] = useState<string | null>(null);
+  const updateRef = useRef<Awaited<ReturnType<typeof checkForUpdates>> | null>(null);
+  const updateStatusRef = useRef(updateStatus);
+  const hasMasterKey = Boolean(settings["security.masterKeyHash"]);
+  const modifierKeyName = getModifierKeyName();
+
+  useEffect(() => {
+    updateStatusRef.current = updateStatus;
+  }, [updateStatus]);
 
   useEffect(() => {
     let disposed = false;
@@ -66,6 +113,18 @@ export function SettingsPage() {
         "connection.keepAliveInterval":
           (await store.get<number>("connection.keepAliveInterval")) ??
           DEFAULT_APP_SETTINGS["connection.keepAliveInterval"],
+        "security.masterKeyHash":
+          (await store.get<string>("security.masterKeyHash")) ??
+          DEFAULT_APP_SETTINGS["security.masterKeyHash"],
+        "security.masterKeySalt":
+          (await store.get<string>("security.masterKeySalt")) ??
+          DEFAULT_APP_SETTINGS["security.masterKeySalt"],
+        "security.masterKeyEncSalt":
+          (await store.get<string>("security.masterKeyEncSalt")) ??
+          DEFAULT_APP_SETTINGS["security.masterKeyEncSalt"],
+        "security.lockTimeoutMinutes":
+          (await store.get<number>("security.lockTimeoutMinutes")) ??
+          DEFAULT_APP_SETTINGS["security.lockTimeoutMinutes"],
         "terminal.theme":
           (await store.get<AppSettings["terminal.theme"]>("terminal.theme")) ??
           DEFAULT_APP_SETTINGS["terminal.theme"],
@@ -87,6 +146,9 @@ export function SettingsPage() {
         "terminal.lineHeight":
           (await store.get<number>("terminal.lineHeight")) ??
           DEFAULT_APP_SETTINGS["terminal.lineHeight"],
+        "terminal.autoCopy":
+          (await store.get<boolean>("terminal.autoCopy")) ??
+          DEFAULT_APP_SETTINGS["terminal.autoCopy"],
         "ai.enabled":
           (await store.get<boolean>("ai.enabled")) ??
           DEFAULT_APP_SETTINGS["ai.enabled"],
@@ -115,6 +177,84 @@ export function SettingsPage() {
     void run();
     return () => {
       disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const run = async () => {
+      try {
+        const version = await getVersion();
+        if (!disposed) setAppVersion(version);
+      } catch {
+        if (!disposed) setAppVersion("--");
+      }
+    };
+    void run();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const onUpdateChecked = (
+      event: Event,
+    ) => {
+      const detail = (
+        event as CustomEvent<{
+          checkedAt?: string;
+          error?: string;
+        }>
+      ).detail;
+      if (!detail) return;
+      if (detail.checkedAt) {
+        setUpdateCheckedAt(detail.checkedAt);
+      }
+      if (detail.error && updateStatusRef.current === "idle") {
+        setUpdateStatus("error");
+        setUpdateMessage(detail.error);
+      }
+    };
+
+    const onUpdateAvailable = (
+      event: Event,
+    ) => {
+      const detail = (
+        event as CustomEvent<{
+          version?: string;
+          date?: string;
+          notes?: string;
+          checkedAt?: string;
+        }>
+      ).detail;
+      if (!detail) return;
+      setUpdateInfo({
+        version: detail.version,
+        date: detail.date,
+        notes: detail.notes,
+      });
+      if (detail.checkedAt) {
+        setUpdateCheckedAt(detail.checkedAt);
+      }
+      if (updateStatusRef.current === "idle" || updateStatusRef.current === "up-to-date") {
+        setUpdateStatus("available");
+        setUpdateMessage(detail.version ? `发现新版本 v${detail.version}` : "发现新版本");
+      }
+    };
+
+    window.addEventListener("app-update-checked", onUpdateChecked);
+    window.addEventListener("app-update-available", onUpdateAvailable);
+    return () => {
+      window.removeEventListener("app-update-checked", onUpdateChecked);
+      window.removeEventListener("app-update-available", onUpdateAvailable);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      releaseUpdateHandle();
     };
   }, []);
 
@@ -148,6 +288,153 @@ export function SettingsPage() {
     settings["ai.anthropic.apiKey"],
     settings["ai.model"],
   ]);
+
+  useEffect(() => {
+    setMasterKeyStatus("idle");
+    setMasterKeyMessage(null);
+  }, [masterKeyInput, masterKeyConfirm]);
+
+  useEffect(() => {
+    setExportStatus("idle");
+    setExportMessage(null);
+  }, []);
+
+  const handleSetMasterKey = async () => {
+    if (masterKeyInput.trim().length < 6) {
+      setMasterKeyStatus("error");
+      setMasterKeyMessage("至少 6 位字符");
+      return;
+    }
+    if (masterKeyInput !== masterKeyConfirm) {
+      setMasterKeyStatus("error");
+      setMasterKeyMessage("两次输入不一致");
+      return;
+    }
+    setMasterKeyStatus("saving");
+    setMasterKeyMessage(null);
+    try {
+      const salt = generateSalt();
+      const hash = await hashMasterKey(masterKeyInput, salt);
+      const encSalt =
+        settings["security.masterKeyEncSalt"] || generateSalt();
+      updateSetting("security.masterKeyHash", hash);
+      updateSetting("security.masterKeySalt", salt);
+      updateSetting("security.masterKeyEncSalt", encSalt);
+      if (settings["security.lockTimeoutMinutes"] <= 0) {
+        updateSetting("security.lockTimeoutMinutes", 10);
+      }
+      setMasterKeySession(masterKeyInput);
+      setMasterKeyInput("");
+      setMasterKeyConfirm("");
+      setMasterKeyStatus("success");
+      setMasterKeyMessage("已更新");
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("master-key-updated"));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMasterKeyStatus("error");
+      setMasterKeyMessage(message || "设置失败");
+    }
+  };
+
+  const handleClearMasterKey = () => {
+    updateSetting("security.masterKeyHash", "");
+    updateSetting("security.masterKeySalt", "");
+    updateSetting("security.masterKeyEncSalt", "");
+    updateSetting("security.lockTimeoutMinutes", 0);
+    clearMasterKeySession();
+    setMasterKeyInput("");
+    setMasterKeyConfirm("");
+    setMasterKeyStatus("success");
+    setMasterKeyMessage("已清除");
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("master-key-updated"));
+    }
+  };
+
+  const handleExportConfig = async () => {
+    setExportStatus("saving");
+    setExportMessage(null);
+    try {
+      const now = new Date();
+      const dateTag = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
+        now.getDate(),
+      ).padStart(2, "0")}`;
+      const path = await saveDialog({
+        defaultPath: `noterm-config-${dateTag}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) {
+        setExportStatus("idle");
+        return;
+      }
+
+      const settingsStore = await getAppSettingsStore();
+      const entries: Partial<AppSettings> = {};
+      for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<
+        keyof AppSettings
+      >) {
+        entries[key] =
+          (await settingsStore.get<AppSettings[typeof key]>(key)) ??
+          DEFAULT_APP_SETTINGS[key];
+      }
+
+      const exportSettings = {
+        ...entries,
+        "security.masterKeyHash": "",
+        "security.masterKeySalt": "",
+        "ai.openai.apiKey": "",
+        "ai.anthropic.apiKey": "",
+      } as AppSettings;
+
+      const connectionStore = await load("connections.json");
+      const connections = (await connectionStore.get("connections")) ?? [];
+      const keysStore = await load("keys.json");
+      const profiles = (await keysStore.get("profiles")) ?? [];
+
+      const payload = {
+        version: 1,
+        exportedAt: now.toISOString(),
+        settings: exportSettings,
+        connections,
+        profiles,
+      };
+
+      await writeTextFile(path, JSON.stringify(payload, null, 2));
+      setExportStatus("success");
+      setExportMessage(null);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: "导出成功",
+              detail: "配置文件已保存",
+              tone: "success",
+              toast: true,
+              store: false,
+            },
+          }),
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setExportStatus("error");
+      setExportMessage(null);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: "导出失败",
+              detail: message || "导出失败",
+              tone: "error",
+              autoOpen: true,
+            },
+          }),
+        );
+      }
+    }
+  };
 
   const handleAiTest = async () => {
     if (!settings["ai.enabled"]) {
@@ -220,6 +507,128 @@ export function SettingsPage() {
     }
   };
 
+  const formatUpdateError = (error: unknown) => {
+    if (!error) return "更新失败";
+    if (error instanceof Error) return error.message;
+    return String(error);
+  };
+
+  const releaseUpdateHandle = () => {
+    const current = updateRef.current;
+    updateRef.current = null;
+    const close = (current as { close?: () => Promise<void> | void } | null)?.close;
+    if (typeof close === "function") {
+      void close();
+    }
+  };
+
+  const handleCheckUpdate = async () => {
+    setUpdateStatus("checking");
+    setUpdateMessage("正在检查更新...");
+    setUpdateProgress(null);
+    try {
+      const update = await checkForUpdates();
+      setUpdateCheckedAt(new Date().toISOString());
+      releaseUpdateHandle();
+      updateRef.current = update;
+      if (!update?.available) {
+        setUpdateStatus("up-to-date");
+        setUpdateMessage("已是最新版本");
+        setUpdateInfo(null);
+        return;
+      }
+      setUpdateStatus("available");
+      setUpdateInfo({
+        version: update.version,
+        date: update.date,
+        notes: update.body,
+      });
+      setUpdateMessage(update.version ? `发现新版本 v${update.version}` : "发现新版本");
+    } catch (error) {
+      setUpdateStatus("error");
+      setUpdateMessage(formatUpdateError(error));
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    setUpdateStatus("downloading");
+    setUpdateMessage("正在下载更新...");
+    setUpdateProgress(0);
+    try {
+      let update = updateRef.current;
+      if (!update || !update.available) {
+        update = await checkForUpdates();
+        releaseUpdateHandle();
+        updateRef.current = update;
+      }
+      if (!update?.available) {
+        setUpdateStatus("up-to-date");
+        setUpdateMessage("已是最新版本");
+        setUpdateInfo(null);
+        setUpdateProgress(null);
+        return;
+      }
+
+      setUpdateInfo({
+        version: update.version,
+        date: update.date,
+        notes: update.body,
+      });
+
+      let downloaded = 0;
+      let total = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = Number(event.data?.contentLength ?? 0);
+          if (!total) {
+            setUpdateProgress(null);
+          } else {
+            setUpdateProgress(0);
+          }
+          return;
+        }
+        if (event.event === "Progress") {
+          downloaded += Number(event.data?.chunkLength ?? 0);
+          if (total > 0) {
+            const next = Math.min(100, Math.round((downloaded / total) * 100));
+            setUpdateProgress(next);
+          }
+          return;
+        }
+        if (event.event === "Finished") {
+          setUpdateProgress(100);
+        }
+      });
+      setUpdateStatus("installed");
+      setUpdateMessage("更新已安装，请重启应用完成更新");
+    } catch (error) {
+      setUpdateStatus("error");
+      setUpdateMessage(formatUpdateError(error));
+    }
+  };
+
+  const updateToneClass =
+    updateStatus === "error"
+      ? "settings-test-status--error"
+      : updateStatus === "up-to-date" || updateStatus === "installed"
+        ? "settings-test-status--success"
+        : updateStatus === "available"
+          ? "settings-test-status--success"
+          : "";
+  const updateReleaseLabel = updateInfo?.date
+    ? new Date(updateInfo.date).toLocaleDateString()
+    : null;
+  const updateDescription = updateInfo
+    ? updateInfo.version
+      ? `发现新版本 v${updateInfo.version}${updateReleaseLabel ? ` · ${updateReleaseLabel}` : ""}`
+      : "发现新版本"
+    : "启动时自动检查，可在此手动检查";
+  const updateCheckedLabel = updateCheckedAt
+    ? new Date(updateCheckedAt).toLocaleString()
+    : null;
+  const showDownloadAction =
+    Boolean(updateInfo) && updateStatus !== "downloading" && updateStatus !== "installed";
+
   return (
     <div className="settings-page">
       <h1>设置</h1>
@@ -286,6 +695,153 @@ export function SettingsPage() {
               }
               disabled={!settings["connection.keepAlive"]}
             />
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h2>安全设置</h2>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">Master Key</div>
+            <div className="settings-item-description">
+              {hasMasterKey ? "已设置，用于解锁应用" : "设置后用于解锁应用"}
+            </div>
+          </div>
+          <div className="settings-item-control settings-item-control--stack">
+            <div className="settings-masterkey-row">
+              <input
+                type="password"
+                className="settings-input settings-masterkey-input"
+                placeholder="输入新 Master Key"
+                value={masterKeyInput}
+                onChange={(e) => setMasterKeyInput(e.target.value)}
+              />
+            </div>
+            <div className="settings-masterkey-row">
+              <input
+                type="password"
+                className="settings-input settings-masterkey-input"
+                placeholder="确认 Master Key"
+                value={masterKeyConfirm}
+                onChange={(e) => setMasterKeyConfirm(e.target.value)}
+              />
+            </div>
+            <div className="settings-masterkey-actions">
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                onClick={() => void handleSetMasterKey()}
+                disabled={masterKeyStatus === "saving"}
+              >
+                {masterKeyStatus === "saving" ? "保存中..." : "设置"}
+              </button>
+              {hasMasterKey && (
+                <button
+                  className="btn btn-secondary btn-sm settings-danger-btn"
+                  type="button"
+                  onClick={handleClearMasterKey}
+                >
+                  清除
+                </button>
+              )}
+            </div>
+            {masterKeyMessage && (
+              <span
+                className={`settings-test-status settings-test-status--${
+                  masterKeyStatus === "error" ? "error" : "success"
+                }`}
+              >
+                {masterKeyMessage}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">自动锁定</div>
+            <div className="settings-item-description">
+              软件空闲超过设定分钟后需要输入 Master Key
+            </div>
+          </div>
+          <div className="settings-item-control">
+            <select
+              className="settings-select"
+              value={String(settings["security.lockTimeoutMinutes"])}
+              onChange={(e) =>
+                updateSetting(
+                  "security.lockTimeoutMinutes",
+                  Math.max(0, parseInt(e.target.value, 10) || 0),
+                )
+              }
+              disabled={!hasMasterKey}
+            >
+              {LOCK_TIMEOUT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h2>软件更新</h2>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">当前版本</div>
+            <div className="settings-item-description">启动时自动检查更新</div>
+          </div>
+          <div className="settings-item-control">
+            <span className="settings-update-version">v{appVersion}</span>
+          </div>
+        </div>
+        <div className="settings-item settings-item--start">
+          <div className="settings-item-info">
+            <div className="settings-item-label">更新状态</div>
+            <div className="settings-item-description">{updateDescription}</div>
+            {updateInfo?.notes && (
+              <div className="settings-update-notes">{updateInfo.notes}</div>
+            )}
+          </div>
+          <div className="settings-item-control settings-item-control--stack">
+            <div className="settings-update-actions">
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                onClick={() => void handleCheckUpdate()}
+                disabled={updateStatus === "checking" || updateStatus === "downloading"}
+              >
+                {updateStatus === "checking" ? "检查中..." : "检查更新"}
+              </button>
+              {showDownloadAction && (
+                <button
+                  className="btn btn-primary btn-sm"
+                  type="button"
+                  onClick={() => void handleDownloadUpdate()}
+                  disabled={updateStatus === "downloading"}
+                >
+                  {updateStatus === "downloading" ? "下载中..." : "下载并安装"}
+                </button>
+              )}
+            </div>
+            {updateMessage && (
+              <span className={`settings-test-status ${updateToneClass}`}>
+                {updateMessage}
+              </span>
+            )}
+            {updateStatus === "downloading" && updateProgress !== null && (
+              <div className="settings-update-progress" aria-label="更新下载进度">
+                <div
+                  className="settings-update-progress-bar"
+                  style={{ width: `${updateProgress}%` }}
+                />
+              </div>
+            )}
+            {updateCheckedLabel && (
+              <span className="settings-update-meta">上次检查 {updateCheckedLabel}</span>
+            )}
           </div>
         </div>
       </div>
@@ -423,6 +979,25 @@ export function SettingsPage() {
                   </select>
                 </div>
               </div>
+              <div className="settings-advanced">
+                <div className="settings-advanced-title">高级设置</div>
+                <div className="settings-row settings-row--two">
+                  <div className="settings-field">
+                    <label className="settings-field-label">自动复制</label>
+                    <div
+                      className={`toggle-switch ${settings["terminal.autoCopy"] ? "active" : ""}`}
+                      onClick={() => updateSetting("terminal.autoCopy", !settings["terminal.autoCopy"])}
+                    >
+                      <div className="toggle-switch-handle" />
+                    </div>
+                  </div>
+                  <div className="settings-field">
+                    <div className="settings-field-description">
+                      选中文本后自动复制到剪贴板
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
             <div className="settings-card-preview">
               <div className="settings-preview-header">字体设置预览</div>
@@ -465,7 +1040,7 @@ export function SettingsPage() {
           </div>
           <div className="settings-item-control">
             <div className="shortcut-keys">
-              <span className="shortcut-key">Ctrl/Command</span>
+              <span className="shortcut-key">{modifierKeyName}</span>
               <span className="shortcut-key">T</span>
             </div>
           </div>
@@ -477,8 +1052,32 @@ export function SettingsPage() {
           </div>
           <div className="settings-item-control">
             <div className="shortcut-keys">
-              <span className="shortcut-key">Ctrl/Command</span>
+              <span className="shortcut-key">{modifierKeyName}</span>
               <span className="shortcut-key">D</span>
+            </div>
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">切换会话</div>
+            <div className="settings-item-description">在顶部标签页之间切换</div>
+          </div>
+          <div className="settings-item-control">
+            <div className="shortcut-keys">
+              <span className="shortcut-key">{modifierKeyName}</span>
+              <span className="shortcut-key">~</span>
+            </div>
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">连接管理器</div>
+            <div className="settings-item-description">收起或打开连接管理器</div>
+          </div>
+          <div className="settings-item-control">
+            <div className="shortcut-keys">
+              <span className="shortcut-key">{modifierKeyName}</span>
+              <span className="shortcut-key">B</span>
             </div>
           </div>
         </div>
@@ -634,6 +1233,29 @@ export function SettingsPage() {
                 {aiTestMessage}
               </span>
             )}
+          </div>
+        </div>
+      </div>
+
+
+      <div className="settings-section">
+        <h2>数据管理</h2>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">导出配置</div>
+            <div className="settings-item-description">
+              导出当前连接、密钥与设置（启用 Master Key 的敏感字段保持加密）
+            </div>
+          </div>
+          <div className="settings-item-control settings-item-control--stack">
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              onClick={() => void handleExportConfig()}
+              disabled={exportStatus === "saving"}
+            >
+              {exportStatus === "saving" ? "导出中..." : "导出"}
+            </button>
           </div>
         </div>
       </div>

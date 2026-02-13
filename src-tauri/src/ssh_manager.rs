@@ -90,9 +90,23 @@ impl SshManager {
         sess.handshake()
             .map_err(|e| anyhow::anyhow!("SSH handshake failed: {}", e))?;
 
+        let effective_username = if connection.username.trim().is_empty() {
+            std::env::var("USER")
+                .ok()
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| {
+                    std::env::var("USERNAME")
+                        .ok()
+                        .filter(|name| !name.trim().is_empty())
+                })
+                .unwrap_or_else(|| "root".to_string())
+        } else {
+            connection.username.trim().to_string()
+        };
+
         match &connection.auth_type {
             AuthType::Password { password } => {
-                sess.userauth_password(&connection.username, password)?;
+                sess.userauth_password(&effective_username, password)?;
             }
             AuthType::PrivateKey { key_path, key_content, passphrase } => {
                 let passphrase_str = passphrase.as_deref();
@@ -100,7 +114,7 @@ impl SshManager {
                 if let Some(content) = key_content {
                     if !content.is_empty() {
                         let result = sess.userauth_pubkey_memory(
-                            &connection.username,
+                            &effective_username,
                             None,
                             content,
                             passphrase_str,
@@ -117,7 +131,7 @@ impl SshManager {
                             return Err(anyhow::anyhow!("Both key_path and key_content are empty"));
                         }
                         sess.userauth_pubkey_file(
-                            &connection.username,
+                            &effective_username,
                             None,
                             Path::new(key_path),
                             passphrase_str,
@@ -128,7 +142,7 @@ impl SshManager {
                         return Err(anyhow::anyhow!("key_path is empty"));
                     }
                     sess.userauth_pubkey_file(
-                        &connection.username,
+                        &effective_username,
                         None,
                         Path::new(key_path),
                         passphrase_str,

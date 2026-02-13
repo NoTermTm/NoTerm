@@ -10,6 +10,8 @@ export interface RdpConnectionConfig {
   kind: "rdp";
   id: string;
   name: string;
+  tags?: string[];
+  color?: string;
   host: string;
   port: number;
   username: string;

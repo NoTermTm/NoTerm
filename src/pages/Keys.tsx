@@ -3,6 +3,14 @@ import { load } from "@tauri-apps/plugin-store";
 import { AppIcon } from "../components/AppIcon";
 import { Modal } from "../components/Modal";
 import { generateKeypair, type GenerateKeyAlgorithm } from "../api/keys";
+import { readAppSetting } from "../store/appSettings";
+import {
+  decryptString,
+  encryptString,
+  isEncryptedPayload,
+  type EncryptedPayload,
+} from "../utils/security";
+import { getMasterKeySession } from "../utils/securitySession";
 import type { AuthProfile } from "../types/auth";
 import type { AuthType } from "../types/ssh";
 import "./Keys.css";
@@ -15,6 +23,95 @@ async function getStore() {
   }
   return store;
 }
+
+type SecurityContext = {
+  masterKey: string | null;
+  encSalt: string;
+  savePassword: boolean;
+};
+
+async function getSecurityContext(): Promise<SecurityContext> {
+  const masterKey = getMasterKeySession();
+  const encSalt = await readAppSetting("security.masterKeyEncSalt");
+  const savePassword = await readAppSetting("connection.savePassword");
+  return {
+    masterKey: masterKey && encSalt ? masterKey : null,
+    encSalt,
+    savePassword,
+  };
+}
+
+const decryptMaybe = async (
+  value: unknown,
+  ctx: SecurityContext,
+): Promise<string> => {
+  if (!value) return "";
+  if (isEncryptedPayload(value)) {
+    if (!ctx.masterKey) return "";
+    try {
+      return await decryptString(value, ctx.masterKey, ctx.encSalt);
+    } catch {
+      return "";
+    }
+  }
+  if (typeof value === "string") return value;
+  return "";
+};
+
+const encryptMaybe = async (
+  value: string | undefined,
+  ctx: SecurityContext,
+): Promise<string | EncryptedPayload> => {
+  if (!value?.trim()) return "";
+  if (!ctx.masterKey || !ctx.savePassword) return "";
+  return encryptString(value, ctx.masterKey, ctx.encSalt);
+};
+
+const deserializeProfile = async (profile: AuthProfile, ctx: SecurityContext) => {
+  if (profile.auth_type.type === "Password") {
+    return {
+      ...profile,
+      auth_type: {
+        ...profile.auth_type,
+        password: await decryptMaybe(profile.auth_type.password, ctx),
+      },
+    };
+  }
+  if (profile.auth_type.type === "PrivateKey") {
+    return {
+      ...profile,
+      auth_type: {
+        ...profile.auth_type,
+        key_content: await decryptMaybe(profile.auth_type.key_content, ctx),
+        passphrase: await decryptMaybe(profile.auth_type.passphrase, ctx),
+      },
+    };
+  }
+  return profile;
+};
+
+const serializeProfile = async (profile: AuthProfile, ctx: SecurityContext) => {
+  if (profile.auth_type.type === "Password") {
+    return {
+      ...profile,
+      auth_type: {
+        ...profile.auth_type,
+        password: await encryptMaybe(profile.auth_type.password, ctx),
+      },
+    };
+  }
+  if (profile.auth_type.type === "PrivateKey") {
+    return {
+      ...profile,
+      auth_type: {
+        ...profile.auth_type,
+        key_content: await encryptMaybe(profile.auth_type.key_content, ctx),
+        passphrase: await encryptMaybe(profile.auth_type.passphrase, ctx),
+      },
+    };
+  }
+  return profile;
+};
 
 function createEmptyProfile(): AuthProfile {
   return {
@@ -117,16 +214,44 @@ export function KeysPage() {
     const run = async () => {
       const s = await getStore();
       const saved = await s.get<AuthProfile[]>("profiles");
-      if (saved) setProfiles(saved);
+      if (saved) {
+        const ctx = await getSecurityContext();
+        const next = await Promise.all(saved.map((p) => deserializeProfile(p, ctx)));
+        setProfiles(next);
+      }
     };
     void run();
   }, []);
 
+  useEffect(() => {
+    const refresh = () => {
+      void (async () => {
+        const s = await getStore();
+        const saved = await s.get<AuthProfile[]>("profiles");
+        if (!saved) return;
+        const ctx = await getSecurityContext();
+        const next = await Promise.all(saved.map((p) => deserializeProfile(p, ctx)));
+        setProfiles(next);
+      })();
+    };
+    window.addEventListener("master-key-updated", refresh);
+    return () => {
+      window.removeEventListener("master-key-updated", refresh);
+    };
+  }, []);
+
   const saveProfiles = async (next: AuthProfile[]) => {
     const s = await getStore();
-    await s.set("profiles", next);
+    const ctx = await getSecurityContext();
+    const persisted = await Promise.all(
+      next.map((profile) => serializeProfile(profile, ctx)),
+    );
+    await s.set("profiles", persisted);
     await s.save();
     setProfiles(next);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("auth-profiles-updated"));
+    }
   };
 
   const filtered = useMemo(() => {

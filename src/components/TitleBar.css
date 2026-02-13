@@ -126,13 +126,17 @@
     gap: 8px;
     padding: 4px 12px;
     background: transparent;
-    border-radius: 6px;
+    border-radius: 4px;
     cursor: pointer;
     transition: all 0.2s ease;
     border: none;
     position: relative;
     max-width: 180px;
     -webkit-app-region: no-drag;
+    -webkit-border-radius: 4px;
+    -moz-border-radius: 4px;
+    -ms-border-radius: 4px;
+    -o-border-radius: 4px;
 }
 
 .tab:hover {
@@ -141,6 +145,19 @@
 
 .tab.active {
     background: var(--bg-active);
+}
+
+.tab.tab--colored {
+    border: 1px solid var(--tab-color-border);
+    background: var(--tab-color-bg);
+}
+
+.tab.tab--colored:hover {
+    background: var(--tab-color-bg-hover);
+}
+
+.tab.tab--colored.active {
+    background: var(--tab-color-bg-hover);
 }
 
 .tab-content {

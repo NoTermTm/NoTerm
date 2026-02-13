@@ -59,6 +59,10 @@
     gap: 16px;
 }
 
+.space-content--with-editor {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+}
+
 .space-panel {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
@@ -237,4 +241,54 @@
     display: flex;
     gap: 8px;
     justify-content: flex-end;
+}
+
+.space-panel--editor .space-panel-body {
+    gap: 12px;
+}
+
+.space-editor-body textarea {
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--border-light);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    padding: 10px;
+    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    resize: vertical;
+}
+
+.space-editor-body textarea:focus,
+.space-editor-body input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(15, 143, 255, 0.2);
+}
+
+.space-editor-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.space-editor-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+
+.space-editor-meta-label {
+    color: var(--text-secondary);
+    font-weight: 600;
+    margin-right: 6px;
+}
+
+@media (max-width: 1100px) {
+    .space-content--with-editor {
+        grid-template-columns: minmax(0, 1fr);
+    }
 }

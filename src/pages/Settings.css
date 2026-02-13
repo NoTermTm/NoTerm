@@ -35,6 +35,10 @@
     border-bottom: 1px solid var(--border-color);
 }
 
+.settings-item--start {
+    align-items: flex-start;
+}
+
 .settings-item:last-child {
     border-bottom: none;
 }
@@ -64,6 +68,85 @@
     flex-direction: column;
     align-items: flex-end;
     gap: 8px;
+}
+
+.settings-update-version {
+    display: inline-flex;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+}
+
+.settings-update-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.settings-update-meta {
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+
+.settings-update-notes {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: 1px dashed var(--border-color);
+    border-radius: 8px;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    max-width: 520px;
+}
+
+.settings-update-progress {
+    width: 180px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+}
+
+.settings-update-progress-bar {
+    height: 100%;
+    background: var(--accent);
+    width: 0;
+    transition: width 0.18s ease;
+}
+
+.settings-masterkey-row {
+    width: 320px;
+}
+
+.settings-masterkey-input {
+    width: 100%;
+}
+
+.settings-masterkey-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.settings-danger-btn {
+    color: #c2413a;
+    background: rgba(229, 20, 0, 0.08);
+    border: 1px solid rgba(229, 20, 0, 0.2);
+}
+
+.settings-danger-btn:hover {
+    background: rgba(229, 20, 0, 0.12);
+    border-color: rgba(229, 20, 0, 0.28);
 }
 
 .settings-test-status {
@@ -107,6 +190,20 @@
     gap: 14px;
 }
 
+.settings-advanced {
+    border: 1px dashed var(--border-color);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.6);
+}
+
+.settings-advanced-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    margin-bottom: 10px;
+}
+
 .settings-row {
     display: grid;
     gap: 12px;
@@ -134,6 +231,13 @@
     font-size: 13px;
     color: var(--text-secondary);
     font-weight: 600;
+}
+
+.settings-field-description {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+    margin-top: 6px;
 }
 
 .settings-card-preview {

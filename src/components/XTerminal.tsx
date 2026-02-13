@@ -1,8 +1,17 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { sshApi } from "../api/ssh";
@@ -20,6 +29,7 @@ import {
   type TerminalThemeName,
 } from "../store/appSettings";
 import { getXtermTheme } from "../terminal/xtermThemes";
+import { getModifierKeyAbbr, getModifierKeyLabel } from "../utils/platform";
 
 interface XTerminalProps {
   sessionId: string;
@@ -34,6 +44,46 @@ interface XTerminalProps {
 }
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
+type TransferTaskDirection = "upload" | "download";
+type TransferTaskStatus = "running" | "success" | "failed";
+
+interface TransferTask {
+  id: string;
+  direction: TransferTaskDirection;
+  name: string;
+  sourcePath: string;
+  targetPath: string;
+  status: TransferTaskStatus;
+  progress: number;
+  detail?: string;
+  startedAt: number;
+  finishedAt?: number;
+}
+
+const OPENAI_MODEL_OPTIONS = [
+  "gpt-4o",
+  "gpt-4o-mini",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+  "gpt-4.1-nano",
+];
+
+const ANTHROPIC_MODEL_OPTIONS = [
+  "claude-sonnet-4-5-20250929",
+  "claude-opus-4-20250514",
+  "claude-3-5-sonnet-20240620",
+  "claude-3-5-haiku-20241022",
+];
+const MAX_TRANSFER_TASKS = 120;
+const TRANSFER_STATUS_LABEL: Record<TransferTaskStatus, string> = {
+  running: "传输中",
+  success: "已完成",
+  failed: "失败",
+};
+const TRANSFER_DIRECTION_LABEL: Record<TransferTaskDirection, string> = {
+  upload: "上传",
+  download: "下载",
+};
 
 export function XTerminal({
   sessionId,
@@ -62,11 +112,15 @@ export function XTerminal({
   const [sftpEntries, setSftpEntries] = useState<SftpEntry[]>([]);
   const [sftpLoading, setSftpLoading] = useState(false);
   const [sftpError, setSftpError] = useState<string | null>(null);
+  const [sftpDragging, setSftpDragging] = useState(false);
+  const [sftpWidth, setSftpWidth] = useState(280);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [renameEntry, setRenameEntry] = useState<SftpEntry | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [chmodEntry, setChmodEntry] = useState<SftpEntry | null>(null);
   const [chmodValue, setChmodValue] = useState("");
+  const modifierKeyAbbr = getModifierKeyAbbr();
+  const modifierKeyLabel = getModifierKeyLabel();
   const [sftpActionError, setSftpActionError] = useState<string | null>(null);
   const [sftpActionBusy, setSftpActionBusy] = useState(false);
   const [sftpMenu, setSftpMenu] = useState<{
@@ -75,10 +129,20 @@ export function XTerminal({
     y: number;
   } | null>(null);
   const sftpMenuRef = useRef<HTMLDivElement>(null);
+  const sftpDragCounterRef = useRef(0);
+  const sftpPanelRef = useRef<HTMLDivElement>(null);
+  const sftpPathRef = useRef(sftpPath);
+  const sftpDraggingRef = useRef(false);
+  const writeQueueRef = useRef<string[]>([]);
+  const writingRef = useRef(false);
+  const reconnectPromiseRef = useRef<Promise<boolean> | null>(null);
+  const writeBlockedRef = useRef(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptPanelOpen, setScriptPanelOpen] = useState(false);
+  const [transferPanelOpen, setTransferPanelOpen] = useState(false);
+  const [transferTasks, setTransferTasks] = useState<TransferTask[]>([]);
   const [aiOpen, setAiOpen] = useState(false);
   const [scriptTarget, setScriptTarget] = useState<"current" | "all">("current");
   const [scriptText, setScriptText] = useState("");
@@ -86,14 +150,186 @@ export function XTerminal({
   const [aiInput, setAiInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [aiWidth, setAiWidth] = useState(360);
+  const [aiProvider, setAiProvider] = useState<"openai" | "anthropic">(
+    DEFAULT_APP_SETTINGS["ai.provider"],
+  );
+  const [aiModel, setAiModel] = useState<string>("");
+  const aiModelTouchedRef = useRef(false);
+  const [aiModelMenuOpen, setAiModelMenuOpen] = useState(false);
+  const aiModelMenuRef = useRef<HTMLDivElement>(null);
+  const [resizing, setResizing] = useState<{
+    type: "sftp" | "ai";
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+  const [terminalIssue, setTerminalIssue] = useState<{
+    message: string;
+    timestamp: number;
+  } | null>(null);
+  const terminalIssueRef = useRef<{
+    message: string;
+    timestamp: number;
+  } | null>(null);
+  const terminalLogRef = useRef<
+    Array<{ time: string; level: "info" | "warn" | "error"; message: string }>
+  >([]);
+  const lastOutputAtRef = useRef<number>(0);
+  const lastInputAtRef = useRef<number>(0);
   const [termMenu, setTermMenu] = useState<{ x: number; y: number } | null>(null);
   const termMenuRef = useRef<HTMLDivElement>(null);
+  const autoCopyRef = useRef<boolean>(DEFAULT_APP_SETTINGS["terminal.autoCopy"]);
+  const lastSelectionRef = useRef<string>("");
+  const lastCopyAtRef = useRef<number>(0);
+  const modelOptions = aiProvider === "openai" ? OPENAI_MODEL_OPTIONS : ANTHROPIC_MODEL_OPTIONS;
+  const modelOptionsWithCurrent =
+    aiModel && !modelOptions.includes(aiModel)
+      ? [aiModel, ...modelOptions]
+      : modelOptions;
+  const aiHistoryKey = `ai.history.${sessionId}`;
+  const aiHistoryLoadedRef = useRef(false);
 
   const writeToShell = (data: string) => {
     if (isLocal) {
       return sshApi.localWriteToShell(sessionId, data);
     }
     return sshApi.writeToShell(sessionId, data);
+  };
+
+  useEffect(() => {
+    terminalIssueRef.current = terminalIssue;
+  }, [terminalIssue]);
+
+  useEffect(() => {
+    sftpPathRef.current = sftpPath;
+  }, [sftpPath]);
+
+  useEffect(() => {
+    sftpDraggingRef.current = sftpDragging;
+  }, [sftpDragging]);
+
+  const pushTerminalLog = (
+    level: "info" | "warn" | "error",
+    message: string,
+  ) => {
+    const time = new Date().toISOString();
+    const next = [...terminalLogRef.current, { time, level, message }];
+    if (next.length > 160) {
+      next.splice(0, next.length - 160);
+    }
+    terminalLogRef.current = next;
+  };
+
+  const copyTerminalLog = async () => {
+    const header = `session=${sessionId} local=${isLocal} conn=${connStatus} sftp=${sftpOpen} ai=${aiOpen} lastInput=${lastInputAtRef.current} lastOutput=${lastOutputAtRef.current}`;
+    const lines = terminalLogRef.current.map(
+      (item) => `${item.time} [${item.level}] ${item.message}`,
+    );
+    await clipboardWrite([header, ...lines].join("\n"));
+  };
+
+  const startReconnectFlow = () => {
+    if (isLocal) return;
+    if (reconnectPromiseRef.current) return;
+    writeBlockedRef.current = true;
+    reconnectPromiseRef.current = (async () => {
+      let ok = false;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          pushTerminalLog("info", `reconnect attempt ${attempt}`);
+          await connectNow();
+          const connected = await sshApi.isConnected(sessionId);
+          if (connected) {
+            ok = true;
+            pushTerminalLog("info", "reconnect ok");
+            break;
+          }
+        } catch (error) {
+          pushTerminalLog("warn", `reconnect error: ${formatError(error)}`);
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 300 * attempt));
+      }
+      if (!ok) {
+        pushTerminalLog("warn", "reconnect failed");
+      }
+      return ok;
+    })().finally(() => {
+      writeBlockedRef.current = false;
+      reconnectPromiseRef.current = null;
+    });
+    reconnectPromiseRef.current
+      .then((ok) => {
+        if (ok) {
+          void flushWriteQueue();
+        } else {
+          setConnStatus("error");
+          setConnError("会话已断开");
+        }
+      })
+      .catch(() => {
+        // ignore
+      });
+  };
+
+  const writeToShellWithTimeout = async (data: string) => {
+    const startedAt = Date.now();
+    pushTerminalLog("info", `input bytes=${data.length}`);
+    let timeoutId: number | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error("write_timeout"));
+        }, 4000);
+        pushTerminalLog("info", "write attempt 1");
+        writeToShell(data)
+          .then(() => resolve())
+          .catch((err) => reject(err));
+      });
+      pushTerminalLog("info", `write ok ${Date.now() - startedAt}ms`);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const detail = message === "write_timeout" ? "写入超时" : "写入失败";
+      pushTerminalLog("error", `${detail} (${Date.now() - startedAt}ms) err=${message}`);
+      if (!terminalIssueRef.current) {
+        setTerminalIssue({
+          message: `${detail}，请检查连接状态`,
+          timestamp: Date.now(),
+        });
+      }
+      if (!isLocal) {
+        startReconnectFlow();
+      }
+      return false;
+    } finally {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+  };
+
+  const flushWriteQueue = async () => {
+    if (writingRef.current) return;
+    if (writeBlockedRef.current) return;
+    writingRef.current = true;
+    try {
+      while (writeQueueRef.current.length > 0) {
+        const batch = writeQueueRef.current.join("");
+        writeQueueRef.current = [];
+        const ok = await writeToShellWithTimeout(batch);
+        if (!ok) {
+          writeQueueRef.current = [batch, ...writeQueueRef.current];
+          break;
+        }
+      }
+    } finally {
+      writingRef.current = false;
+    }
+  };
+
+  const enqueueTerminalWrite = (data: string) => {
+    writeQueueRef.current.push(data);
+    void flushWriteQueue();
   };
 
   const resizePty = (cols: number, rows: number) => {
@@ -112,6 +348,12 @@ export function XTerminal({
 
   const clipboardWrite = async (text: string) => {
     if (!text) return;
+    try {
+      await invoke("clipboard_write_text", { text });
+      return;
+    } catch {
+      // fallback to Web API
+    }
     try {
       await navigator.clipboard.writeText(text);
       return;
@@ -137,6 +379,13 @@ export function XTerminal({
   };
 
   const clipboardRead = async () => {
+    try {
+      const text = await invoke<string>("clipboard_read_text");
+      if (typeof text === "string") return text;
+    } catch {
+      // fallback to Web API
+    }
+
     try {
       return await navigator.clipboard.readText();
     } catch {
@@ -175,6 +424,15 @@ export function XTerminal({
     };
   };
 
+  const syncAiSettings = async () => {
+    const settings = await readAiSettings();
+    setAiProvider(settings.provider);
+    if (!aiModelTouchedRef.current) {
+      setAiModel(settings.model);
+    }
+    return settings;
+  };
+
   useEffect(() => {
     onConnectRef.current = onConnect;
   }, [onConnect]);
@@ -185,6 +443,44 @@ export function XTerminal({
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const loadHistory = async () => {
+      try {
+        const store = await getAppSettingsStore();
+        const raw = await store.get<
+          Array<AiMessage & { createdAt?: number }>
+        >(aiHistoryKey);
+        if (!disposed && Array.isArray(raw) && raw.length > 0) {
+          const normalized = raw
+            .filter((item) => item && typeof item.content === "string" && item.role)
+            .map((item) => ({
+              role: item.role,
+              content: item.content,
+              createdAt: item.createdAt ?? Date.now(),
+            }));
+          setAiMessages(normalized);
+        }
+      } finally {
+        aiHistoryLoadedRef.current = true;
+      }
+    };
+
+    void loadHistory();
+    return () => {
+      disposed = true;
+    };
+  }, [aiHistoryKey]);
+
+  useEffect(() => {
+    if (!aiHistoryLoadedRef.current) return;
+    const persist = async () => {
+      const store = await getAppSettingsStore();
+      await store.set(aiHistoryKey, aiMessages);
+    };
+    void persist();
+  }, [aiHistoryKey, aiMessages]);
 
   const formatError = (error: unknown) => {
     if (typeof error === "string") return error;
@@ -201,6 +497,54 @@ export function XTerminal({
       hour: "2-digit",
       minute: "2-digit",
     }).format(new Date(value));
+
+  const formatTransferTime = (value: number) =>
+    new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(new Date(value));
+
+  const createTransferTask = (
+    direction: TransferTaskDirection,
+    name: string,
+    sourcePath: string,
+    targetPath: string,
+  ) => {
+    const id = crypto.randomUUID();
+    const next: TransferTask = {
+      id,
+      direction,
+      name,
+      sourcePath,
+      targetPath,
+      status: "running",
+      progress: 35,
+      startedAt: Date.now(),
+    };
+    setTransferTasks((prev) => [next, ...prev].slice(0, MAX_TRANSFER_TASKS));
+    return id;
+  };
+
+  const updateTransferTask = (id: string, patch: Partial<TransferTask>) => {
+    setTransferTasks((prev) =>
+      prev.map((task) => (task.id === id ? { ...task, ...patch } : task)),
+    );
+  };
+
+  const clearTransferHistory = () => {
+    setTransferTasks((prev) => prev.filter((task) => task.status === "running"));
+  };
+
+  const runningTransferCount = useMemo(
+    () => transferTasks.filter((task) => task.status === "running").length,
+    [transferTasks],
+  );
+
+  const failedTransferCount = useMemo(
+    () => transferTasks.filter((task) => task.status === "failed").length,
+    [transferTasks],
+  );
 
   const endpointLabel = useMemo(() => {
     if (!endpointIp) return "--";
@@ -228,6 +572,41 @@ export function XTerminal({
       await doConnect();
       if (!mountedRef.current) return;
       setConnStatus("connected");
+    } catch (error) {
+      if (!mountedRef.current) return;
+      const message = formatError(error);
+      setConnStatus("error");
+      setConnError(message);
+    }
+  };
+
+  const recoverSessionAfterUnlock = async () => {
+    setConnStatus("connecting");
+    setConnError(null);
+    try {
+      if (isLocal) {
+        await sshApi.localOpenShell(sessionId);
+        if (!mountedRef.current) return;
+        setConnStatus("connected");
+        return;
+      }
+
+      const connected = await sshApi.isConnected(sessionId).catch(() => false);
+      if (connected) {
+        try {
+          await sshApi.openShell(sessionId);
+          if (!mountedRef.current) return;
+          setConnStatus("connected");
+          return;
+        } catch (error) {
+          pushTerminalLog(
+            "warn",
+            `open shell after unlock failed: ${formatError(error)}`,
+          );
+        }
+      }
+
+      await connectNow();
     } catch (error) {
       if (!mountedRef.current) return;
       const message = formatError(error);
@@ -406,6 +785,79 @@ export function XTerminal({
     };
   }, [sftpMenu]);
 
+  useEffect(() => {
+    if (!sftpOpen) {
+      sftpDragCounterRef.current = 0;
+      setSftpDragging(false);
+      return;
+    }
+
+    let active = true;
+    let unlistenDrop: (() => void) | null = null;
+    let unlistenHover: (() => void) | null = null;
+    let unlistenCancel: (() => void) | null = null;
+
+    const withinSftpPanel = (position?: { x: number; y: number }) => {
+      const panel = sftpPanelRef.current;
+      if (!panel || !position) return false;
+      const rect = panel.getBoundingClientRect();
+      return (
+        position.x >= rect.left &&
+        position.x <= rect.right &&
+        position.y >= rect.top &&
+        position.y <= rect.bottom
+      );
+    };
+
+    const resetDragging = () => {
+      sftpDragCounterRef.current = 0;
+      setSftpDragging(false);
+    };
+
+    const register = async () => {
+      unlistenHover = await listen("tauri://file-drop-hover", (event) => {
+        if (!active) return;
+        const payload = event.payload as { position?: { x: number; y: number } } | null;
+        if (withinSftpPanel(payload?.position)) {
+          setSftpDragging(true);
+        } else {
+          setSftpDragging(false);
+        }
+      });
+
+      unlistenCancel = await listen("tauri://file-drop-cancelled", () => {
+        if (!active) return;
+        resetDragging();
+      });
+
+      unlistenDrop = await listen("tauri://file-drop", (event) => {
+        if (!active) return;
+        const payload = event.payload as
+          | { paths?: string[]; position?: { x: number; y: number } }
+          | null;
+        const inside =
+          payload?.position ? withinSftpPanel(payload.position) : sftpDraggingRef.current;
+        resetDragging();
+        if (!inside) return;
+        const paths = Array.isArray(payload?.paths) ? payload?.paths : [];
+        if (!paths.length) return;
+        if (uploadProgress) {
+          setSftpError("正在上传，请稍候");
+          return;
+        }
+        void handleUploadFiles(paths);
+      });
+    };
+
+    void register();
+    return () => {
+      active = false;
+      if (unlistenDrop) unlistenDrop();
+      if (unlistenHover) unlistenHover();
+      if (unlistenCancel) unlistenCancel();
+    };
+  }, [sftpOpen, uploadProgress]);
+
   const handleEntryClick = (entry: SftpEntry) => {
     if (!entry.is_dir) return; // 只处理文件夹点击
 
@@ -460,6 +912,39 @@ export function XTerminal({
     if (value > max) return max;
     return value;
   };
+
+  useEffect(() => {
+    if (!resizing) return;
+    const onMove = (event: PointerEvent) => {
+      const delta = resizing.startX - event.clientX;
+      const paneWidth = paneRef.current?.clientWidth ?? 0;
+      const otherWidth =
+        resizing.type === "sftp"
+          ? aiOpen
+            ? aiWidth
+            : 0
+          : sftpOpen
+            ? sftpWidth
+            : 0;
+      const minWidth = resizing.type === "sftp" ? 220 : 260;
+      const maxWidth = paneWidth
+        ? Math.max(minWidth, paneWidth - otherWidth - 240)
+        : minWidth + 320;
+      const next = clamp(resizing.startWidth + delta, minWidth, maxWidth);
+      if (resizing.type === "sftp") {
+        setSftpWidth(next);
+      } else {
+        setAiWidth(next);
+      }
+    };
+    const onUp = () => setResizing(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [resizing, aiOpen, aiWidth, sftpOpen, sftpWidth]);
 
   useEffect(() => {
     if (!termMenu) return;
@@ -519,6 +1004,7 @@ export function XTerminal({
   const handleDownloadFile = async (entry: SftpEntry) => {
     if (entry.is_dir) return; // 只下载文件
 
+    let taskId: string | null = null;
     try {
       const currentPath = sftpPath || "/";
       const remotePath = currentPath.endsWith("/")
@@ -533,37 +1019,124 @@ export function XTerminal({
 
       if (!localPath) return; // 用户取消
 
+      taskId = createTransferTask("download", entry.name, remotePath, localPath);
       setUploadProgress(`下载中: ${entry.name}`);
       await sshApi.downloadFile(sessionId, remotePath, localPath);
+      if (taskId) {
+        updateTransferTask(taskId, {
+          status: "success",
+          progress: 100,
+          detail: "下载完成",
+          finishedAt: Date.now(),
+        });
+      }
       setUploadProgress(null);
     } catch (error) {
       const message = formatError(error);
       setSftpError(`下载失败: ${message}`);
+      if (taskId) {
+        updateTransferTask(taskId, {
+          status: "failed",
+          progress: 100,
+          detail: message,
+          finishedAt: Date.now(),
+        });
+      }
       setUploadProgress(null);
     }
   };
 
   const handleUploadFiles = async (filePaths: string[]) => {
     for (const filePath of filePaths) {
+      let taskId: string | null = null;
       try {
         const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'unknown';
         setUploadProgress(`上传中: ${fileName}`);
 
         // 构建远程路径
-        const currentPath = sftpPath || "/";
+        const currentPath = sftpPathRef.current || "/";
         const remotePath = currentPath.endsWith("/")
           ? currentPath + fileName
           : currentPath + "/" + fileName;
 
+        taskId = createTransferTask("upload", fileName, filePath, remotePath);
         await sshApi.uploadFile(sessionId, filePath, remotePath);
+        if (taskId) {
+          updateTransferTask(taskId, {
+            status: "success",
+            progress: 100,
+            detail: "上传完成",
+            finishedAt: Date.now(),
+          });
+        }
       } catch (error) {
         const message = formatError(error);
         setSftpError(`上传失败 ${filePath}: ${message}`);
+        if (taskId) {
+          updateTransferTask(taskId, {
+            status: "failed",
+            progress: 100,
+            detail: message,
+            finishedAt: Date.now(),
+          });
+        }
       }
     }
 
     setUploadProgress(null);
     void loadSftpEntries();
+  };
+
+  const isFileDrag = (event: DragEvent) => {
+    const types = Array.from(event.dataTransfer?.types ?? []);
+    return types.includes("Files");
+  };
+
+  const extractDroppedPaths = (event: DragEvent) => {
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    const paths = files
+      .map((file) => (file as unknown as { path?: string }).path)
+      .filter((path): path is string => Boolean(path));
+    return paths;
+  };
+
+  const handleSftpDragEnter = (event: DragEvent) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    sftpDragCounterRef.current += 1;
+    setSftpDragging(true);
+  };
+
+  const handleSftpDragLeave = (event: DragEvent) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    sftpDragCounterRef.current = Math.max(0, sftpDragCounterRef.current - 1);
+    if (sftpDragCounterRef.current === 0) {
+      setSftpDragging(false);
+    }
+  };
+
+  const handleSftpDragOver = (event: DragEvent) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleSftpDrop = async (event: DragEvent) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    sftpDragCounterRef.current = 0;
+    setSftpDragging(false);
+    if (uploadProgress) {
+      setSftpError("正在上传，请稍候");
+      return;
+    }
+    const filePaths = extractDroppedPaths(event);
+    if (filePaths.length === 0) {
+      setSftpError("无法读取拖入文件路径，请使用上传按钮");
+      return;
+    }
+    await handleUploadFiles(filePaths);
   };
 
   const handleFileSelect = async () => {
@@ -634,11 +1207,13 @@ export function XTerminal({
 
     try {
       const settings = await readAiSettings();
+      const selectedModel = aiModel.trim() || settings.model;
+      const nextSettings = selectedModel ? { ...settings, model: selectedModel } : settings;
       const systemMessage: AiMessage = {
         role: "system",
         content: "你是终端助手，回答要简洁、可执行。",
       };
-      const response = await sendAiChat(settings, [
+      const response = await sendAiChat(nextSettings, [
         systemMessage,
         ...nextMessages.map(({ role, content }) => ({ role, content })),
       ]);
@@ -670,6 +1245,95 @@ export function XTerminal({
     await sendAiMessage(prompt);
   };
 
+  useEffect(() => {
+    if (!aiOpen) return;
+    void syncAiSettings();
+  }, [aiOpen]);
+
+  useEffect(() => {
+    if (!aiModelMenuOpen) return;
+
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target || !aiModelMenuRef.current) return;
+      if (!aiModelMenuRef.current.contains(target)) {
+        setAiModelMenuOpen(false);
+      }
+    };
+
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAiModelMenuOpen(false);
+    };
+
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [aiModelMenuOpen]);
+
+  useEffect(() => {
+    const focusTerminalForEvent = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          activeTabId?: string | null;
+        }>
+      ).detail;
+      if (detail?.activeTabId && detail.activeTabId !== sessionId) {
+        return;
+      }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const term = terminalInstance.current;
+          if (!term) return;
+          if (!paneRef.current) return;
+          if (paneRef.current.offsetParent === null) return;
+          term.focus();
+        });
+      });
+    };
+
+    window.addEventListener("app-unlocked", focusTerminalForEvent);
+    window.addEventListener("app-window-activated", focusTerminalForEvent);
+    return () => {
+      window.removeEventListener("app-unlocked", focusTerminalForEvent);
+      window.removeEventListener("app-window-activated", focusTerminalForEvent);
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    const onReconnectAllTerminals = () => {
+      writeQueueRef.current = [];
+      setTerminalIssue(null);
+      void recoverSessionAfterUnlock();
+    };
+
+    window.addEventListener("app-reconnect-terminals", onReconnectAllTerminals);
+    return () => {
+      window.removeEventListener("app-reconnect-terminals", onReconnectAllTerminals);
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    const onPointerDownFocus = () => {
+      window.setTimeout(() => {
+        const term = terminalInstance.current;
+        if (!term) return;
+        if (!paneRef.current) return;
+        if (paneRef.current.offsetParent === null) return;
+        term.focus();
+      }, 0);
+    };
+
+    const mount = terminalRef.current;
+    if (!mount) return;
+    mount.addEventListener("pointerdown", onPointerDownFocus);
+    return () => {
+      mount.removeEventListener("pointerdown", onPointerDownFocus);
+    };
+  }, []);
+
   const handleSendScript = async () => {
     const trimmed = scriptText.trim();
     if (!trimmed) return;
@@ -678,7 +1342,7 @@ export function XTerminal({
       await onSendScript(payload, scriptTarget);
       return;
     }
-    writeToShell(payload).catch(() => {});
+    enqueueTerminalWrite(payload);
   };
 
   const handleTermCopy = async () => {
@@ -722,7 +1386,9 @@ export function XTerminal({
     let unlistenCursorStyle: (() => void) | null = null;
     let unlistenCursorBlink: (() => void) | null = null;
     let unlistenLineHeight: (() => void) | null = null;
+    let unlistenAutoCopy: (() => void) | null = null;
     let disposable: { dispose: () => void } | null = null;
+    let selectionDisposable: { dispose: () => void } | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let removeContextMenu: (() => void) | null = null;
 
@@ -757,11 +1423,15 @@ export function XTerminal({
       const lineHeight =
         (await store.get<number>("terminal.lineHeight")) ??
         DEFAULT_APP_SETTINGS["terminal.lineHeight"];
+      const autoCopy =
+        (await store.get<boolean>("terminal.autoCopy")) ??
+        DEFAULT_APP_SETTINGS["terminal.autoCopy"];
 
       if (disposed || !terminalRef.current) return;
 
       const xtermTheme = getXtermTheme(themeName);
       setXtermBg(xtermTheme.background);
+      autoCopyRef.current = autoCopy;
 
       term = new Terminal({
         cursorBlink,
@@ -825,6 +1495,22 @@ export function XTerminal({
         return true;
       });
 
+      selectionDisposable = term.onSelectionChange(() => {
+        if (!term || disposed) return;
+        if (!autoCopyRef.current) return;
+        const selection = term.getSelection();
+        if (!selection) {
+          lastSelectionRef.current = "";
+          return;
+        }
+        if (selection === lastSelectionRef.current) return;
+        const now = Date.now();
+        if (now - lastCopyAtRef.current < 120) return;
+        lastSelectionRef.current = selection;
+        lastCopyAtRef.current = now;
+        void clipboardWrite(selection);
+      });
+
       // Right click: open terminal menu.
       if (term.element) {
         const el = term.element;
@@ -848,6 +1534,14 @@ export function XTerminal({
           if (!term) return;
           if (event.payload.session_id === sessionId) {
             term.write(event.payload.data);
+            lastOutputAtRef.current = Date.now();
+            if (terminalIssueRef.current) {
+              pushTerminalLog(
+                "info",
+                `output resumed bytes=${event.payload.data.length}`,
+              );
+              setTerminalIssue(null);
+            }
           }
         },
       );
@@ -855,9 +1549,8 @@ export function XTerminal({
 
       // Handle user input
       disposable = term.onData((data) => {
-        writeToShell(data).catch((err) => {
-          console.error("Error writing to shell:", err);
-        });
+        lastInputAtRef.current = Date.now();
+        enqueueTerminalWrite(data);
       });
 
       // Handle terminal resize
@@ -944,6 +1637,15 @@ export function XTerminal({
           });
         },
       );
+      unlistenAutoCopy = await store.onKeyChange<boolean>(
+        "terminal.autoCopy",
+        (v) => {
+          autoCopyRef.current = v ?? DEFAULT_APP_SETTINGS["terminal.autoCopy"];
+          if (!autoCopyRef.current) {
+            lastSelectionRef.current = "";
+          }
+        },
+      );
 
       // Initial resize (after fonts are applied)
       setTimeout(() => {
@@ -975,6 +1677,8 @@ export function XTerminal({
       unlistenCursorStyle?.();
       unlistenCursorBlink?.();
       unlistenLineHeight?.();
+      unlistenAutoCopy?.();
+      selectionDisposable?.dispose();
       term?.dispose();
     };
   }, [sessionId]);
@@ -1077,7 +1781,7 @@ export function XTerminal({
                 title="左右分屏"
                 aria-label="左右分屏"
               >
-                <AppIcon icon="material-symbols:vertical-split-outline-rounded" size={18} />
+                <AppIcon icon="material-symbols:splitscreen-right" size={18} />
               </button>
               <button
                 className="xterminal-topbar-btn"
@@ -1086,7 +1790,7 @@ export function XTerminal({
                 title="上下分屏"
                 aria-label="上下分屏"
               >
-                <AppIcon icon="material-symbols:horizontal-split-outline-rounded" size={18} />
+                <AppIcon icon="material-symbols:splitscreen-bottom" size={18} />
               </button>
             </>
           )}
@@ -1139,43 +1843,97 @@ export function XTerminal({
       </div>
 
       <div className="xterminal-body">
+        {terminalIssue && (
+          <div className="xterminal-alert">
+            <div className="xterminal-alert-text">
+              {terminalIssue.message}
+            </div>
+            <div className="xterminal-alert-actions">
+              <button
+                type="button"
+                className="xterminal-alert-btn"
+                onClick={() => void copyTerminalLog()}
+              >
+                复制日志
+              </button>
+              <button
+                type="button"
+                className="xterminal-alert-btn xterminal-alert-btn--ghost"
+                onClick={() => setTerminalIssue(null)}
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        )}
         <div className="xterminal-pane" ref={paneRef}>
           <div className="xterminal-pad">
             <div className="xterminal-mount" ref={terminalRef} />
           </div>
           {sftpOpen && (
-            <div className="xterminal-sftp">
-              <div className="xterminal-sftp-header">
-                <div className="xterminal-sftp-title">文件管理器</div>
-                <div className="xterminal-sftp-actions">
-                  <button
-                    type="button"
-                    className="xterminal-sftp-icon-btn"
-                    onClick={handleFileSelect}
-                    disabled={sftpLoading || !!uploadProgress}
-                    title="上传文件"
-                  >
-                    <AppIcon icon="material-symbols:upload-rounded" size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    className="xterminal-sftp-icon-btn"
-                    onClick={() => void loadSftpEntries()}
-                    disabled={sftpLoading}
-                    title="刷新"
-                  >
-                    <AppIcon icon="material-symbols:refresh-rounded" size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    className="xterminal-sftp-icon-btn"
-                    onClick={() => setSftpOpen(false)}
-                    title="关闭"
-                  >
-                    <AppIcon icon="material-symbols:close-rounded" size={16} />
-                  </button>
+            <>
+              <div
+                className={`xterminal-resize-handle ${
+                  resizing?.type === "sftp" ? "is-active" : ""
+                }`}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setResizing({
+                    type: "sftp",
+                    startX: event.clientX,
+                    startWidth: sftpWidth,
+                  });
+                }}
+              />
+              <div
+                className={`xterminal-sftp ${sftpDragging ? "xterminal-sftp--dragging" : ""}`}
+                style={{ width: sftpWidth }}
+                ref={sftpPanelRef}
+                onDragEnter={handleSftpDragEnter}
+                onDragLeave={handleSftpDragLeave}
+                onDragOver={handleSftpDragOver}
+                onDrop={(event) => void handleSftpDrop(event)}
+              >
+                {sftpDragging && (
+                  <div className="xterminal-sftp-drop-overlay">
+                    <div className="xterminal-sftp-drop-content">
+                      <AppIcon icon="material-symbols:upload-rounded" size={24} />
+                      <span>拖放文件上传</span>
+                    </div>
+                  </div>
+                )}
+                <div className="xterminal-sftp-header">
+                  <div className="xterminal-sftp-title">文件管理器</div>
+                  <div className="xterminal-sftp-actions">
+                    <button
+                      type="button"
+                      className="xterminal-sftp-icon-btn"
+                      onClick={handleFileSelect}
+                      disabled={sftpLoading || !!uploadProgress}
+                      title="上传文件"
+                    >
+                      <AppIcon icon="material-symbols:upload-rounded" size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      className="xterminal-sftp-icon-btn"
+                      onClick={() => void loadSftpEntries()}
+                      disabled={sftpLoading}
+                      title="刷新"
+                    >
+                      <AppIcon icon="material-symbols:refresh-rounded" size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      className="xterminal-sftp-icon-btn"
+                      onClick={() => setSftpOpen(false)}
+                      title="关闭"
+                    >
+                      <AppIcon icon="material-symbols:close-rounded" size={16} />
+                    </button>
+                  </div>
                 </div>
-              </div>
 
               <div className="xterminal-sftp-pathbar">
                 <button
@@ -1233,7 +1991,7 @@ export function XTerminal({
                 }}
               >
                 {sftpLoading && (
-                  <div className="xterminal-sftp-state">
+                  <div className="xterminal-sftp-state xterminal-sftp-state--loading">
                     <AppIcon
                         className="xterminal-sftp-loading-icon"
                         icon="material-symbols:refresh"
@@ -1414,20 +2172,36 @@ export function XTerminal({
                 </div>
               )}
             </div>
+            </>
           )}
           {aiOpen && (
-            <div className="xterminal-ai">
-              <div className="xterminal-ai-header">
-                <div className="xterminal-ai-title">AI 对话</div>
-                <button
-                  type="button"
-                  className="xterminal-ai-close"
-                  onClick={() => setAiOpen(false)}
-                  title="关闭"
-                >
-                  <AppIcon icon="material-symbols:close-rounded" size={16} />
-                </button>
-              </div>
+            <>
+              <div
+                className={`xterminal-resize-handle ${
+                  resizing?.type === "ai" ? "is-active" : ""
+                }`}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setResizing({
+                    type: "ai",
+                    startX: event.clientX,
+                    startWidth: aiWidth,
+                  });
+                }}
+              />
+              <div className="xterminal-ai" style={{ width: aiWidth }}>
+                <div className="xterminal-ai-header">
+                  <div className="xterminal-ai-title">AI助手</div>
+                  <button
+                    type="button"
+                    className="xterminal-ai-close"
+                    onClick={() => setAiOpen(false)}
+                    title="关闭"
+                  >
+                    <AppIcon icon="material-symbols:close-rounded" size={16} />
+                  </button>
+                </div>
               <div className="xterminal-ai-body">
                 <div className="xterminal-ai-history">
                   {aiMessages.length === 0 && (
@@ -1441,12 +2215,6 @@ export function XTerminal({
                       key={`${msg.role}-${index}`}
                       className={`xterminal-ai-message xterminal-ai-message--${msg.role}${grouped ? " xterminal-ai-message--grouped" : ""}`}
                     >
-                      <div className="xterminal-ai-meta">
-                        <div className="xterminal-ai-role">
-                          {msg.role === "user" ? "我" : msg.role === "assistant" ? "AI" : "系统"}
-                        </div>
-                        <div className="xterminal-ai-time">{formatAiTime(msg.createdAt)}</div>
-                      </div>
                       <div className="xterminal-ai-content">
                         <AiRenderer content={msg.content} sessionId={sessionId} useLocal={isLocal} role={msg.role} />
                       </div>
@@ -1460,7 +2228,7 @@ export function XTerminal({
                     <textarea
                       value={aiInput}
                       onChange={(event) => setAiInput(event.target.value)}
-                      placeholder="输入你的问题，Cmd+Enter 发送"
+                      placeholder={`输入你的问题，${modifierKeyAbbr}+Enter 发送`}
                       onKeyDown={(event) => {
                         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                           event.preventDefault();
@@ -1471,7 +2239,52 @@ export function XTerminal({
                       disabled={aiBusy}
                     />
                     <div className="xterminal-ai-input-footer">
-                      <div></div>
+                      <div className="xterminal-ai-input-meta">
+                        <div className="xterminal-ai-model-dropdown" ref={aiModelMenuRef}>
+                          <button
+                            type="button"
+                            className={`xterminal-ai-model-pill${aiModelMenuOpen ? " xterminal-ai-model-pill--open" : ""}`}
+                            onClick={() => setAiModelMenuOpen((prev) => !prev)}
+                            disabled={aiBusy}
+                            aria-haspopup="listbox"
+                            aria-expanded={aiModelMenuOpen}
+                          >
+                            <AppIcon
+                              className="xterminal-ai-model-icon"
+                              icon="material-symbols:smart-toy-outline"
+                              size={16}
+                            />
+                            <span className="xterminal-ai-model-value">
+                              {aiModel || "选择模型"}
+                            </span>
+                            <AppIcon
+                              className="xterminal-ai-model-caret"
+                              icon="material-symbols:keyboard-arrow-down-rounded"
+                              size={16}
+                            />
+                          </button>
+                          {aiModelMenuOpen && (
+                            <div className="xterminal-ai-model-menu" role="listbox">
+                              {modelOptionsWithCurrent.map((model) => (
+                                <button
+                                  key={model}
+                                  type="button"
+                                  className={`xterminal-ai-model-item${model === aiModel ? " is-active" : ""}`}
+                                  onClick={() => {
+                                    aiModelTouchedRef.current = true;
+                                    setAiModel(model);
+                                    setAiModelMenuOpen(false);
+                                  }}
+                                  role="option"
+                                  aria-selected={model === aiModel}
+                                >
+                                  {model}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
                       <button
                         type="button"
                         className="xterminal-ai-send"
@@ -1490,7 +2303,8 @@ export function XTerminal({
                   </div>
                 </div>
               </div>
-            </div>
+              </div>
+            </>
           )}
         </div>
 
@@ -1524,6 +2338,24 @@ export function XTerminal({
           >
             <AppIcon icon="material-symbols:terminal-rounded" size={16} />
             快捷操作
+          </button>
+          <button
+            type="button"
+            className={`xterminal-toolbar-btn ${transferPanelOpen ? "xterminal-toolbar-btn--active" : ""}`}
+            onClick={() => setTransferPanelOpen((prev) => !prev)}
+            title="下载管理"
+          >
+            <AppIcon icon="material-symbols:download-rounded" size={16} />
+            下载管理
+            {(runningTransferCount > 0 || failedTransferCount > 0) && (
+              <span
+                className={`xterminal-transfer-badge ${
+                  failedTransferCount > 0 ? "xterminal-transfer-badge--error" : ""
+                }`}
+              >
+                {failedTransferCount > 0 ? failedTransferCount : runningTransferCount}
+              </span>
+            )}
           </button>
         </div>
 
@@ -1565,7 +2397,7 @@ export function XTerminal({
               <textarea
                 value={scriptText}
                 onChange={(event) => setScriptText(event.target.value)}
-                placeholder="输入命令，Enter 换行，Cmd+Enter 执行"
+                placeholder={`输入命令，Enter 换行，${modifierKeyAbbr}+Enter 执行`}
                 onKeyDown={(event) => {
                   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                     event.preventDefault();
@@ -1579,9 +2411,80 @@ export function XTerminal({
                 onClick={() => void handleSendScript()}
               >
                 执行
-                <span className="xterminal-script-shortcut">⌘ Enter</span>
+                <span className="xterminal-script-shortcut">{modifierKeyLabel} Enter</span>
               </button>
             </div>
+          </div>
+        )}
+        {transferPanelOpen && (
+          <div className="xterminal-transfer-panel">
+            <div className="xterminal-transfer-header">
+              <div className="xterminal-transfer-title">
+                下载管理
+              </div>
+              <div className="xterminal-transfer-actions">
+                <span className="xterminal-transfer-summary">
+                  进行中 {runningTransferCount} · 失败 {failedTransferCount}
+                </span>
+                <button
+                  type="button"
+                  className="xterminal-script-link"
+                  onClick={clearTransferHistory}
+                  disabled={transferTasks.length === 0}
+                >
+                  <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
+                  清理记录
+                </button>
+              </div>
+            </div>
+            {transferTasks.length === 0 ? (
+              <div className="xterminal-transfer-empty">
+                暂无上传或下载任务
+              </div>
+            ) : (
+              <div className="xterminal-transfer-list">
+                {transferTasks.map((task) => (
+                  <div
+                    key={task.id}
+                    className={`xterminal-transfer-item xterminal-transfer-item--${task.status}`}
+                  >
+                    <div className="xterminal-transfer-row">
+                      <div className="xterminal-transfer-name">
+                        <AppIcon
+                          icon={
+                            task.direction === "upload"
+                              ? "material-symbols:upload-rounded"
+                              : "material-symbols:download-rounded"
+                          }
+                          size={16}
+                        />
+                        <span>{task.name}</span>
+                      </div>
+                      <span
+                        className={`xterminal-transfer-status xterminal-transfer-status--${task.status}`}
+                      >
+                        {TRANSFER_STATUS_LABEL[task.status]}
+                      </span>
+                    </div>
+                    <div className="xterminal-transfer-meta">
+                      {TRANSFER_DIRECTION_LABEL[task.direction]} · 开始于 {formatTransferTime(task.startedAt)}
+                      {task.finishedAt ? ` · 结束于 ${formatTransferTime(task.finishedAt)}` : ""}
+                    </div>
+                    <div className="xterminal-transfer-path">源：{task.sourcePath}</div>
+                    <div className="xterminal-transfer-path">目标：{task.targetPath}</div>
+                    <div className="xterminal-transfer-progressbar">
+                      <span
+                        className={`xterminal-transfer-progressvalue xterminal-transfer-progressvalue--${task.status}`}
+                        style={{ width: `${task.progress}%` }}
+                      />
+                    </div>
+                    {task.detail && (
+                      <div className="xterminal-transfer-detail">{task.detail}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

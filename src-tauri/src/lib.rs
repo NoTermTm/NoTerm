@@ -7,7 +7,8 @@ use ssh_manager::{SftpEntry, SshConnection, SshManager};
 use std::fs;
 use std::sync::Mutex;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 use tauri::Manager;
@@ -223,6 +224,132 @@ async fn rdp_open(app_handle: AppHandle, connection: RdpConnection) -> Result<()
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[tauri::command]
+fn clipboard_read_text() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("pbpaste")
+            .output()
+            .map_err(|e| format!("Failed to read clipboard via pbpaste: {}", e))?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("pbpaste failed: {}", stderr.trim()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Get-Clipboard -Raw"])
+            .output()
+            .map_err(|e| format!("Failed to read clipboard via PowerShell: {}", e))?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("PowerShell clipboard read failed: {}", stderr.trim()));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let candidates: [(&str, &[&str]); 3] = [
+            ("wl-paste", &["--no-newline"]),
+            ("xclip", &["-selection", "clipboard", "-o"]),
+            ("xsel", &["--clipboard", "--output"]),
+        ];
+
+        for (cmd, args) in candidates {
+            if !command_exists(cmd) {
+                continue;
+            }
+
+            if let Ok(output) = Command::new(cmd).args(args).output() {
+                if output.status.success() {
+                    return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+                }
+            }
+        }
+
+        return Err("No clipboard command available (tried wl-paste, xclip, xsel)".to_string());
+    }
+
+    #[allow(unreachable_code)]
+    Err("Clipboard read is not supported on this platform".to_string())
+}
+
+#[tauri::command]
+fn clipboard_write_text(text: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to run pbcopy: {}", e))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("Failed to write to pbcopy: {}", e))?;
+        }
+        let status = child.wait().map_err(|e| e.to_string())?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err("pbcopy failed".to_string())
+        };
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = Command::new("cmd")
+            .args(["/c", "clip"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to run clip: {}", e))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("Failed to write to clip: {}", e))?;
+        }
+        let status = child.wait().map_err(|e| e.to_string())?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err("clip failed".to_string())
+        };
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let candidates: [(&str, &[&str]); 3] = [
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ];
+
+        for (cmd, args) in candidates {
+            if !command_exists(cmd) {
+                continue;
+            }
+
+            if let Ok(mut child) = Command::new(cmd).args(args).stdin(Stdio::piped()).spawn() {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                let status = child.wait().map_err(|e| e.to_string())?;
+                if status.success() {
+                    return Ok(());
+                }
+            }
+        }
+
+        return Err("No clipboard command available (tried wl-copy, xclip, xsel)".to_string());
+    }
+
+    #[allow(unreachable_code)]
+    Err("Clipboard write is not supported on this platform".to_string())
 }
 
 #[tauri::command]
@@ -600,12 +727,20 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            Ok(())
+        })
         .manage(AppState {
             ssh_manager: Mutex::new(SshManager::new()),
             local_pty_manager: Mutex::new(LocalPtyManager::new()),
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            clipboard_read_text,
+            clipboard_write_text,
             ssh_check_endpoint,
             ssh_generate_keypair,
             rdp_open,
