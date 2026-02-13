@@ -10,6 +10,8 @@ permissions:
 
 jobs:
   build:
+    env:
+      NODE_OPTIONS: --no-warnings
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +79,7 @@ jobs:
           releaseName: "NoTerm ${{ github.ref_name }}"
           releaseDraft: false
           prerelease: false
+          tauriScript: "npm run tauri --"
           args: ${{ matrix.os == 'macos-latest' && format('--target {0}', matrix.target) || '' }}
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
