@@ -16,12 +16,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
-          - os: macos-latest
+            args: "--target aarch64-apple-darwin --bundles dmg"
+          - os: macos-13
             target: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin --bundles dmg"
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            args: "--bundles nsis"
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -38,6 +41,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install create-dmg
+        if: startsWith(matrix.os, 'macos')
+        run: brew install create-dmg
 
       - name: Validate version & updater config
         if: startsWith(github.ref, 'refs/tags/v')
@@ -80,6 +87,6 @@ jobs:
           releaseDraft: false
           prerelease: false
           tauriScript: "npm run tauri --"
-          args: ${{ matrix.os == 'macos-latest' && format('--target {0}', matrix.target) || '' }}
+          args: ${{ matrix.args }}
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
