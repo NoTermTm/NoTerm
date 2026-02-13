@@ -1269,7 +1269,7 @@ export function SettingsPage() {
           </div>
           <div className="app-info-row">
             <span className="app-info-label">版本</span>
-            <span>0.1.0</span>
+            <span>0.0.1</span>
           </div>
           <div className="app-info-row">
             <span className="app-info-label">框架</span>
