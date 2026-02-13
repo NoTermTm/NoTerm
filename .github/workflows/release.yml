@@ -104,26 +104,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
-
-      - name: Clean existing release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          tag="${GITHUB_REF_NAME}"
-          repo="${GITHUB_REPOSITORY}"
-          release_id="$(gh api "repos/${repo}/releases/tags/${tag}" --jq '.id' 2>/dev/null || true)"
-          if [ -z "$release_id" ]; then
-            echo "No existing release for ${tag}, skip cleanup."
-            exit 0
-          fi
-          echo "Cleaning assets for release ${tag} (id=${release_id})"
-          gh api "repos/${repo}/releases/${release_id}/assets" --jq '.[].id' | while read -r asset_id; do
-            if [ -n "$asset_id" ]; then
-              gh api -X DELETE "repos/${repo}/releases/assets/${asset_id}"
-            fi
-          done
-
       - name: Generate latest.json
         shell: bash
         run: |
