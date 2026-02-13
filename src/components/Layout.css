@@ -281,8 +281,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background:  #eeeeee;
-    backdrop-filter: blur(6px);
+    background: rgba(245, 246, 248, 0.92);
+    backdrop-filter: blur(8px);
+    border-radius: var(--window-radius);
+    overflow: hidden;
 }
 
 .lock-drag-region {
