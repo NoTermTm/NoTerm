@@ -620,9 +620,13 @@
     gap: 10px;
 }
 
+.quick-auth-select-wrapper {
+    flex: 1;
+    min-width: 0;
+}
+
 .quick-auth-select {
     min-width: 0;
-    flex: 1;
     height: 34px;
     padding: 0 10px;
     border-radius: 10px;

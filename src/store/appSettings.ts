@@ -12,6 +12,7 @@ export type TerminalThemeName =
   | "catppuccin";
 
 export type AppSettings = {
+  "i18n.locale": "zh-CN" | "en-US";
   "connection.autoConnect": boolean;
   "connection.savePassword": boolean;
   "connection.keepAlive": boolean;
@@ -41,6 +42,7 @@ export const DEFAULT_TERMINAL_FONT_FAMILY =
   '"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace';
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
+  "i18n.locale": "zh-CN",
   "connection.autoConnect": false,
   "connection.savePassword": true,
   "connection.keepAlive": true,

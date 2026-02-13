@@ -19,6 +19,7 @@ import type { SftpEntry } from "../types/ssh";
 import "@xterm/xterm/css/xterm.css";
 import "./XTerminal.css";
 import { AppIcon } from "./AppIcon";
+import { Select } from "./Select";
 import { Modal } from "./Modal";
 import { ScriptPicker } from "./ScriptPicker";
 import { sendAiChat, type AiMessage } from "../api/ai";
@@ -30,6 +31,7 @@ import {
 } from "../store/appSettings";
 import { getXtermTheme } from "../terminal/xtermThemes";
 import { getModifierKeyAbbr, getModifierKeyLabel } from "../utils/platform";
+import { useI18n } from "../i18n";
 
 interface XTerminalProps {
   sessionId: string;
@@ -75,15 +77,6 @@ const ANTHROPIC_MODEL_OPTIONS = [
   "claude-3-5-haiku-20241022",
 ];
 const MAX_TRANSFER_TASKS = 120;
-const TRANSFER_STATUS_LABEL: Record<TransferTaskStatus, string> = {
-  running: "传输中",
-  success: "已完成",
-  failed: "失败",
-};
-const TRANSFER_DIRECTION_LABEL: Record<TransferTaskDirection, string> = {
-  upload: "上传",
-  download: "下载",
-};
 
 export function XTerminal({
   sessionId,
@@ -96,6 +89,7 @@ export function XTerminal({
   isSplit = false,
   onSendScript,
 }: XTerminalProps) {
+  const { t } = useI18n();
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminalInstance = useRef<Terminal | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
@@ -188,6 +182,10 @@ export function XTerminal({
       : modelOptions;
   const aiHistoryKey = `ai.history.${sessionId}`;
   const aiHistoryLoadedRef = useRef(false);
+  const transferStatusLabel = (status: TransferTaskStatus) =>
+    t(`terminal.transfer.status.${status}`);
+  const transferDirectionLabel = (direction: TransferTaskDirection) =>
+    t(`terminal.transfer.direction.${direction}`);
 
   const writeToShell = (data: string) => {
     if (isLocal) {
@@ -263,7 +261,7 @@ export function XTerminal({
           void flushWriteQueue();
         } else {
           setConnStatus("error");
-          setConnError("会话已断开");
+          setConnError(t("terminal.session.disconnected"));
         }
       })
       .catch(() => {
@@ -289,11 +287,14 @@ export function XTerminal({
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const detail = message === "write_timeout" ? "写入超时" : "写入失败";
+      const detail =
+        message === "write_timeout"
+          ? t("terminal.write.timeout")
+          : t("terminal.write.fail");
       pushTerminalLog("error", `${detail} (${Date.now() - startedAt}ms) err=${message}`);
       if (!terminalIssueRef.current) {
         setTerminalIssue({
-          message: `${detail}，请检查连接状态`,
+          message: t("terminal.write.issue", { detail }),
           timestamp: Date.now(),
         });
       }
@@ -615,7 +616,10 @@ export function XTerminal({
     try {
       const timeoutMs = 5000;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        window.setTimeout(() => reject(new Error("SFTP 请求超时")), timeoutMs);
+        window.setTimeout(
+          () => reject(new Error(t("terminal.sftp.timeout"))),
+          timeoutMs,
+        );
       });
       const entries = (await Promise.race([
         sshApi.listSftpDir(sessionId, path),
@@ -661,11 +665,11 @@ export function XTerminal({
     if (!renameEntry) return;
     const nextName = renameValue.trim();
     if (!nextName) {
-      setSftpActionError("请输入新名称");
+      setSftpActionError(t("terminal.sftp.rename.empty"));
       return;
     }
     if (nextName.includes("/")) {
-      setSftpActionError("名称不能包含 '/'");
+      setSftpActionError(t("terminal.sftp.rename.invalid"));
       return;
     }
 
@@ -689,7 +693,7 @@ export function XTerminal({
     if (!chmodEntry) return;
     const value = chmodValue.trim();
     if (!/^[0-7]{3,4}$/.test(value)) {
-      setSftpActionError("请输入 3-4 位八进制权限，例如 644 或 755");
+      setSftpActionError(t("terminal.sftp.chmod.invalid"));
       return;
     }
 
@@ -712,8 +716,12 @@ export function XTerminal({
   const handleDeleteEntry = async (entry: SftpEntry) => {
     if (entry.name === "..") return;
     const path = buildRemotePath(entry.name);
-    const label = entry.is_dir ? "文件夹" : "文件";
-    const ok = window.confirm(`确定删除${label} “${entry.name}” 吗？`);
+    const label = entry.is_dir
+      ? t("terminal.sftp.entry.folder")
+      : t("terminal.sftp.entry.file");
+    const ok = window.confirm(
+      t("terminal.sftp.delete.confirm", { label, name: entry.name }),
+    );
     if (!ok) return;
 
     setSftpActionBusy(true);
@@ -731,11 +739,11 @@ export function XTerminal({
   const handleNewFolderSubmit = async () => {
     const name = newFolderName.trim();
     if (!name) {
-      setSftpActionError("请输入文件夹名称");
+      setSftpActionError(t("terminal.sftp.newFolder.empty"));
       return;
     }
     if (name.includes("/")) {
-      setSftpActionError("名称不能包含 '/'");
+      setSftpActionError(t("terminal.sftp.rename.invalid"));
       return;
     }
 
@@ -836,7 +844,7 @@ export function XTerminal({
         const paths = Array.isArray(payload?.paths) ? payload?.paths : [];
         if (!paths.length) return;
         if (uploadProgress) {
-          setSftpError("正在上传，请稍候");
+          setSftpError(t("terminal.sftp.upload.inProgress"));
           return;
         }
         void handleUploadFiles(paths);
@@ -850,7 +858,7 @@ export function XTerminal({
       if (unlistenHover) unlistenHover();
       if (unlistenCancel) unlistenCancel();
     };
-  }, [sftpOpen, uploadProgress]);
+  }, [sftpOpen, uploadProgress, t]);
 
   const handleEntryClick = (entry: SftpEntry) => {
     if (!entry.is_dir) return; // 只处理文件夹点击
@@ -1008,26 +1016,28 @@ export function XTerminal({
       // 打开保存对话框
       const localPath = await saveDialog({
         defaultPath: entry.name,
-        title: "保存文件",
+        title: t("terminal.sftp.saveDialog.title"),
       });
 
       if (!localPath) return; // 用户取消
 
       taskId = createTransferTask("download", entry.name, remotePath, localPath);
-      setUploadProgress(`下载中: ${entry.name}`);
+      setUploadProgress(
+        t("terminal.sftp.download.progress", { name: entry.name }),
+      );
       await sshApi.downloadFile(sessionId, remotePath, localPath);
       if (taskId) {
         updateTransferTask(taskId, {
           status: "success",
           progress: 100,
-          detail: "下载完成",
+          detail: t("terminal.sftp.download.done"),
           finishedAt: Date.now(),
         });
       }
       setUploadProgress(null);
     } catch (error) {
       const message = formatError(error);
-      setSftpError(`下载失败: ${message}`);
+      setSftpError(t("terminal.sftp.download.fail", { message }));
       if (taskId) {
         updateTransferTask(taskId, {
           status: "failed",
@@ -1045,7 +1055,9 @@ export function XTerminal({
       let taskId: string | null = null;
       try {
         const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'unknown';
-        setUploadProgress(`上传中: ${fileName}`);
+        setUploadProgress(
+          t("terminal.sftp.upload.progress", { name: fileName }),
+        );
 
         // 构建远程路径
         const currentPath = sftpPathRef.current || "/";
@@ -1059,13 +1071,15 @@ export function XTerminal({
           updateTransferTask(taskId, {
             status: "success",
             progress: 100,
-            detail: "上传完成",
+            detail: t("terminal.sftp.upload.done"),
             finishedAt: Date.now(),
           });
         }
       } catch (error) {
         const message = formatError(error);
-        setSftpError(`上传失败 ${filePath}: ${message}`);
+        setSftpError(
+          t("terminal.sftp.upload.fail", { path: filePath, message }),
+        );
         if (taskId) {
           updateTransferTask(taskId, {
             status: "failed",
@@ -1122,12 +1136,12 @@ export function XTerminal({
     sftpDragCounterRef.current = 0;
     setSftpDragging(false);
     if (uploadProgress) {
-      setSftpError("正在上传，请稍候");
+      setSftpError(t("terminal.sftp.upload.inProgress"));
       return;
     }
     const filePaths = extractDroppedPaths(event);
     if (filePaths.length === 0) {
-      setSftpError("无法读取拖入文件路径，请使用上传按钮");
+      setSftpError(t("terminal.sftp.drop.error"));
       return;
     }
     await handleUploadFiles(filePaths);
@@ -1137,7 +1151,7 @@ export function XTerminal({
     try {
       const selected = await openDialog({
         multiple: true,
-        title: "选择要上传的文件",
+        title: t("terminal.sftp.select.title"),
       });
 
       if (!selected) return; // 用户取消
@@ -1146,7 +1160,7 @@ export function XTerminal({
       await handleUploadFiles(files);
     } catch (error) {
       const message = formatError(error);
-      setSftpError(`选择文件失败: ${message}`);
+      setSftpError(t("terminal.sftp.select.fail", { message }));
       setUploadProgress(null);
     }
   };
@@ -1177,14 +1191,14 @@ export function XTerminal({
   const buildAiPrompt = (mode: "ask" | "fix", context: string) => {
     if (mode === "fix") {
       return [
-        "请根据以下终端输出定位问题并给出修复建议。",
-        "如果能提供具体命令或步骤，请直接给出。",
+        t("terminal.ai.prompt.fix.line1"),
+        t("terminal.ai.prompt.fix.line2"),
         "",
         context,
       ].join("\n");
     }
     return [
-      "请解释以下终端输出或现象，并给出建议。",
+      t("terminal.ai.prompt.ask.line1"),
       "",
       context,
     ].join("\n");
@@ -1205,7 +1219,7 @@ export function XTerminal({
       const nextSettings = selectedModel ? { ...settings, model: selectedModel } : settings;
       const systemMessage: AiMessage = {
         role: "system",
-        content: "你是终端助手，回答要简洁、可执行。",
+        content: t("terminal.ai.system"),
       };
       const response = await sendAiChat(nextSettings, [
         systemMessage,
@@ -1227,7 +1241,7 @@ export function XTerminal({
     setTermMenu(null);
     const context = getTerminalContext();
     if (!context) {
-      setAiError("未检测到终端内容，请先选择文本或产生输出");
+      setAiError(t("terminal.ai.noContext"));
       setScriptPanelOpen(true);
       setAiOpen(true);
       return;
@@ -1679,7 +1693,7 @@ export function XTerminal({
 
   useEffect(() => {
     if (isLocal) {
-      setEndpointIp("本地");
+      setEndpointIp(t("terminal.endpoint.local"));
       setLatencyMs(null);
       return;
     }
@@ -1708,7 +1722,7 @@ export function XTerminal({
       disposed = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [host, port, isLocal]);
+  }, [host, port, isLocal, t]);
 
   const statusIcon = useMemo(() => {
     if (connStatus === "connecting") return "material-symbols:sync-rounded";
@@ -1716,13 +1730,13 @@ export function XTerminal({
       return "material-symbols:check-circle-rounded";
     if (connStatus === "error") return "material-symbols:error-rounded";
     return "material-symbols:cloud-off-rounded";
-  }, [connStatus]);
+  }, [connStatus, t]);
 
   const statusText = useMemo(() => {
-    if (connStatus === "connecting") return "连接中…";
-    if (connStatus === "connected") return "已连接";
-    if (connStatus === "error") return "连接失败";
-    return "未连接";
+    if (connStatus === "connecting") return t("terminal.status.connecting");
+    if (connStatus === "connected") return t("terminal.status.connected");
+    if (connStatus === "error") return t("terminal.status.error");
+    return t("terminal.status.idle");
   }, [connStatus]);
 
   return (
@@ -1772,8 +1786,8 @@ export function XTerminal({
                 className="xterminal-topbar-btn"
                 type="button"
                 onClick={() => onRequestSplit("vertical")}
-                title="左右分屏"
-                aria-label="左右分屏"
+                title={t("terminal.split.vertical")}
+                aria-label={t("terminal.split.vertical")}
               >
                 <AppIcon icon="material-symbols:splitscreen-right" size={18} />
               </button>
@@ -1781,8 +1795,8 @@ export function XTerminal({
                 className="xterminal-topbar-btn"
                 type="button"
                 onClick={() => onRequestSplit("horizontal")}
-                title="上下分屏"
-                aria-label="上下分屏"
+                title={t("terminal.split.horizontal")}
+                aria-label={t("terminal.split.horizontal")}
               >
                 <AppIcon icon="material-symbols:splitscreen-bottom" size={18} />
               </button>
@@ -1798,7 +1812,7 @@ export function XTerminal({
                 void loadSftpEntries();
               }
             }}
-            title="打开 SFTP 文件列表"
+            title={t("terminal.sftp.open")}
           >
             <AppIcon icon="material-symbols:folder-open-outline-rounded" size={18} />
           </button>
@@ -1806,7 +1820,7 @@ export function XTerminal({
             className={`xterminal-topbar-btn ${aiOpen ? "xterminal-topbar-btn--active" : ""}`}
             type="button"
             onClick={() => setAiOpen((prev) => !prev)}
-            title="AI 对话"
+            title={t("terminal.ai.toggle")}
           >
             <AppIcon icon="material-symbols:forum-rounded" size={18} />
           </button>
@@ -1815,8 +1829,8 @@ export function XTerminal({
               className="xterminal-topbar-btn"
               type="button"
               onClick={onCloseSession}
-              title="关闭终端"
-              aria-label="关闭终端"
+              title={t("terminal.close")}
+              aria-label={t("terminal.close")}
             >
               <AppIcon icon="material-symbols:close-rounded" size={18} />
             </button>
@@ -1830,7 +1844,7 @@ export function XTerminal({
               }}
             >
               <AppIcon icon="material-symbols:refresh-rounded" size={18} />
-              重新连接
+              {t("terminal.reconnect")}
             </button>
           )}
         </div>
@@ -1848,14 +1862,14 @@ export function XTerminal({
                 className="xterminal-alert-btn"
                 onClick={() => void copyTerminalLog()}
               >
-                复制日志
+                {t("terminal.alert.copyLog")}
               </button>
               <button
                 type="button"
                 className="xterminal-alert-btn xterminal-alert-btn--ghost"
                 onClick={() => setTerminalIssue(null)}
               >
-                关闭
+                {t("terminal.alert.close")}
               </button>
             </div>
           </div>
@@ -1893,19 +1907,21 @@ export function XTerminal({
                   <div className="xterminal-sftp-drop-overlay">
                     <div className="xterminal-sftp-drop-content">
                       <AppIcon icon="material-symbols:upload-rounded" size={24} />
-                      <span>拖放文件上传</span>
+                      <span>{t("terminal.sftp.dropHint")}</span>
                     </div>
                   </div>
                 )}
                 <div className="xterminal-sftp-header">
-                  <div className="xterminal-sftp-title">文件管理器</div>
+                  <div className="xterminal-sftp-title">
+                    {t("terminal.sftp.title")}
+                  </div>
                   <div className="xterminal-sftp-actions">
                     <button
                       type="button"
                       className="xterminal-sftp-icon-btn"
                       onClick={handleFileSelect}
                       disabled={sftpLoading || !!uploadProgress}
-                      title="上传文件"
+                      title={t("terminal.sftp.action.upload")}
                     >
                       <AppIcon icon="material-symbols:upload-rounded" size={16} />
                     </button>
@@ -1914,7 +1930,7 @@ export function XTerminal({
                       className="xterminal-sftp-icon-btn"
                       onClick={() => void loadSftpEntries()}
                       disabled={sftpLoading}
-                      title="刷新"
+                      title={t("terminal.sftp.action.refresh")}
                     >
                       <AppIcon icon="material-symbols:refresh-rounded" size={16} />
                     </button>
@@ -1922,7 +1938,7 @@ export function XTerminal({
                       type="button"
                       className="xterminal-sftp-icon-btn"
                       onClick={() => setSftpOpen(false)}
-                      title="关闭"
+                      title={t("terminal.sftp.action.close")}
                     >
                       <AppIcon icon="material-symbols:close-rounded" size={16} />
                     </button>
@@ -1943,7 +1959,7 @@ export function XTerminal({
                     }
                   }}
                   disabled={sftpLoading || sftpPath === "/" || !sftpPath}
-                  title="返回上级目录"
+                  title={t("terminal.sftp.action.up")}
                 >
                   <AppIcon icon="material-symbols:keyboard-return-rounded" size={16} />
                 </button>
@@ -1964,8 +1980,12 @@ export function XTerminal({
 
               <div className="xterminal-sftp-table-header">
                 <span className="xterminal-sftp-check" aria-hidden="true" />
-                <span className="xterminal-sftp-col-name">文件名</span>
-                <span className="xterminal-sftp-col-size">大小</span>
+                <span className="xterminal-sftp-col-name">
+                  {t("terminal.sftp.col.name")}
+                </span>
+                <span className="xterminal-sftp-col-size">
+                  {t("terminal.sftp.col.size")}
+                </span>
               </div>
               {uploadProgress && (
                 <div className="xterminal-sftp-progress">
@@ -1991,7 +2011,7 @@ export function XTerminal({
                         icon="material-symbols:refresh"
                         size={16}
                     />
-                    <span>加载中</span>
+                    <span>{t("terminal.sftp.loading")}</span>
                     </div>
                 )}
                 {!sftpLoading && sftpError && (
@@ -2007,7 +2027,9 @@ export function XTerminal({
                   </div>
                 )}
                 {!sftpLoading && !sftpError && sftpEntries.length === 0 && (
-                  <div className="xterminal-sftp-state">空目录</div>
+                  <div className="xterminal-sftp-state">
+                    {t("terminal.sftp.empty")}
+                  </div>
                 )}
                 {!sftpLoading && !sftpError && sftpEntries.length > 0 && (
                   <ul className="xterminal-sftp-list">
@@ -2062,7 +2084,7 @@ export function XTerminal({
                         }}
                       >
                         <AppIcon icon="material-symbols:upload-rounded" size={16} />
-                        上传
+                        {t("terminal.sftp.menu.upload")}
                       </button>
                       <button
                         type="button"
@@ -2073,7 +2095,7 @@ export function XTerminal({
                         }}
                       >
                         <AppIcon icon="material-symbols:refresh-rounded" size={16} />
-                        刷新
+                        {t("terminal.sftp.menu.refresh")}
                       </button>
                     </>
                   )}
@@ -2089,7 +2111,7 @@ export function XTerminal({
                         }}
                       >
                         <AppIcon icon="material-symbols:edit-outline-rounded" size={16} />
-                        重命名
+                        {t("terminal.sftp.menu.rename")}
                       </button>
                       <button
                         type="button"
@@ -2101,7 +2123,7 @@ export function XTerminal({
                         }}
                       >
                         <AppIcon icon="material-symbols:lock-person-outline-rounded" size={16} />
-                        修改权限
+                        {t("terminal.sftp.menu.chmod")}
                       </button>
                       <button
                         type="button"
@@ -2118,7 +2140,7 @@ export function XTerminal({
                         }}
                       >
                         <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
-                        复制路径
+                        {t("terminal.sftp.menu.copyPath")}
                       </button>
                       {!sftpMenu.entry.is_dir && (
                         <button
@@ -2131,7 +2153,7 @@ export function XTerminal({
                           }}
                         >
                           <AppIcon icon="material-symbols:download-rounded" size={16} />
-                          下载
+                          {t("terminal.sftp.menu.download")}
                         </button>
                       )}
                     </>
@@ -2147,7 +2169,7 @@ export function XTerminal({
                     }}
                   >
                     <AppIcon icon="material-symbols:create-new-folder-outline-rounded" size={16} />
-                    新建文件夹
+                    {t("terminal.sftp.menu.newFolder")}
                   </button>
                   {sftpMenu.entry && (
                     <button
@@ -2160,7 +2182,7 @@ export function XTerminal({
                       }}
                     >
                       <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
-                      删除
+                      {t("common.delete")}
                     </button>
                   )}
                 </div>
@@ -2186,12 +2208,12 @@ export function XTerminal({
               />
               <div className="xterminal-ai" style={{ width: aiWidth }}>
                 <div className="xterminal-ai-header">
-                  <div className="xterminal-ai-title">AI助手</div>
+                  <div className="xterminal-ai-title">{t("terminal.ai.title")}</div>
                   <button
                     type="button"
                     className="xterminal-ai-close"
                     onClick={() => setAiOpen(false)}
-                    title="关闭"
+                    title={t("common.close")}
                   >
                     <AppIcon icon="material-symbols:close-rounded" size={16} />
                   </button>
@@ -2199,7 +2221,9 @@ export function XTerminal({
               <div className="xterminal-ai-body">
                 <div className="xterminal-ai-history">
                   {aiMessages.length === 0 && (
-                    <div className="xterminal-ai-empty">暂无对话，可从右键菜单发送终端内容</div>
+                    <div className="xterminal-ai-empty">
+                      {t("terminal.ai.empty")}
+                    </div>
                   )}
                   {aiMessages.map((msg, index) => {
                     const prev = aiMessages[index - 1];
@@ -2222,7 +2246,9 @@ export function XTerminal({
                     <textarea
                       value={aiInput}
                       onChange={(event) => setAiInput(event.target.value)}
-                      placeholder={`输入你的问题，${modifierKeyAbbr}+Enter 发送`}
+                      placeholder={t("terminal.ai.input.placeholder", {
+                        modifier: modifierKeyAbbr,
+                      })}
                       onKeyDown={(event) => {
                         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                           event.preventDefault();
@@ -2249,7 +2275,7 @@ export function XTerminal({
                               size={16}
                             />
                             <span className="xterminal-ai-model-value">
-                              {aiModel || "选择模型"}
+                              {aiModel || t("terminal.ai.model.placeholder")}
                             </span>
                             <AppIcon
                               className="xterminal-ai-model-caret"
@@ -2287,8 +2313,8 @@ export function XTerminal({
                           setAiInput("");
                         }}
                         disabled={aiBusy || !aiInput.trim()}
-                        title="发送"
-                        aria-label="发送"
+                        title={t("terminal.ai.send")}
+                        aria-label={t("terminal.ai.send")}
                       >
                         <AppIcon icon="material-symbols:send-outline-rounded" size={16}/>
                         {/* {aiBusy ? "发送中..." : "发送"} */}
@@ -2305,7 +2331,9 @@ export function XTerminal({
         <div className="xterminal-toolbar">
           <div className="xterminal-toolbar-item">
             <AppIcon icon="material-symbols:speed-rounded" size={16} />
-            <span className="xterminal-toolbar-label">延迟</span>
+            <span className="xterminal-toolbar-label">
+              {t("terminal.toolbar.latency")}
+            </span>
             <span
               className={`xterminal-toolbar-value xterminal-latency xterminal-latency--${latencyTone}`}
             >
@@ -2320,7 +2348,9 @@ export function XTerminal({
             style={{ flex: 1, minWidth: 0 }}
           >
             <AppIcon icon="material-symbols:lan" size={16} />
-            <span className="xterminal-toolbar-label">服务器 IP</span>
+            <span className="xterminal-toolbar-label">
+              {t("terminal.toolbar.endpoint")}
+            </span>
             <span className="xterminal-toolbar-value">{endpointLabel}</span>
           </div>
 
@@ -2328,19 +2358,19 @@ export function XTerminal({
             type="button"
             className="xterminal-toolbar-btn"
             onClick={() => setScriptPanelOpen((prev) => !prev)}
-            title="脚本"
+            title={t("terminal.toolbar.script")}
           >
             <AppIcon icon="material-symbols:terminal-rounded" size={16} />
-            快捷操作
+            {t("terminal.toolbar.quickActions")}
           </button>
           <button
             type="button"
             className={`xterminal-toolbar-btn ${transferPanelOpen ? "xterminal-toolbar-btn--active" : ""}`}
             onClick={() => setTransferPanelOpen((prev) => !prev)}
-            title="下载管理"
+            title={t("terminal.transfer.title")}
           >
             <AppIcon icon="material-symbols:download-rounded" size={16} />
-            下载管理
+            {t("terminal.transfer.title")}
             {(runningTransferCount > 0 || failedTransferCount > 0) && (
               <span
                 className={`xterminal-transfer-badge ${
@@ -2363,7 +2393,7 @@ export function XTerminal({
                   onClick={() => setScriptPickerOpen(true)}
                 >
                   <AppIcon icon="material-symbols:code-blocks-rounded" size={16} />
-                  脚本库
+                  {t("terminal.script.library")}
                 </button>
                 <button
                   type="button"
@@ -2371,27 +2401,33 @@ export function XTerminal({
                   onClick={() => setScriptText("")}
                 >
                   <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
-                  清空
+                  {t("terminal.script.clear")}
                 </button>
               </div>
               <div className="xterminal-script-target">
-                <span>发送给:</span>
-                <select
+                <span>{t("terminal.script.sendTo")}</span>
+                <Select
                   value={scriptTarget}
-                  onChange={(event) =>
-                    setScriptTarget(event.target.value as "current" | "all")
+                  onChange={(nextValue) =>
+                    setScriptTarget(nextValue as "current" | "all")
                   }
-                >
-                  <option value="current">当前会话</option>
-                  <option value="all">所有会话</option>
-                </select>
+                  options={[
+                    {
+                      value: "current",
+                      label: t("terminal.script.target.current"),
+                    },
+                    { value: "all", label: t("terminal.script.target.all") },
+                  ]}
+                />
               </div>
             </div>
             <div className="xterminal-script-body">
               <textarea
                 value={scriptText}
                 onChange={(event) => setScriptText(event.target.value)}
-                placeholder={`输入命令，Enter 换行，${modifierKeyAbbr}+Enter 执行`}
+                placeholder={t("terminal.script.placeholder", {
+                  modifier: modifierKeyAbbr,
+                })}
                 onKeyDown={(event) => {
                   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                     event.preventDefault();
@@ -2404,7 +2440,7 @@ export function XTerminal({
                 className="xterminal-script-send"
                 onClick={() => void handleSendScript()}
               >
-                执行
+                {t("terminal.script.run")}
                 <span className="xterminal-script-shortcut">{modifierKeyLabel} Enter</span>
               </button>
             </div>
@@ -2414,11 +2450,14 @@ export function XTerminal({
           <div className="xterminal-transfer-panel">
             <div className="xterminal-transfer-header">
               <div className="xterminal-transfer-title">
-                下载管理
+                {t("terminal.transfer.title")}
               </div>
               <div className="xterminal-transfer-actions">
                 <span className="xterminal-transfer-summary">
-                  进行中 {runningTransferCount} · 失败 {failedTransferCount}
+                  {t("terminal.transfer.summary", {
+                    running: runningTransferCount,
+                    failed: failedTransferCount,
+                  })}
                 </span>
                 <button
                   type="button"
@@ -2427,13 +2466,13 @@ export function XTerminal({
                   disabled={transferTasks.length === 0}
                 >
                   <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
-                  清理记录
+                  {t("terminal.transfer.clear")}
                 </button>
               </div>
             </div>
             {transferTasks.length === 0 ? (
               <div className="xterminal-transfer-empty">
-                暂无上传或下载任务
+                {t("terminal.transfer.empty")}
               </div>
             ) : (
               <div className="xterminal-transfer-list">
@@ -2457,15 +2496,26 @@ export function XTerminal({
                       <span
                         className={`xterminal-transfer-status xterminal-transfer-status--${task.status}`}
                       >
-                        {TRANSFER_STATUS_LABEL[task.status]}
+                        {transferStatusLabel(task.status)}
                       </span>
                     </div>
                     <div className="xterminal-transfer-meta">
-                      {TRANSFER_DIRECTION_LABEL[task.direction]} · 开始于 {formatTransferTime(task.startedAt)}
-                      {task.finishedAt ? ` · 结束于 ${formatTransferTime(task.finishedAt)}` : ""}
+                      {t("terminal.transfer.meta", {
+                        direction: transferDirectionLabel(task.direction),
+                        start: formatTransferTime(task.startedAt),
+                        endSuffix: task.finishedAt
+                          ? t("terminal.transfer.finishedAt", {
+                              time: formatTransferTime(task.finishedAt),
+                            })
+                          : "",
+                      })}
                     </div>
-                    <div className="xterminal-transfer-path">源：{task.sourcePath}</div>
-                    <div className="xterminal-transfer-path">目标：{task.targetPath}</div>
+                    <div className="xterminal-transfer-path">
+                      {t("terminal.transfer.source", { path: task.sourcePath })}
+                    </div>
+                    <div className="xterminal-transfer-path">
+                      {t("terminal.transfer.target", { path: task.targetPath })}
+                    </div>
                     <div className="xterminal-transfer-progressbar">
                       <span
                         className={`xterminal-transfer-progressvalue xterminal-transfer-progressvalue--${task.status}`}
@@ -2514,7 +2564,7 @@ export function XTerminal({
                   disabled={!terminalInstance.current?.hasSelection()}
                 >
                   <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
-                  复制
+                  {t("terminal.menu.copy")}
                 </button>
                 <button
                   type="button"
@@ -2530,7 +2580,7 @@ export function XTerminal({
                   }}
                 >
                   <AppIcon icon="material-symbols:content-paste-rounded" size={16} />
-                  粘贴
+                  {t("terminal.menu.paste")}
                 </button>
                 <button
                   type="button"
@@ -2538,7 +2588,7 @@ export function XTerminal({
                   onClick={handleTermClear}
                 >
                   <AppIcon icon="material-symbols:delete-sweep-rounded" size={16} />
-                  清屏
+                  {t("terminal.menu.clear")}
                 </button>
                 <div className="xterminal-term-menu-divider" />
                 <button
@@ -2547,7 +2597,7 @@ export function XTerminal({
                   onClick={() => void openAiFromTerminal("fix")}
                 >
                   <AppIcon icon="material-symbols:build-rounded" size={16} />
-                  发送给 AI（修复）
+                  {t("terminal.menu.ai.fix")}
                 </button>
                 <button
                   type="button"
@@ -2555,7 +2605,7 @@ export function XTerminal({
                   onClick={() => void openAiFromTerminal("ask")}
                 >
                   <AppIcon icon="material-symbols:forum-rounded" size={16} />
-                  发送给 AI（提问）
+                  {t("terminal.menu.ai.ask")}
                 </button>
               </div>
             </div>,
@@ -2563,7 +2613,11 @@ export function XTerminal({
           )}
       <Modal
         open={!!renameEntry}
-        title={renameEntry ? `重命名：${renameEntry.name}` : "重命名"}
+        title={
+          renameEntry
+            ? t("terminal.sftp.rename.titleWithName", { name: renameEntry.name })
+            : t("terminal.sftp.rename.title")
+        }
         onClose={() => {
           setRenameEntry(null);
           setSftpActionError(null);
@@ -2572,7 +2626,7 @@ export function XTerminal({
       >
         <div className="xterminal-sftp-modal">
           <div className="form-group">
-            <label>新名称</label>
+            <label>{t("terminal.sftp.rename.label")}</label>
             <input
               type="text"
               value={renameValue}
@@ -2582,7 +2636,7 @@ export function XTerminal({
                   void handleRenameSubmit();
                 }
               }}
-              placeholder="请输入新名称"
+              placeholder={t("terminal.sftp.rename.placeholder")}
             />
           </div>
           {sftpActionError && (
@@ -2595,7 +2649,7 @@ export function XTerminal({
               onClick={() => void handleRenameSubmit()}
               disabled={sftpActionBusy}
             >
-              保存
+              {t("common.save")}
             </button>
             <button
               className="btn btn-secondary"
@@ -2605,7 +2659,7 @@ export function XTerminal({
                 setSftpActionError(null);
               }}
             >
-              取消
+              {t("common.cancel")}
             </button>
           </div>
         </div>
@@ -2613,7 +2667,11 @@ export function XTerminal({
 
       <Modal
         open={!!chmodEntry}
-        title={chmodEntry ? `修改权限：${chmodEntry.name}` : "修改权限"}
+        title={
+          chmodEntry
+            ? t("terminal.sftp.chmod.titleWithName", { name: chmodEntry.name })
+            : t("terminal.sftp.chmod.title")
+        }
         onClose={() => {
           setChmodEntry(null);
           setSftpActionError(null);
@@ -2622,7 +2680,7 @@ export function XTerminal({
       >
         <div className="xterminal-sftp-modal">
           <div className="form-group">
-            <label>权限（八进制）</label>
+            <label>{t("terminal.sftp.chmod.label")}</label>
             <input
               type="text"
               value={chmodValue}
@@ -2632,9 +2690,11 @@ export function XTerminal({
                   void handleChmodSubmit();
                 }
               }}
-              placeholder="例如 644 或 755"
+              placeholder={t("terminal.sftp.chmod.placeholder")}
             />
-            <div className="xterminal-sftp-modal-hint">格式：三位或四位八进制（如 644、755、0755）</div>
+            <div className="xterminal-sftp-modal-hint">
+              {t("terminal.sftp.chmod.hint")}
+            </div>
           </div>
           {sftpActionError && (
             <div className="xterminal-sftp-modal-error">{sftpActionError}</div>
@@ -2646,7 +2706,7 @@ export function XTerminal({
               onClick={() => void handleChmodSubmit()}
               disabled={sftpActionBusy}
             >
-              保存
+              {t("common.save")}
             </button>
             <button
               className="btn btn-secondary"
@@ -2656,7 +2716,7 @@ export function XTerminal({
                 setSftpActionError(null);
               }}
             >
-              取消
+              {t("common.cancel")}
             </button>
           </div>
         </div>
@@ -2664,7 +2724,7 @@ export function XTerminal({
 
       <Modal
         open={newFolderOpen}
-        title="新建文件夹"
+        title={t("terminal.sftp.newFolder.title")}
         onClose={() => {
           setNewFolderOpen(false);
           setSftpActionError(null);
@@ -2673,7 +2733,7 @@ export function XTerminal({
       >
         <div className="xterminal-sftp-modal">
           <div className="form-group">
-            <label>文件夹名称</label>
+            <label>{t("terminal.sftp.newFolder.label")}</label>
             <input
               type="text"
               value={newFolderName}
@@ -2683,7 +2743,7 @@ export function XTerminal({
                   void handleNewFolderSubmit();
                 }
               }}
-              placeholder="例如 logs"
+              placeholder={t("terminal.sftp.newFolder.placeholder")}
             />
           </div>
           {sftpActionError && (
@@ -2696,7 +2756,7 @@ export function XTerminal({
               onClick={() => void handleNewFolderSubmit()}
               disabled={sftpActionBusy}
             >
-              创建
+              {t("terminal.sftp.newFolder.create")}
             </button>
             <button
               className="btn btn-secondary"
@@ -2706,7 +2766,7 @@ export function XTerminal({
                 setSftpActionError(null);
               }}
             >
-              取消
+              {t("common.cancel")}
             </button>
           </div>
         </div>

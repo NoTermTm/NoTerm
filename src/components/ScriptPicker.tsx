@@ -3,6 +3,7 @@ import type { ScriptItem } from "../store/scripts";
 import { readScriptsData } from "../store/scripts";
 import { AppIcon } from "./AppIcon";
 import { Modal } from "./Modal";
+import { useI18n } from "../i18n";
 import "./ScriptPicker.css";
 
 type ScriptPickerProps = {
@@ -14,6 +15,7 @@ type ScriptPickerProps = {
 export function ScriptPicker({ open, onClose, onSelect }: ScriptPickerProps) {
   const [scripts, setScripts] = useState<ScriptItem[]>([]);
   const [search, setSearch] = useState("");
+  const { t } = useI18n();
 
   useEffect(() => {
     if (!open) return;
@@ -35,18 +37,20 @@ export function ScriptPicker({ open, onClose, onSelect }: ScriptPickerProps) {
   }, [scripts, search]);
 
   return (
-    <Modal open={open} title="选择脚本" onClose={onClose} width={520}>
+    <Modal open={open} title={t("scriptPicker.title")} onClose={onClose} width={520}>
       <div className="script-picker">
         <div className="script-picker-search">
           <AppIcon icon="material-symbols:search-rounded" size={16} />
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="搜索脚本"
+            placeholder={t("scriptPicker.search")}
           />
         </div>
         <div className="script-picker-list">
-          {filtered.length === 0 && <div className="script-picker-empty">暂无脚本</div>}
+          {filtered.length === 0 && (
+            <div className="script-picker-empty">{t("scriptPicker.empty")}</div>
+          )}
           {filtered.map((script) => (
             <button
               key={script.id}

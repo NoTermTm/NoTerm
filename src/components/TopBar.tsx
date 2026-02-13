@@ -1,5 +1,6 @@
 import "./TopBar.css";
 import { AppIcon } from "./AppIcon";
+import { useI18n } from "../i18n";
 
 export interface Tab {
   id: string;
@@ -22,6 +23,7 @@ export function TopBar({
   onTabClose,
   onNewTab,
 }: TopBarProps) {
+  const { t } = useI18n();
   return (
     <div className="top-bar">
       <div className="tabs-container">
@@ -48,7 +50,11 @@ export function TopBar({
             </button>
           </div>
         ))}
-        <button className="new-tab-btn" onClick={onNewTab} title="新建会话">
+        <button
+          className="new-tab-btn"
+          onClick={onNewTab}
+          title={t("titleBar.newSession")}
+        >
           <AppIcon icon="material-symbols:add-rounded" size={16} />
         </button>
       </div>

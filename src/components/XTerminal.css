@@ -956,8 +956,11 @@
     align-items: center;
     gap: 6px;
 }
+.xterminal-script-target span {
+    min-width: 50px;
+}
 
-.xterminal-script-target select {
+.xterminal-script-target .select-trigger {
     border: 1px solid var(--border-color);
     background: var(--bg-tertiary);
     border-radius: 8px;

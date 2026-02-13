@@ -1,3 +1,5 @@
+import { tSync } from "../i18n";
+
 const encoder = new TextEncoder();
 
 const bytesToBase64 = (bytes: Uint8Array) =>
@@ -8,7 +10,7 @@ const base64ToBytes = (value: string) =>
 
 const ensureCrypto = () => {
   if (!globalThis.crypto?.subtle) {
-    throw new Error("当前环境不支持加密能力");
+    throw new Error(tSync("security.cryptoUnavailable"));
   }
   return globalThis.crypto;
 };

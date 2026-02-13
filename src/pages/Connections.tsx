@@ -7,6 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { AppIcon } from "../components/AppIcon";
+import { Select } from "../components/Select";
 import { sshApi } from "../api/ssh";
 import { rdpApi } from "../api/rdp";
 import type {
@@ -30,6 +31,7 @@ import {
   type EncryptedPayload,
 } from "../utils/security";
 import { getMasterKeySession } from "../utils/securitySession";
+import { useI18n } from "../i18n";
 import "./Connections.css";
 
 const ENCODING_OPTIONS = [
@@ -110,10 +112,10 @@ const getTagStyle = (color: string) => {
   } as CSSProperties;
 };
 
-const createDefaultSshConnection = (): SshConnectionConfig => ({
+const createDefaultSshConnection = (name: string): SshConnectionConfig => ({
   kind: "ssh",
   id: crypto.randomUUID(),
-  name: "新连接",
+  name,
   tags: [],
   color: DEFAULT_CONNECTION_COLOR,
   host: "",
@@ -123,10 +125,10 @@ const createDefaultSshConnection = (): SshConnectionConfig => ({
   encoding: "utf-8",
 });
 
-const createDefaultRdpConnection = (): RdpConnectionConfig => ({
+const createDefaultRdpConnection = (name: string): RdpConnectionConfig => ({
   kind: "rdp",
   id: crypto.randomUUID(),
-  name: "RDP 连接",
+  name,
   tags: [],
   color: DEFAULT_CONNECTION_COLOR,
   host: "",
@@ -148,10 +150,11 @@ const createDefaultRdpConnection = (): RdpConnectionConfig => ({
 
 const normalizeSshConnection = (
   conn: Partial<SshConnectionConfig>,
+  fallbackName: string,
 ): SshConnectionConfig => ({
   kind: "ssh",
   id: conn.id ?? crypto.randomUUID(),
-  name: conn.name ?? "新连接",
+  name: conn.name ?? fallbackName,
   tags: normalizeTags(conn.tags),
   color: normalizeColor(conn.color),
   host: conn.host ?? "",
@@ -164,10 +167,11 @@ const normalizeSshConnection = (
 
 const normalizeRdpConnection = (
   conn: Partial<RdpConnectionConfig>,
+  fallbackName: string,
 ): RdpConnectionConfig => ({
   kind: "rdp",
   id: conn.id ?? crypto.randomUUID(),
-  name: conn.name ?? "RDP 连接",
+  name: conn.name ?? fallbackName,
   tags: normalizeTags(conn.tags),
   color: normalizeColor(conn.color),
   host: conn.host ?? "",
@@ -187,9 +191,13 @@ const normalizeRdpConnection = (
   redirectDrives: conn.redirectDrives ?? false,
 });
 
-const normalizeConnection = (conn: any): ConnectionConfig => {
-  if (conn?.kind === "rdp") return normalizeRdpConnection(conn);
-  return normalizeSshConnection(conn);
+const normalizeConnection = (
+  conn: any,
+  fallbackSshName: string,
+  fallbackRdpName: string,
+): ConnectionConfig => {
+  if (conn?.kind === "rdp") return normalizeRdpConnection(conn, fallbackRdpName);
+  return normalizeSshConnection(conn, fallbackSshName);
 };
 
 const isSshConnection = (
@@ -197,9 +205,12 @@ const isSshConnection = (
 ): conn is SshConnectionConfig => !!conn && conn.kind !== "rdp";
 
 // 验证 PEM 私钥格式
-function validatePemKey(content: string): { valid: boolean; message: string } {
+function validatePemKey(
+  content: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): { valid: boolean; message: string } {
   if (!content || !content.trim()) {
-    return { valid: false, message: "请输入私钥内容" };
+    return { valid: false, message: t("connections.pem.empty") };
   }
 
   const trimmed = content.trim();
@@ -210,7 +221,7 @@ function validatePemKey(content: string): { valid: boolean; message: string } {
   if (!hasBegin || !hasEnd) {
     return {
       valid: false,
-      message: "格式错误：缺少 BEGIN 或 END 标记",
+      message: t("connections.pem.missingMarkers"),
     };
   }
 
@@ -220,7 +231,7 @@ function validatePemKey(content: string): { valid: boolean; message: string } {
   if (beginMatch && endMatch && beginMatch[1] !== endMatch[1]) {
     return {
       valid: false,
-      message: "格式错误：BEGIN 和 END 标记不匹配",
+      message: t("connections.pem.mismatchMarkers"),
     };
   }
 
@@ -235,7 +246,7 @@ function validatePemKey(content: string): { valid: boolean; message: string } {
   if (contentLines.length === 0) {
     return {
       valid: false,
-      message: "格式错误：没有私钥内容",
+      message: t("connections.pem.noContent"),
     };
   }
 
@@ -255,11 +266,11 @@ function validatePemKey(content: string): { valid: boolean; message: string } {
   if (!isSupported) {
     return {
       valid: false,
-      message: `不支持的密钥类型：${keyType}`,
+      message: t("connections.pem.unsupported", { type: keyType }),
     };
   }
 
-  return { valid: true, message: "格式正确" };
+  return { valid: true, message: t("connections.pem.valid") };
 }
 
 let store: Awaited<ReturnType<typeof load>> | null = null;
@@ -327,12 +338,16 @@ const encryptMaybe = async (
   return encryptString(value, ctx.masterKey, ctx.encSalt);
 };
 
-const deserializeConnection = async (conn: any, ctx: SecurityContext) => {
+const deserializeConnection = async (
+  conn: any,
+  ctx: SecurityContext,
+  fallbackNames: { ssh: string; rdp: string },
+) => {
   if (conn?.kind === "rdp") {
     const rdp = { ...conn };
     rdp.password = await decryptMaybe(rdp.password, ctx);
     rdp.gatewayPassword = await decryptMaybe(rdp.gatewayPassword, ctx);
-    return normalizeConnection(rdp);
+    return normalizeConnection(rdp, fallbackNames.ssh, fallbackNames.rdp);
   }
   const ssh = { ...conn };
   if (ssh.auth_type?.type === "Password") {
@@ -348,7 +363,7 @@ const deserializeConnection = async (conn: any, ctx: SecurityContext) => {
       passphrase: await decryptMaybe(ssh.auth_type.passphrase, ctx),
     };
   }
-  return normalizeConnection(ssh);
+  return normalizeConnection(ssh, fallbackNames.ssh, fallbackNames.rdp);
 };
 
 const serializeConnection = async (conn: ConnectionConfig, ctx: SecurityContext) => {
@@ -493,6 +508,11 @@ export function ConnectionsPage({
   setActiveTabId,
 }: ConnectionsPageProps) {
   const navigate = useNavigate();
+  const { t } = useI18n();
+  const fallbackNames = {
+    ssh: t("connections.defaultName"),
+    rdp: t("connections.rdpDefaultName"),
+  };
   const localSessionIdRef = useRef<string | null>(null);
   const [connections, setConnections] = useState<ConnectionConfig[]>([]);
   const [selectedConnection, setSelectedConnection] =
@@ -638,7 +658,7 @@ export function ConnectionsPage({
     if (saved) {
       const ctx = await getSecurityContext();
       const normalized = await Promise.all(
-        saved.map((conn) => deserializeConnection(conn, ctx)),
+        saved.map((conn) => deserializeConnection(conn, ctx, fallbackNames)),
       );
       setConnections(normalized);
     }
@@ -709,7 +729,7 @@ export function ConnectionsPage({
       setShowMasterKeyPrompt(true);
       return;
     }
-    const newConnection = createDefaultSshConnection();
+    const newConnection = createDefaultSshConnection(fallbackNames.ssh);
     setEditingConnection(newConnection);
     setAuthProfileId("");
     setPkMode("path"); // 重置为默认模式
@@ -732,8 +752,8 @@ export function ConnectionsPage({
         ...prev,
         {
           id: SETTINGS_TAB_ID,
-          title: "设置",
-          subtitle: "应用配置",
+          title: t("tab.settings.title"),
+          subtitle: t("tab.settings.subtitle"),
         },
       ];
     });
@@ -753,7 +773,11 @@ export function ConnectionsPage({
       }
     }
 
-    const normalizedEditing = normalizeConnection(editingConnection);
+    const normalizedEditing = normalizeConnection(
+      editingConnection,
+      fallbackNames.ssh,
+      fallbackNames.rdp,
+    );
 
     const existingIndex = connections.findIndex(
       (c) => c.id === normalizedEditing.id,
@@ -839,8 +863,12 @@ export function ConnectionsPage({
       id: crypto.randomUUID(),
       name:
         editingConnection.auth_type.type === "Password"
-          ? `${editingConnection.username} / 密码`
-          : `${editingConnection.username} / 私钥`,
+          ? t("connections.authProfile.passwordName", {
+              username: editingConnection.username,
+            })
+          : t("connections.authProfile.keyName", {
+              username: editingConnection.username,
+            }),
       username: editingConnection.username,
       auth_type: editingConnection.auth_type,
     };
@@ -922,7 +950,7 @@ export function ConnectionsPage({
     const localConnection: SshConnectionConfig = {
       kind: "ssh",
       id: "local",
-      name: "本地终端",
+      name: t("connections.localTerminal"),
       host: "local",
       port: 0,
       username: "local",
@@ -1031,13 +1059,13 @@ export function ConnectionsPage({
 
     if (!trimmedHost) {
       setTestStatus("error");
-      setTestMessage("请输入主机地址");
+      setTestMessage(t("connections.test.requireHost"));
       return;
     }
 
     if (!trimmedUser && !isPrivateKeyAuth) {
       setTestStatus("error");
-      setTestMessage("请输入用户名");
+      setTestMessage(t("connections.test.requireUsername"));
       return;
     }
 
@@ -1045,7 +1073,7 @@ export function ConnectionsPage({
       const password = (editingConnection.auth_type as any).password?.trim();
       if (!password) {
         setTestStatus("error");
-        setTestMessage("请输入密码");
+        setTestMessage(t("connections.test.requirePassword"));
         return;
       }
     }
@@ -1057,7 +1085,7 @@ export function ConnectionsPage({
       const keyPath = (editingConnection.auth_type as any).key_path?.trim();
 
       if (keyContent) {
-        const validation = validatePemKey(keyContent);
+        const validation = validatePemKey(keyContent, t);
         if (!validation.valid) {
           setTestStatus("error");
           setTestMessage(validation.message);
@@ -1065,13 +1093,13 @@ export function ConnectionsPage({
         }
       } else if (!keyPath) {
         setTestStatus("error");
-        setTestMessage("请输入私钥路径或私钥内容");
+        setTestMessage(t("connections.test.requireKey"));
         return;
       }
     }
 
     setTestStatus("testing");
-    setTestMessage("正在测试连接...");
+    setTestMessage(t("connections.test.testing"));
 
     const testConnection: SshConnectionConfig = {
       ...editingConnection,
@@ -1085,11 +1113,11 @@ export function ConnectionsPage({
       const sessionId = await sshApi.connect(testConnection);
       await sshApi.disconnect(sessionId);
       setTestStatus("success");
-      setTestMessage("连接成功");
+      setTestMessage(t("connections.test.success"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setTestStatus("error");
-      setTestMessage(message || "连接失败");
+      setTestMessage(message || t("connections.test.fail"));
     }
   };
 
@@ -1111,8 +1139,8 @@ export function ConnectionsPage({
     const tags = normalizeTags(editingConnection.tags);
     const color = normalizeColor(editingConnection.color);
     const moreConfigSummary = [
-      editingConnection.name?.trim() || "未命名连接",
-      tags.length > 0 ? `#${tags.join(" #")}` : "无标签",
+      editingConnection.name?.trim() || t("connections.unnamed"),
+      tags.length > 0 ? `#${tags.join(" #")}` : t("connections.tags.none"),
       color,
     ].join(" / ");
 
@@ -1121,8 +1149,23 @@ export function ConnectionsPage({
         if (!prev) return prev;
         if (prev.kind === nextKind) return prev;
         if (nextKind === "ssh") {
-          const defaults = createDefaultSshConnection();
-          return normalizeSshConnection({
+          const defaults = createDefaultSshConnection(fallbackNames.ssh);
+          return normalizeSshConnection(
+            {
+              ...defaults,
+              id: prev.id,
+              name: prev.name,
+              tags: normalizeTags(prev.tags),
+              color: normalizeColor(prev.color),
+              host: prev.host,
+              username: prev.username,
+            },
+            fallbackNames.ssh,
+          );
+        }
+        const defaults = createDefaultRdpConnection(fallbackNames.rdp);
+        return normalizeRdpConnection(
+          {
             ...defaults,
             id: prev.id,
             name: prev.name,
@@ -1130,18 +1173,9 @@ export function ConnectionsPage({
             color: normalizeColor(prev.color),
             host: prev.host,
             username: prev.username,
-          });
-        }
-        const defaults = createDefaultRdpConnection();
-        return normalizeRdpConnection({
-          ...defaults,
-          id: prev.id,
-          name: prev.name,
-          tags: normalizeTags(prev.tags),
-          color: normalizeColor(prev.color),
-          host: prev.host,
-          username: prev.username,
-        });
+          },
+          fallbackNames.rdp,
+        );
       });
       setAuthProfileId("");
       setPkMode("path");
@@ -1150,10 +1184,12 @@ export function ConnectionsPage({
     return (
       <div className="connection-form connection-form-layout">
         <div className="connection-form-section">
-          <div className="connection-form-section-title">基础连接</div>
+          <div className="connection-form-section-title">
+            {t("connections.section.basic")}
+          </div>
           <div className="connection-form-grid">
             <div className="form-group">
-              <label>服务器</label>
+              <label>{t("connections.field.host")}</label>
               <input
                 type="text"
                 value={editingConnection.host}
@@ -1163,30 +1199,30 @@ export function ConnectionsPage({
                     host: e.target.value,
                   })
                 }
-                placeholder="请输入 IP 地址或域名"
+                placeholder={t("connections.field.hostPlaceholder")}
               />
             </div>
             <div className="form-group">
-              <label>连接协议</label>
+              <label>{t("connections.field.protocol")}</label>
               <div className="connection-type-switch">
                 <button
                   type="button"
                   className={`connection-type-switch-btn ${editingConnection.kind === "ssh" ? "active" : ""}`}
                   onClick={() => handleKindChange("ssh")}
                 >
-                  终端连接（SSH）
+                  {t("connections.protocol.ssh")}
                 </button>
                 <button
                   type="button"
                   className={`connection-type-switch-btn ${editingConnection.kind === "rdp" ? "active" : ""}`}
                   onClick={() => handleKindChange("rdp")}
                 >
-                  远程桌面（RDP）
+                  {t("connections.protocol.rdp")}
                 </button>
               </div>
             </div>
             <div className="form-group connection-form-grid-col-compact">
-              <label>连接端口</label>
+              <label>{t("connections.field.port")}</label>
               <input
                 type="number"
                 value={editingConnection.port}
@@ -1205,37 +1241,47 @@ export function ConnectionsPage({
         </div>
 
         <div className="connection-form-section">
-          <div className="connection-form-section-title">认证配置</div>
+          <div className="connection-form-section-title">
+            {t("connections.section.auth")}
+          </div>
           {!isRdp && (
             <div className="form-group">
-              <label>快速认证</label>
+              <label>{t("connections.quickAuth.label")}</label>
               <div className="quick-auth-row">
-                <select
+                <Select
                   className="quick-auth-select"
+                  wrapperClassName="quick-auth-select-wrapper"
                   value={authProfileId}
-                  onChange={(e) => setAuthProfileId(e.target.value)}
-                >
-                  <option value="">不使用</option>
-                  {authProfiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}（{p.username} /{" "}
-                      {p.auth_type.type === "Password" ? "密码" : "私钥"}）
-                    </option>
-                  ))}
-                </select>
+                  onChange={(nextValue) => setAuthProfileId(nextValue)}
+                  options={[
+                    { value: "", label: t("connections.quickAuth.none") },
+                    ...authProfiles.map((profile) => ({
+                      value: profile.id,
+                      label: (
+                        <>
+                          {profile.name}（{profile.username} /{" "}
+                          {profile.auth_type.type === "Password"
+                            ? t("connections.quickAuth.password")
+                            : t("connections.quickAuth.key")}
+                          ）
+                        </>
+                      ),
+                    })),
+                  ]}
+                />
                 <button
                   className="btn btn-secondary btn-sm"
                   type="button"
                   onClick={() => void saveEditingAuthToProfiles()}
                   disabled={!canSaveAuthProfileFromEditing}
-                  title="保存当前用户名和认证方式到密钥管理，便于下次快速套用"
+                  title={t("connections.quickAuth.saveTitle")}
                 >
                   <AppIcon icon="material-symbols:save-rounded" size={16} />
-                  保存为密钥
+                  {t("connections.quickAuth.save")}
                 </button>
               </div>
               <div className="quick-auth-hint">
-                在“密钥管理”维护认证信息，这里可一键套用到新服务器。
+                {t("connections.quickAuth.hint")}
               </div>
             </div>
           )}
@@ -1244,8 +1290,8 @@ export function ConnectionsPage({
             <div className="form-group">
               <label>
                 {!isRdp && authType === "PrivateKey"
-                  ? "用户名（可选）"
-                  : "用户名"}
+                  ? t("connections.username.optional")
+                  : t("connections.username")}
               </label>
               <input
                 type="text"
@@ -1258,7 +1304,7 @@ export function ConnectionsPage({
                 }
                 placeholder={
                   !isRdp && authType === "PrivateKey"
-                    ? "留空时自动使用本机用户名"
+                    ? t("connections.username.placeholderPrivateKey")
                     : isRdp
                       ? "Administrator"
                       : "root"
@@ -1268,7 +1314,7 @@ export function ConnectionsPage({
 
             {isRdp && (
               <div className="form-group">
-                <label>密码</label>
+                <label>{t("connections.password")}</label>
                 <div className="password-input-wrapper">
                   <input
                     type={showPassword ? "text" : "password"}
@@ -1286,7 +1332,11 @@ export function ConnectionsPage({
                     type="button"
                     className="password-toggle-btn"
                     onClick={() => setShowPassword(!showPassword)}
-                    title={showPassword ? "隐藏密码" : "显示密码"}
+                    title={
+                      showPassword
+                        ? t("connections.password.hide")
+                        : t("connections.password.show")
+                    }
                   >
                     <AppIcon
                       icon={
@@ -1305,7 +1355,7 @@ export function ConnectionsPage({
           {!isRdp && (
             <>
               <div className="form-group">
-                <label>认证方式</label>
+                <label>{t("connections.authType.label")}</label>
                 <div className="auth-type-selector">
                   <button
                     type="button"
@@ -1319,7 +1369,7 @@ export function ConnectionsPage({
                       });
                     }}
                   >
-                    密码验证
+                    {t("connections.authType.password")}
                   </button>
                   <button
                     type="button"
@@ -1337,14 +1387,14 @@ export function ConnectionsPage({
                       });
                     }}
                   >
-                    密钥验证
+                    {t("connections.authType.key")}
                   </button>
                 </div>
               </div>
 
               {authType === "Password" && (
                 <div className="form-group">
-                  <label>密码</label>
+                  <label>{t("connections.password")}</label>
                   <div className="password-input-wrapper">
                     <input
                       type={showPassword ? "text" : "password"}
@@ -1368,7 +1418,11 @@ export function ConnectionsPage({
                       type="button"
                       className="password-toggle-btn"
                       onClick={() => setShowPassword(!showPassword)}
-                      title={showPassword ? "隐藏密码" : "显示密码"}
+                      title={
+                        showPassword
+                          ? t("connections.password.hide")
+                          : t("connections.password.show")
+                      }
                     >
                       <AppIcon
                         icon={
@@ -1391,21 +1445,21 @@ export function ConnectionsPage({
                       className={`keys-pk-mode-btn ${currentPkMode === "path" ? "active" : ""}`}
                       onClick={() => setPkMode("path")}
                     >
-                      使用路径
+                      {t("connections.pkMode.path")}
                     </button>
                     <button
                       type="button"
                       className={`keys-pk-mode-btn ${currentPkMode === "manual" ? "active" : ""}`}
                       onClick={() => setPkMode("manual")}
                     >
-                      手动输入
+                      {t("connections.pkMode.manual")}
                     </button>
                   </div>
 
                   {currentPkMode === "path" && (
                     <>
                       <div className="form-group">
-                        <label>私钥路径</label>
+                        <label>{t("connections.pk.path")}</label>
                         <input
                           type="text"
                           value={
@@ -1430,7 +1484,7 @@ export function ConnectionsPage({
                         />
                       </div>
                       <div className="form-group">
-                        <label>私钥密码（可选）</label>
+                        <label>{t("connections.pk.passphraseOptional")}</label>
                         <div className="password-input-wrapper">
                           <input
                             type={showPassphrase ? "text" : "password"}
@@ -1456,7 +1510,11 @@ export function ConnectionsPage({
                             type="button"
                             className="password-toggle-btn"
                             onClick={() => setShowPassphrase(!showPassphrase)}
-                            title={showPassphrase ? "隐藏密码" : "显示密码"}
+                            title={
+                              showPassphrase
+                                ? t("connections.password.hide")
+                                : t("connections.password.show")
+                            }
                           >
                             <AppIcon
                               icon={
@@ -1475,7 +1533,7 @@ export function ConnectionsPage({
                   {currentPkMode === "manual" && (
                     <div className="keys-manual">
                       <div className="form-group">
-                        <label>私钥内容（PEM 格式）</label>
+                        <label>{t("connections.pk.content")}</label>
                         <textarea
                           className="keys-pem-textarea"
                           value={
@@ -1497,7 +1555,7 @@ export function ConnectionsPage({
                               },
                             });
                             if (content.trim()) {
-                              setPemValidation(validatePemKey(content));
+                              setPemValidation(validatePemKey(content, t));
                             } else {
                               setPemValidation(null);
                             }
@@ -1505,7 +1563,7 @@ export function ConnectionsPage({
                           onBlur={(e) => {
                             const content = e.target.value;
                             if (content.trim()) {
-                              setPemValidation(validatePemKey(content));
+                              setPemValidation(validatePemKey(content, t));
                             }
                           }}
                           placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEpAIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
@@ -1527,25 +1585,25 @@ export function ConnectionsPage({
                           </div>
                         )}
                         <div className="keys-hint">
-                          <strong>注意：</strong>粘贴完整的 PEM
-                          格式私钥内容，包括开始和结束标记。支持以下格式：
+                          <strong>{t("connections.pk.hint.title")}</strong>
+                          {t("connections.pk.hint.desc")}
                           <br />• <code>
                             -----BEGIN RSA PRIVATE KEY-----
                           </code>{" "}
                           (OpenSSH RSA)
                           <br />•{" "}
                           <code>-----BEGIN OPENSSH PRIVATE KEY-----</code>{" "}
-                          (OpenSSH 新格式)
+                          ({t("connections.pk.hint.opensshNew")})
                           <br />• <code>
                             -----BEGIN EC PRIVATE KEY-----
                           </code>{" "}
                           (ECDSA)
-                          <br />• 确保包含完整的密钥内容和换行符
+                          <br />• {t("connections.pk.hint.ensureFull")}
                         </div>
                       </div>
 
                       <div className="form-group">
-                        <label>私钥密码（可选）</label>
+                        <label>{t("connections.pk.passphraseOptional")}</label>
                         <div className="password-input-wrapper">
                           <input
                             type={showPassphrase ? "text" : "password"}
@@ -1566,13 +1624,17 @@ export function ConnectionsPage({
                                 },
                               })
                             }
-                            placeholder="如果私钥已加密，请输入密码"
+                            placeholder={t("connections.pk.passphrasePlaceholder")}
                           />
                           <button
                             type="button"
                             className="password-toggle-btn"
                             onClick={() => setShowPassphrase(!showPassphrase)}
-                            title={showPassphrase ? "隐藏密码" : "显示密码"}
+                            title={
+                              showPassphrase
+                                ? t("connections.password.hide")
+                                : t("connections.password.show")
+                            }
                           >
                             <AppIcon
                               icon={
@@ -1599,7 +1661,9 @@ export function ConnectionsPage({
             className="connection-more-toggle"
             onClick={() => setShowAdvancedConfig((prev) => !prev)}
           >
-            <span className="connection-more-label">更多配置</span>
+            <span className="connection-more-label">
+              {t("connections.more.label")}
+            </span>
             <span className="connection-more-summary">{moreConfigSummary}</span>
             <AppIcon
               icon={
@@ -1615,7 +1679,7 @@ export function ConnectionsPage({
             <div className="connection-more-body">
               <div className="form-row">
                 <div className="form-group">
-                  <label>连接名称</label>
+                  <label>{t("connections.field.name")}</label>
                   <input
                     type="text"
                     value={editingConnection.name}
@@ -1628,7 +1692,7 @@ export function ConnectionsPage({
                   />
                 </div>
                 <div className="form-group">
-                  <label>标签</label>
+                  <label>{t("connections.field.tags")}</label>
                   <input
                     type="text"
                     value={tags.join(", ")}
@@ -1638,13 +1702,13 @@ export function ConnectionsPage({
                         tags: normalizeTags(e.target.value.split(/[，,]/g)),
                       })
                     }
-                    placeholder="生产, 数据库, Linux"
+                    placeholder={t("connections.field.tagsPlaceholder")}
                   />
                 </div>
               </div>
 
               <div className="form-group">
-                <label>颜色标识</label>
+                <label>{t("connections.field.color")}</label>
                 <div className="connection-color-row">
                   <div className="connection-color-options">
                     {CONNECTION_COLOR_OPTIONS.map((option) => (
@@ -1659,7 +1723,9 @@ export function ConnectionsPage({
                             color: option,
                           })
                         }
-                        aria-label={`选择颜色 ${option}`}
+                        aria-label={t("connections.color.select", {
+                          color: option,
+                        })}
                       />
                     ))}
                   </div>
@@ -1673,39 +1739,37 @@ export function ConnectionsPage({
                         color: e.target.value,
                       })
                     }
-                    aria-label="自定义颜色"
+                    aria-label={t("connections.color.custom")}
                   />
                 </div>
               </div>
 
               {!isRdp && (
                 <div className="form-group">
-                  <label>编码格式</label>
-                  <select
+                  <label>{t("connections.field.encoding")}</label>
+                  <Select
                     value={
                       (editingConnection as SshConnectionConfig).encoding ||
                       "utf-8"
                     }
-                    onChange={(e) =>
+                    onChange={(nextValue) =>
                       setEditingConnection({
                         ...(editingConnection as SshConnectionConfig),
-                        encoding: e.target.value,
+                        encoding: nextValue,
                       })
                     }
-                  >
-                    {ENCODING_OPTIONS.map((item) => (
-                      <option key={item.value} value={item.value}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={ENCODING_OPTIONS.map((item) => ({
+                      value: item.value,
+                      label: item.label,
+                    }))}
+                  />
                 </div>
               )}
 
               {isRdp && (
                 <>
                   <div className="form-group">
-                    <label>网关地址（可选）</label>
+                    <label>{t("connections.rdp.gatewayHost")}</label>
                     <input
                       type="text"
                       value={
@@ -1723,7 +1787,7 @@ export function ConnectionsPage({
                   </div>
                   <div className="form-row">
                     <div className="form-group">
-                      <label>网关用户名</label>
+                      <label>{t("connections.rdp.gatewayUser")}</label>
                       <input
                         type="text"
                         value={
@@ -1739,7 +1803,7 @@ export function ConnectionsPage({
                       />
                     </div>
                     <div className="form-group">
-                      <label>网关密码</label>
+                      <label>{t("connections.rdp.gatewayPassword")}</label>
                       <input
                         type="password"
                         value={
@@ -1757,7 +1821,7 @@ export function ConnectionsPage({
                   </div>
                   <div className="form-row">
                     <div className="form-group">
-                      <label>网关域（可选）</label>
+                      <label>{t("connections.rdp.gatewayDomain")}</label>
                       <input
                         type="text"
                         value={
@@ -1773,28 +1837,35 @@ export function ConnectionsPage({
                       />
                     </div>
                     <div className="form-group">
-                      <label>证书策略</label>
-                      <select
+                      <label>{t("connections.rdp.certPolicy")}</label>
+                      <Select
                         value={
                           (editingConnection as RdpConnectionConfig)
                             .certPolicy || "default"
                         }
-                        onChange={(e) =>
+                        onChange={(nextValue) =>
                           setEditingConnection({
                             ...(editingConnection as RdpConnectionConfig),
-                            certPolicy: e.target
-                              .value as RdpConnectionConfig["certPolicy"],
+                            certPolicy:
+                              nextValue as RdpConnectionConfig["certPolicy"],
                           })
                         }
-                      >
-                        <option value="default">默认</option>
-                        <option value="ignore">忽略证书</option>
-                      </select>
+                        options={[
+                          {
+                            value: "default",
+                            label: t("connections.rdp.certPolicy.default"),
+                          },
+                          {
+                            value: "ignore",
+                            label: t("connections.rdp.certPolicy.ignore"),
+                          },
+                        ]}
+                      />
                     </div>
                   </div>
                   <div className="form-row">
                     <div className="form-group">
-                      <label>分辨率宽度</label>
+                      <label>{t("connections.rdp.resolutionWidth")}</label>
                       <input
                         type="number"
                         value={
@@ -1809,11 +1880,11 @@ export function ConnectionsPage({
                               : undefined,
                           })
                         }
-                        placeholder="例如 1920"
+                        placeholder={t("connections.rdp.resolutionWidthPlaceholder")}
                       />
                     </div>
                     <div className="form-group">
-                      <label>分辨率高度</label>
+                      <label>{t("connections.rdp.resolutionHeight")}</label>
                       <input
                         type="number"
                         value={
@@ -1828,95 +1899,96 @@ export function ConnectionsPage({
                               : undefined,
                           })
                         }
-                        placeholder="例如 1080"
+                        placeholder={t("connections.rdp.resolutionHeightPlaceholder")}
                       />
                     </div>
                   </div>
                   <div className="form-row">
                     <div className="form-group">
-                      <label>色深</label>
-                      <select
-                        value={
+                      <label>{t("connections.rdp.colorDepth")}</label>
+                      <Select
+                        value={String(
                           (editingConnection as RdpConnectionConfig)
-                            .colorDepth ?? 32
-                        }
-                        onChange={(e) =>
+                            .colorDepth ?? 32,
+                        )}
+                        onChange={(nextValue) =>
                           setEditingConnection({
                             ...(editingConnection as RdpConnectionConfig),
                             colorDepth: Number(
-                              e.target.value,
+                              nextValue,
                             ) as RdpConnectionConfig["colorDepth"],
                           })
                         }
-                      >
-                        {RDP_COLOR_DEPTHS.map((depth) => (
-                          <option key={depth} value={depth}>
-                            {depth} 位
-                          </option>
-                        ))}
-                      </select>
+                        options={RDP_COLOR_DEPTHS.map((depth) => ({
+                          value: String(depth),
+                          label: t("connections.rdp.colorDepthBits", { depth }),
+                        }))}
+                      />
                     </div>
                     <div className="form-group">
-                      <label>剪贴板</label>
-                      <select
+                      <label>{t("connections.rdp.clipboard")}</label>
+                      <Select
                         value={
                           (editingConnection as RdpConnectionConfig)
                             .redirectClipboard
                             ? "on"
                             : "off"
                         }
-                        onChange={(e) =>
+                        onChange={(nextValue) =>
                           setEditingConnection({
                             ...(editingConnection as RdpConnectionConfig),
-                            redirectClipboard: e.target.value === "on",
+                            redirectClipboard: nextValue === "on",
                           })
                         }
-                      >
-                        <option value="on">开启</option>
-                        <option value="off">关闭</option>
-                      </select>
+                        options={[
+                          { value: "on", label: t("connections.option.on") },
+                          { value: "off", label: t("connections.option.off") },
+                        ]}
+                      />
                     </div>
                   </div>
                   <div className="form-row">
                     <div className="form-group">
-                      <label>音频</label>
-                      <select
+                      <label>{t("connections.rdp.audio")}</label>
+                      <Select
                         value={
                           (editingConnection as RdpConnectionConfig)
                             .redirectAudio
                             ? "on"
                             : "off"
                         }
-                        onChange={(e) =>
+                        onChange={(nextValue) =>
                           setEditingConnection({
                             ...(editingConnection as RdpConnectionConfig),
-                            redirectAudio: e.target.value === "on",
+                            redirectAudio: nextValue === "on",
                           })
                         }
-                      >
-                        <option value="on">开启</option>
-                        <option value="off">关闭</option>
-                      </select>
+                        options={[
+                          { value: "on", label: t("connections.option.on") },
+                          { value: "off", label: t("connections.option.off") },
+                        ]}
+                      />
                     </div>
                     <div className="form-group">
-                      <label>驱动器重定向</label>
-                      <select
+                      <label>{t("connections.rdp.drives")}</label>
+                      <Select
                         value={
                           (editingConnection as RdpConnectionConfig)
                             .redirectDrives
                             ? "on"
                             : "off"
                         }
-                        onChange={(e) =>
+                        onChange={(nextValue) =>
                           setEditingConnection({
                             ...(editingConnection as RdpConnectionConfig),
-                            redirectDrives: e.target.value === "on",
+                            redirectDrives: nextValue === "on",
                           })
                         }
-                      >
-                        <option value="on">开启</option>
-                        <option value="off">关闭</option>
-                      </select>
+                        options={[
+                          { value: "on", label: t("connections.option.on") },
+                          { value: "off", label: t("connections.option.off") },
+                        ]}
+                      />
                     </div>
                   </div>
                 </>
@@ -1934,10 +2006,10 @@ export function ConnectionsPage({
               setIsEditModalOpen(false);
             }}
           >
-            取消
+            {t("common.cancel")}
           </button>
           <button className="btn btn-secondary" onClick={handleSaveConnection}>
-            保存
+            {t("common.save")}
           </button>
           {!isRdp && (
             <button
@@ -1946,19 +2018,27 @@ export function ConnectionsPage({
               onClick={() => void handleTestConnection()}
               disabled={testStatus === "testing"}
             >
-              {testStatus === "testing" ? "测试中..." : "测试连接"}
+              {testStatus === "testing"
+                ? t("connections.test.testing")
+                : t("connections.test.action")}
             </button>
           )}
           <button
             className="btn btn-primary"
             onClick={async () => {
               const connectionToConnect =
-                normalizeConnection(editingConnection);
+                normalizeConnection(
+                  editingConnection,
+                  fallbackNames.ssh,
+                  fallbackNames.rdp,
+                );
               await handleSaveConnection();
               await handleConnect(connectionToConnect);
             }}
           >
-            {isRdp ? "打开并保存" : "连接并保存"}
+            {isRdp
+              ? t("connections.action.saveAndOpen")
+              : t("connections.action.connectAndSave")}
           </button>
           {!isRdp && testMessage && (
             <span
@@ -2121,16 +2201,18 @@ export function ConnectionsPage({
             />
           </span>
           <div>
-            <h3>RDP 远程桌面</h3>
+            <h3>{t("connections.empty.rdp.title")}</h3>
             <p style={{ marginTop: 12 }}>
-              目标：{rdp.username}@{rdp.host}:{rdp.port}
+              {t("connections.empty.rdp.target", {
+                target: `${rdp.username}@${rdp.host}:${rdp.port}`,
+              })}
             </p>
             <div style={{ marginTop: 16 }}>
               <button
                 className="btn btn-primary"
                 onClick={() => void rdpApi.open(rdp)}
               >
-                打开 RDP
+                {t("connections.action.openRdp")}
               </button>
             </div>
           </div>
@@ -2144,9 +2226,9 @@ export function ConnectionsPage({
           <AppIcon icon="material-symbols:terminal-rounded" size={64} />
         </span>
         <div>
-          <h3>准备好连接服务器</h3>
+          <h3>{t("connections.empty.readyTitle")}</h3>
           <p style={{ marginTop: 20 }}>
-            在左侧选择服务器，然后点击“连接”按钮开始会话
+            {t("connections.empty.readyDesc")}
           </p>
         </div>
       </div>
@@ -2224,7 +2306,7 @@ export function ConnectionsPage({
       >
         <SlidePanel
           isOpen={activePanel === "connections"}
-          title="连接配置"
+          title={t("connections.panel.title")}
           onAdd={() => void handleAddConnection()}
           closePanel={handlePanelClose}
           dockToWindow
@@ -2233,7 +2315,7 @@ export function ConnectionsPage({
             <div className="search-box">
               <input
                 type="text"
-                placeholder="请输入搜索内容"
+                placeholder={t("connections.search.placeholder")}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="search-input"
@@ -2244,32 +2326,36 @@ export function ConnectionsPage({
             </div>
             <div className="connection-filters">
               <div className="connection-filter-row">
-                <span className="connection-filter-label">标签</span>
+                <span className="connection-filter-label">
+                  {t("connections.filter.tags")}
+                </span>
                 <div className="connection-filter-options connection-filter-options--select">
-                  <select
+                  <Select
                     className="connection-filter-select"
                     value={tagFilter}
-                    onChange={(event) => setTagFilter(event.target.value)}
+                    onChange={(nextValue) => setTagFilter(nextValue)}
                     disabled={availableTags.length === 0}
-                  >
-                    <option value="all">全部</option>
-                    {availableTags.map((tag) => (
-                      <option key={tag} value={tag}>
-                        {tag}
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: "all", label: t("connections.filter.all") },
+                      ...availableTags.map((tag) => ({
+                        value: tag,
+                        label: tag,
+                      })),
+                    ]}
+                  />
                 </div>
               </div>
               <div className="connection-filter-row">
-                <span className="connection-filter-label">颜色</span>
+                <span className="connection-filter-label">
+                  {t("connections.filter.colors")}
+                </span>
                 <div className="connection-filter-options">
                   <button
                     type="button"
                     className={`connection-filter-chip ${colorFilter === "all" ? "active" : ""}`}
                     onClick={() => setColorFilter("all")}
                   >
-                    全部
+                    {t("connections.filter.all")}
                   </button>
                   {availableColors.map((color) => (
                     <button
@@ -2277,7 +2363,9 @@ export function ConnectionsPage({
                       type="button"
                       className={`connection-filter-color-chip ${colorFilter === color ? "active" : ""}`}
                       onClick={() => setColorFilter(color)}
-                      aria-label={`按颜色筛选 ${color}`}
+                      aria-label={t("connections.filter.colorAria", {
+                        color,
+                      })}
                       title={color}
                     >
                       <span
@@ -2293,7 +2381,9 @@ export function ConnectionsPage({
           </div>
           <div className="connections-list-items">
             {filteredConnections.length === 0 && (
-              <div className="connections-empty-hint">无匹配的连接</div>
+              <div className="connections-empty-hint">
+                {t("connections.list.empty")}
+              </div>
             )}
             {filteredConnections.map((conn) => {
               const connColor = normalizeColor(conn.color);
@@ -2344,7 +2434,7 @@ export function ConnectionsPage({
                     <button
                       type="button"
                       className="connection-menu-btn"
-                      title="更多操作"
+                      title={t("connections.menu.more")}
                       aria-haspopup="menu"
                       aria-expanded={actionMenu?.id === conn.id}
                       onClick={(event) => {
@@ -2426,7 +2516,7 @@ export function ConnectionsPage({
                         icon="material-symbols:play-arrow-rounded"
                         size={16}
                       />
-                      连接
+                      {t("connections.action.connect")}
                     </button>
                     <button
                       type="button"
@@ -2454,7 +2544,7 @@ export function ConnectionsPage({
                       }}
                     >
                       <AppIcon icon="material-symbols:edit-rounded" size={16} />
-                      编辑
+                      {t("common.edit")}
                     </button>
                     <button
                       type="button"
@@ -2468,7 +2558,7 @@ export function ConnectionsPage({
                         icon="material-symbols:delete-rounded"
                         size={16}
                       />
-                      删除
+                      {t("common.delete")}
                     </button>
                   </>
                 );
@@ -2483,8 +2573,8 @@ export function ConnectionsPage({
         title={
           editingConnection &&
           connections.some((c) => c.id === editingConnection.id)
-            ? "编辑服务器"
-            : "添加服务器"
+            ? t("connections.modal.editTitle")
+            : t("connections.modal.addTitle")
         }
         onClose={() => {
           setIsEditModalOpen(false);
@@ -2499,7 +2589,11 @@ export function ConnectionsPage({
 
       <Modal
         open={splitPickerOpen}
-        title={splitPickerDirection === "vertical" ? "左右分屏" : "上下分屏"}
+        title={
+          splitPickerDirection === "vertical"
+            ? t("connections.split.vertical")
+            : t("connections.split.horizontal")
+        }
         onClose={() => {
           setSplitPickerOpen(false);
           setSplitPickerBaseSessionId(null);
@@ -2508,7 +2602,7 @@ export function ConnectionsPage({
       >
         <div className="split-picker">
           {connections.length === 0 && (
-            <div className="split-picker-empty">暂无服务器</div>
+            <div className="split-picker-empty">{t("connections.split.empty")}</div>
           )}
           {connections.filter(isSshConnection).map((conn) => (
             <button
@@ -2528,16 +2622,18 @@ export function ConnectionsPage({
 
       <Modal
         open={showMasterKeyPrompt}
-        title="请先设置 Master Key"
+        title={t("connections.masterKey.title")}
         onClose={() => setShowMasterKeyPrompt(false)}
         width={520}
       >
         <div className="masterkey-prompt">
-          <div className="II" style={{ padding: "12px 4px 12px" }}>
+          <div className="settings-item" style={{ padding: "12px 4px 12px" }}>
             <div className="settings-item-info">
-              <div className="settings-item-label">保存敏感信息需要 Master Key</div>
+              <div className="settings-item-label">
+                {t("connections.masterKey.label")}
+              </div>
               <div className="settings-item-description">
-                请先在设置中创建 Master Key，再保存服务器配置。
+                {t("connections.masterKey.desc")}
               </div>
             </div>
           </div>
@@ -2547,7 +2643,7 @@ export function ConnectionsPage({
               className="btn btn-secondary"
               onClick={() => setShowMasterKeyPrompt(false)}
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -2557,7 +2653,7 @@ export function ConnectionsPage({
                 openSettingsTab();
               }}
             >
-              前往设置
+              {t("connections.masterKey.goSettings")}
             </button>
           </div>
         </div>
@@ -2565,13 +2661,15 @@ export function ConnectionsPage({
 
       <Modal
         open={connectPickerOpen}
-        title="选择服务器"
+        title={t("connections.picker.title")}
         onClose={() => setConnectPickerOpen(false)}
         width={520}
       >
         <div className="connect-picker">
           {connections.length === 0 && (
-            <div className="connect-picker-empty">暂无服务器</div>
+            <div className="connect-picker-empty">
+              {t("connections.picker.empty")}
+            </div>
           )}
           {connections.map((conn) => (
             <button

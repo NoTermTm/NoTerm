@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { CSSProperties, PointerEvent } from "react";
 import { AppIcon } from "./AppIcon";
+import { useI18n } from "../i18n";
 import "./TitleBar.css";
 
 export interface Tab {
@@ -74,6 +75,7 @@ export function TitleBar({
   onNewTab,
 }: TitleBarProps) {
   const appWindow = getCurrentWindow();
+  const { t } = useI18n();
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     // Only start dragging on primary button.
@@ -163,7 +165,11 @@ export function TitleBar({
                 </button>
               </div>
             ))}
-            <button className="new-tab-btn" onClick={onNewTab} title="新建会话">
+            <button
+              className="new-tab-btn"
+              onClick={onNewTab}
+              title={t("titleBar.newSession")}
+            >
               <AppIcon icon="material-symbols:add-rounded" size={16} />
             </button>
           </div>

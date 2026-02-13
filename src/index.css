@@ -221,7 +221,8 @@ textarea {
 }
 
 .form-group input,
-.form-group select {
+.form-group select,
+:where(.form-group .select-trigger) {
     width: 100%;
     height: 34px;
     padding: 8px 10px;
@@ -237,7 +238,8 @@ textarea {
 }
 
 .form-group input:focus,
-.form-group select:focus {
+.form-group select:focus,
+:where(.form-group .select-trigger:focus) {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 1px rgba(15, 143, 255, 0.25);

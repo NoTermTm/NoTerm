@@ -24,6 +24,7 @@ import {
   getMasterKeySession,
   setMasterKeySession,
 } from "../utils/securitySession";
+import { useI18n } from "../i18n";
 import "./Layout.css";
 
 export function Layout() {
@@ -66,6 +67,7 @@ export function Layout() {
   const [unlocking, setUnlocking] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const { t } = useI18n();
   const lastActiveAtRef = useRef(Date.now());
   const wasLockedRef = useRef(false);
   const autoUpdateCheckedRef = useRef(false);
@@ -451,8 +453,13 @@ export function Layout() {
         window.dispatchEvent(
           new CustomEvent("app-message", {
             detail: {
-              title: "发现新版本",
-              detail: update.version ? `v${update.version} 可在设置中更新` : "可在设置中更新",
+              title: t("settings.update.toast.title"),
+              detail: update.version
+                ? t("settings.update.availableWithVersion", {
+                    version: update.version,
+                    dateSuffix: "",
+                  })
+                : t("settings.update.toast.detail"),
               tone: "info",
               toast: true,
               store: false,
@@ -550,19 +557,19 @@ export function Layout() {
     {
       path: "/connections",
       icon: "material-symbols:settop-component-outline-rounded",
-      label: "连接器管理",
+      label: t("nav.connections"),
       panelId: "connections",
     },
     {
       path: "/space",
       icon: "material-symbols:folder-special-outline-rounded",
-      label: "空间",
+      label: t("nav.space"),
       panelId: null,
     },
     {
       path: "/keys",
       icon: "material-symbols:key-rounded",
-      label: "密钥管理",
+      label: t("nav.keys"),
       panelId: null,
     },
   ];
@@ -571,7 +578,7 @@ export function Layout() {
     {
       path: "/settings",
       icon: "material-symbols:settings-rounded",
-      label: "设置",
+      label: t("nav.settings"),
       panelId: null,
     },
   ];
@@ -602,9 +609,15 @@ export function Layout() {
 
   const formatMessageTime = (timestamp: number) => {
     const diff = Date.now() - timestamp;
-    if (diff < 60_000) return "刚刚";
-    if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))} 分钟前`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+    if (diff < 60_000) return t("time.justNow");
+    if (diff < 3_600_000) {
+      return t("time.minutesAgo", {
+        count: Math.max(1, Math.floor(diff / 60_000)),
+      });
+    }
+    if (diff < 86_400_000) {
+      return t("time.hoursAgo", { count: Math.floor(diff / 3_600_000) });
+    }
     return new Date(timestamp).toLocaleDateString();
   };
 
@@ -652,8 +665,8 @@ export function Layout() {
         // 创建设置 tab
         const settingsTab: Tab = {
           id: SETTINGS_TAB_ID,
-          title: "设置",
-          subtitle: "应用配置",
+          title: t("tab.settings.title"),
+          subtitle: t("tab.settings.subtitle"),
         };
         setTabs((prev) => [...prev, settingsTab]);
       }
@@ -673,8 +686,8 @@ export function Layout() {
         // 创建密钥管理 tab
         const keysTab: Tab = {
           id: KEYS_TAB_ID,
-          title: "密钥管理",
-          subtitle: "SSH 认证",
+          title: t("tab.keys.title"),
+          subtitle: t("tab.keys.subtitle"),
         };
         setTabs((prev) => [...prev, keysTab]);
       }
@@ -691,8 +704,8 @@ export function Layout() {
       if (!existingSpaceTab) {
         const spaceTab: Tab = {
           id: SPACE_TAB_ID,
-          title: "空间",
-          subtitle: "脚本管理",
+          title: t("tab.space.title"),
+          subtitle: t("tab.space.subtitle"),
         };
         setTabs((prev) => [...prev, spaceTab]);
       }
@@ -785,8 +798,8 @@ export function Layout() {
     const tabId = script
       ? `${SPACE_SCRIPT_TAB_PREFIX}${script.id}`
       : `${SPACE_SCRIPT_TAB_PREFIX}new-${crypto.randomUUID()}`;
-    const title = script?.name || "新建脚本";
-    const subtitle = "脚本设置";
+    const title = script?.name || t("tab.script.new");
+    const subtitle = t("tab.script.subtitle");
 
     setTabs((prev) => {
       if (prev.some((tab) => tab.id === tabId)) return prev;
@@ -801,7 +814,7 @@ export function Layout() {
   const handleUnlock = async () => {
     if (unlocking || !securitySettings.hash) return;
     if (!unlockInput.trim()) {
-      setUnlockError("请输入 Master Key");
+      setUnlockError(t("app.lock.error.empty"));
       return;
     }
     setUnlocking(true);
@@ -813,7 +826,7 @@ export function Layout() {
         securitySettings.hash,
       );
       if (!ok) {
-        setUnlockError("密码错误");
+        setUnlockError(t("app.lock.error.invalid"));
         return;
       }
       setIsLocked(false);
@@ -826,7 +839,7 @@ export function Layout() {
       lastActiveAtRef.current = Date.now();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setUnlockError(message || "验证失败");
+      setUnlockError(message || t("app.lock.error.verifyFail"));
     } finally {
       setUnlocking(false);
     }
@@ -865,8 +878,8 @@ export function Layout() {
         window.dispatchEvent(
           new CustomEvent("app-message", {
             detail: {
-              title: "已重置 Master Key",
-              detail: "所有配置已清空",
+              title: t("app.lock.reset.toast.title"),
+              detail: t("app.lock.reset.toast.detail"),
               tone: "info",
               toast: true,
               store: false,
@@ -876,7 +889,7 @@ export function Layout() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setUnlockError(message || "重置失败");
+      setUnlockError(message || t("app.lock.reset.fail"));
     } finally {
       setResetting(false);
     }
@@ -929,7 +942,7 @@ export function Layout() {
             onClick={() => {
               setMessagePanel((prev) => (prev ? null : buildMessagePanelPosition()));
             }}
-            title="消息"
+            title={t("messages.title")}
           >
             <AppIcon icon="material-symbols:notifications-rounded" size={20} />
             {unreadCount > 0 && (
@@ -982,10 +995,10 @@ export function Layout() {
             />
           </div>
           {location.pathname === "/files" && (
-            <div style={{ padding: "24px" }}>SFTP 文件管理 - 开发中</div>
+            <div style={{ padding: "24px" }}>{t("placeholder.sftp")}</div>
           )}
           {location.pathname === "/profile" && (
-            <div style={{ padding: "24px" }}>用户信息 - 开发中</div>
+            <div style={{ padding: "24px" }}>{t("placeholder.profile")}</div>
           )}
         </div>
       </div>
@@ -1005,7 +1018,7 @@ export function Layout() {
               }}
             >
               <div className="message-popover-header">
-                <div className="message-popover-title">消息</div>
+                <div className="message-popover-title">{t("messages.title")}</div>
                 <div className="message-popover-actions">
                   {messages.length > 0 && (
                     <button
@@ -1016,7 +1029,7 @@ export function Layout() {
                         setUnreadCount(0);
                       }}
                     >
-                      清空
+                      {t("messages.clear")}
                     </button>
                   )}
                   <button
@@ -1024,13 +1037,13 @@ export function Layout() {
                     className="message-popover-action"
                     onClick={() => setMessagePanel(null)}
                   >
-                    关闭
+                    {t("messages.close")}
                   </button>
                 </div>
               </div>
               <div className="message-popover-body">
                 {messages.length === 0 ? (
-                  <div className="message-empty">暂无消息</div>
+                  <div className="message-empty">{t("messages.empty")}</div>
                 ) : (
                   <div className="message-list">
                     {messages.map((message) => (
@@ -1091,12 +1104,12 @@ export function Layout() {
             <div className="lock-icon">
               <AppIcon icon="material-symbols:security" size={50}/>
             </div>
-            <div className="lock-title">应用已锁定</div>
-            <div className="lock-subtitle">请输入 Master Key 解锁</div>
+            <div className="lock-title">{t("app.lock.title")}</div>
+            <div className="lock-subtitle">{t("app.lock.subtitle")}</div>
             <input
               type="password"
               className="lock-input"
-              placeholder="Master Key"
+              placeholder={t("app.lock.placeholder")}
               value={unlockInput}
               ref={unlockInputRef}
               autoFocus
@@ -1114,7 +1127,7 @@ export function Layout() {
               onClick={() => void handleUnlock()}
               disabled={unlocking}
             >
-              {unlocking ? "验证中..." : "解锁"}
+              {unlocking ? t("app.lock.unlocking") : t("app.lock.unlock")}
             </button>
             <button
               type="button"
@@ -1122,16 +1135,14 @@ export function Layout() {
               onClick={() => setResetConfirmOpen(true)}
               disabled={resetting}
             >
-              忘记密码
+              {t("app.lock.reset")}
             </button>
           </div>
           {resetConfirmOpen && (
             <div className="lock-reset-layer">
               <div className="lock-reset-card">
-                <div className="lock-reset-title">重置 Master Key？</div>
-                <div className="lock-reset-desc">
-                  所有服务器、密钥与脚本配置将被清空，且无法恢复。
-                </div>
+                <div className="lock-reset-title">{t("app.lock.reset.title")}</div>
+                <div className="lock-reset-desc">{t("app.lock.reset.desc")}</div>
                 <div className="lock-reset-actions">
                   <button
                     type="button"
@@ -1139,7 +1150,7 @@ export function Layout() {
                     onClick={() => setResetConfirmOpen(false)}
                     disabled={resetting}
                   >
-                    取消
+                    {t("app.lock.reset.cancel")}
                   </button>
                   <button
                     type="button"
@@ -1147,7 +1158,7 @@ export function Layout() {
                     onClick={() => void handleResetMasterKey()}
                     disabled={resetting}
                   >
-                    {resetting ? "重置中..." : "确认重置"}
+                    {resetting ? t("app.lock.reset.inProgress") : t("app.lock.reset.confirm")}
                   </button>
                 </div>
               </div>

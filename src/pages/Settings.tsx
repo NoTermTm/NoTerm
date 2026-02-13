@@ -19,6 +19,8 @@ import {
 } from "../utils/securitySession";
 import { getVersion } from "@tauri-apps/api/app";
 import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
+import { useI18n } from "../i18n";
+import { Select } from "../components/Select";
 import "./Settings.css";
 
 const TERMINAL_FONT_OPTIONS = [
@@ -54,13 +56,13 @@ const ANTHROPIC_MODEL_OPTIONS = [
 ];
 
 const LOCK_TIMEOUT_OPTIONS = [
-  { label: "不自动锁定", value: 0 },
-  { label: "5 分钟", value: 5 },
-  { label: "10 分钟", value: 10 },
-  { label: "15 分钟", value: 15 },
-  { label: "30 分钟", value: 30 },
-  { label: "60 分钟", value: 60 },
-  { label: "120 分钟", value: 120 },
+  { labelKey: "settings.security.lock.none", value: 0 },
+  { labelKey: "settings.security.lock.5", value: 5 },
+  { labelKey: "settings.security.lock.10", value: 10 },
+  { labelKey: "settings.security.lock.15", value: 15 },
+  { labelKey: "settings.security.lock.30", value: 30 },
+  { labelKey: "settings.security.lock.60", value: 60 },
+  { labelKey: "settings.security.lock.120", value: 120 },
 ];
 
 export function SettingsPage() {
@@ -91,6 +93,7 @@ export function SettingsPage() {
   const updateStatusRef = useRef(updateStatus);
   const hasMasterKey = Boolean(settings["security.masterKeyHash"]);
   const modifierKeyName = getModifierKeyName();
+  const { t } = useI18n();
 
   useEffect(() => {
     updateStatusRef.current = updateStatus;
@@ -101,6 +104,9 @@ export function SettingsPage() {
     const run = async () => {
       const store = await getAppSettingsStore();
       const next: AppSettings = {
+        "i18n.locale":
+          (await store.get<AppSettings["i18n.locale"]>("i18n.locale")) ??
+          DEFAULT_APP_SETTINGS["i18n.locale"],
         "connection.autoConnect":
           (await store.get<boolean>("connection.autoConnect")) ??
           DEFAULT_APP_SETTINGS["connection.autoConnect"],
@@ -240,7 +246,14 @@ export function SettingsPage() {
       }
       if (updateStatusRef.current === "idle" || updateStatusRef.current === "up-to-date") {
         setUpdateStatus("available");
-        setUpdateMessage(detail.version ? `发现新版本 v${detail.version}` : "发现新版本");
+        setUpdateMessage(
+          detail.version
+            ? t("settings.update.availableWithVersion", {
+                version: detail.version,
+                dateSuffix: "",
+              })
+            : t("settings.update.available"),
+        );
       }
     };
 
@@ -302,12 +315,12 @@ export function SettingsPage() {
   const handleSetMasterKey = async () => {
     if (masterKeyInput.trim().length < 6) {
       setMasterKeyStatus("error");
-      setMasterKeyMessage("至少 6 位字符");
+      setMasterKeyMessage(t("settings.security.masterKey.tooShort"));
       return;
     }
     if (masterKeyInput !== masterKeyConfirm) {
       setMasterKeyStatus("error");
-      setMasterKeyMessage("两次输入不一致");
+      setMasterKeyMessage(t("settings.security.masterKey.mismatch"));
       return;
     }
     setMasterKeyStatus("saving");
@@ -327,14 +340,14 @@ export function SettingsPage() {
       setMasterKeyInput("");
       setMasterKeyConfirm("");
       setMasterKeyStatus("success");
-      setMasterKeyMessage("已更新");
+      setMasterKeyMessage(t("settings.security.masterKey.updated"));
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("master-key-updated"));
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMasterKeyStatus("error");
-      setMasterKeyMessage(message || "设置失败");
+      setMasterKeyMessage(message || t("settings.security.masterKey.failed"));
     }
   };
 
@@ -347,7 +360,7 @@ export function SettingsPage() {
     setMasterKeyInput("");
     setMasterKeyConfirm("");
     setMasterKeyStatus("success");
-    setMasterKeyMessage("已清除");
+    setMasterKeyMessage(t("settings.security.masterKey.cleared"));
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("master-key-updated"));
     }
@@ -408,8 +421,8 @@ export function SettingsPage() {
         window.dispatchEvent(
           new CustomEvent("app-message", {
             detail: {
-              title: "导出成功",
-              detail: "配置文件已保存",
+              title: t("settings.data.export.success"),
+              detail: t("settings.data.export.success.desc"),
               tone: "success",
               toast: true,
               store: false,
@@ -425,8 +438,8 @@ export function SettingsPage() {
         window.dispatchEvent(
           new CustomEvent("app-message", {
             detail: {
-              title: "导出失败",
-              detail: message || "导出失败",
+              title: t("settings.data.export.fail"),
+              detail: message || t("settings.data.export.fail"),
               tone: "error",
               autoOpen: true,
             },
@@ -439,45 +452,45 @@ export function SettingsPage() {
   const handleAiTest = async () => {
     if (!settings["ai.enabled"]) {
       setAiTestStatus("error");
-      setAiTestMessage("请先开启 AI");
+      setAiTestMessage(t("settings.ai.error.disabled"));
       return;
     }
 
     if (!settings["ai.model"].trim()) {
       setAiTestStatus("error");
-      setAiTestMessage("请填写模型名称");
+      setAiTestMessage(t("settings.ai.error.model"));
       return;
     }
 
     if (settings["ai.provider"] === "openai") {
       if (!settings["ai.openai.baseUrl"].trim()) {
         setAiTestStatus("error");
-        setAiTestMessage("请填写 OpenAI API 地址");
+        setAiTestMessage(t("settings.ai.error.openaiUrl"));
         return;
       }
       if (!settings["ai.openai.apiKey"].trim()) {
         setAiTestStatus("error");
-        setAiTestMessage("请填写 OpenAI API 密钥");
+        setAiTestMessage(t("settings.ai.error.openaiKey"));
         return;
       }
     } else {
       if (!settings["ai.anthropic.baseUrl"].trim()) {
         setAiTestStatus("error");
-        setAiTestMessage("请填写 Anthropic API 地址");
+        setAiTestMessage(t("settings.ai.error.anthropicUrl"));
         return;
       }
       if (!settings["ai.anthropic.apiKey"].trim()) {
         setAiTestStatus("error");
-        setAiTestMessage("请填写 Anthropic API 密钥");
+        setAiTestMessage(t("settings.ai.error.anthropicKey"));
         return;
       }
     }
 
     setAiTestStatus("testing");
-    setAiTestMessage("正在测试...");
+    setAiTestMessage(t("settings.ai.test.testing"));
 
     const messages: AiMessage[] = [
-      { role: "system", content: "你是连通性测试助手，只需回复 OK" },
+      { role: "system", content: t("settings.ai.test.systemPrompt") },
       { role: "user", content: "OK" },
     ];
 
@@ -499,16 +512,16 @@ export function SettingsPage() {
         messages,
       );
       setAiTestStatus("success");
-      setAiTestMessage("连接成功");
+      setAiTestMessage(t("settings.ai.test.success"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setAiTestStatus("error");
-      setAiTestMessage(message || "连接失败");
+      setAiTestMessage(message || t("settings.ai.test.fail"));
     }
   };
 
   const formatUpdateError = (error: unknown) => {
-    if (!error) return "更新失败";
+    if (!error) return t("settings.update.error");
     if (error instanceof Error) return error.message;
     return String(error);
   };
@@ -524,7 +537,7 @@ export function SettingsPage() {
 
   const handleCheckUpdate = async () => {
     setUpdateStatus("checking");
-    setUpdateMessage("正在检查更新...");
+    setUpdateMessage(t("settings.update.checkingStatus"));
     setUpdateProgress(null);
     try {
       const update = await checkForUpdates();
@@ -533,7 +546,7 @@ export function SettingsPage() {
       updateRef.current = update;
       if (!update?.available) {
         setUpdateStatus("up-to-date");
-        setUpdateMessage("已是最新版本");
+        setUpdateMessage(t("settings.update.upToDate"));
         setUpdateInfo(null);
         return;
       }
@@ -543,7 +556,14 @@ export function SettingsPage() {
         date: update.date,
         notes: update.body,
       });
-      setUpdateMessage(update.version ? `发现新版本 v${update.version}` : "发现新版本");
+      setUpdateMessage(
+        update.version
+          ? t("settings.update.availableWithVersion", {
+              version: update.version,
+              dateSuffix: "",
+            })
+          : t("settings.update.available"),
+      );
     } catch (error) {
       setUpdateStatus("error");
       setUpdateMessage(formatUpdateError(error));
@@ -552,7 +572,7 @@ export function SettingsPage() {
 
   const handleDownloadUpdate = async () => {
     setUpdateStatus("downloading");
-    setUpdateMessage("正在下载更新...");
+    setUpdateMessage(t("settings.update.downloadingStatus"));
     setUpdateProgress(0);
     try {
       let update = updateRef.current;
@@ -563,7 +583,7 @@ export function SettingsPage() {
       }
       if (!update?.available) {
         setUpdateStatus("up-to-date");
-        setUpdateMessage("已是最新版本");
+        setUpdateMessage(t("settings.update.upToDate"));
         setUpdateInfo(null);
         setUpdateProgress(null);
         return;
@@ -600,7 +620,7 @@ export function SettingsPage() {
         }
       });
       setUpdateStatus("installed");
-      setUpdateMessage("更新已安装，请重启应用完成更新");
+      setUpdateMessage(t("settings.update.installed"));
     } catch (error) {
       setUpdateStatus("error");
       setUpdateMessage(formatUpdateError(error));
@@ -620,26 +640,66 @@ export function SettingsPage() {
     : null;
   const updateDescription = updateInfo
     ? updateInfo.version
-      ? `发现新版本 v${updateInfo.version}${updateReleaseLabel ? ` · ${updateReleaseLabel}` : ""}`
-      : "发现新版本"
-    : "启动时自动检查，可在此手动检查";
+      ? t("settings.update.availableWithVersion", {
+          version: updateInfo.version,
+          dateSuffix: updateReleaseLabel ? ` · ${updateReleaseLabel}` : "",
+        })
+      : t("settings.update.available")
+    : t("settings.update.autoCheck");
   const updateCheckedLabel = updateCheckedAt
-    ? new Date(updateCheckedAt).toLocaleString()
+    ? t("settings.update.lastChecked", {
+        time: new Date(updateCheckedAt).toLocaleString(),
+      })
     : null;
   const isDownloading = updateStatus === "downloading";
   const isChecking = updateStatus === "checking";
   const showDownloadAction = Boolean(updateInfo) && updateStatus !== "installed";
+  const aiModelOptions =
+    settings["ai.provider"] === "openai"
+      ? OPENAI_MODEL_OPTIONS
+      : ANTHROPIC_MODEL_OPTIONS;
+  const aiModelOptionsWithCurrent = aiModelOptions.some(
+    (opt) => opt.value === settings["ai.model"],
+  )
+    ? aiModelOptions
+    : [
+        ...aiModelOptions,
+        { value: settings["ai.model"], label: settings["ai.model"] },
+      ];
 
   return (
     <div className="settings-page">
-      <h1>设置</h1>
+      <h1>{t("settings.title")}</h1>
 
       <div className="settings-section">
-        <h2>连接设置</h2>
+        <h2>{t("settings.section.general")}</h2>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">自动重连</div>
-            <div className="settings-item-description">连接断开时自动尝试重新连接</div>
+            <div className="settings-item-label">{t("settings.language.label")}</div>
+            <div className="settings-item-description">{t("settings.language.desc")}</div>
+          </div>
+          <div className="settings-item-control">
+            <Select
+              className="settings-select"
+              value={settings["i18n.locale"]}
+              onChange={(nextValue) =>
+                updateSetting("i18n.locale", nextValue as AppSettings["i18n.locale"])
+              }
+              options={[
+                { value: "zh-CN", label: t("settings.language.zh") },
+                { value: "en-US", label: t("settings.language.en") },
+              ]}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h2>{t("settings.section.connection")}</h2>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">{t("settings.connection.autoReconnect")}</div>
+            <div className="settings-item-description">{t("settings.connection.autoReconnect.desc")}</div>
           </div>
           <div className="settings-item-control">
             <div
@@ -652,8 +712,8 @@ export function SettingsPage() {
         </div>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">保存密码</div>
-            <div className="settings-item-description">在本地安全存储连接密码</div>
+            <div className="settings-item-label">{t("settings.connection.savePassword")}</div>
+            <div className="settings-item-description">{t("settings.connection.savePassword.desc")}</div>
           </div>
           <div className="settings-item-control">
             <div
@@ -666,8 +726,8 @@ export function SettingsPage() {
         </div>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">保持连接</div>
-            <div className="settings-item-description">定期发送心跳包保持 SSH 连接活跃</div>
+            <div className="settings-item-label">{t("settings.connection.keepAlive")}</div>
+            <div className="settings-item-description">{t("settings.connection.keepAlive.desc")}</div>
           </div>
           <div className="settings-item-control">
             <div
@@ -680,8 +740,8 @@ export function SettingsPage() {
         </div>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">心跳间隔（秒）</div>
-            <div className="settings-item-description">保持连接的心跳包发送间隔</div>
+            <div className="settings-item-label">{t("settings.connection.keepAliveInterval")}</div>
+            <div className="settings-item-description">{t("settings.connection.keepAliveInterval.desc")}</div>
           </div>
           <div className="settings-item-control">
             <input
@@ -701,12 +761,14 @@ export function SettingsPage() {
       </div>
 
       <div className="settings-section">
-        <h2>安全设置</h2>
+        <h2>{t("settings.section.security")}</h2>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">Master Key</div>
+            <div className="settings-item-label">{t("settings.security.masterKey")}</div>
             <div className="settings-item-description">
-              {hasMasterKey ? "已设置，用于解锁应用" : "设置后用于解锁应用"}
+              {hasMasterKey
+                ? t("settings.security.masterKey.enabled")
+                : t("settings.security.masterKey.disabled")}
             </div>
           </div>
           <div className="settings-item-control settings-item-control--stack">
@@ -714,7 +776,7 @@ export function SettingsPage() {
               <input
                 type="password"
                 className="settings-input settings-masterkey-input"
-                placeholder="输入新 Master Key"
+                placeholder={t("settings.security.masterKey.placeholder")}
                 value={masterKeyInput}
                 onChange={(e) => setMasterKeyInput(e.target.value)}
               />
@@ -723,7 +785,7 @@ export function SettingsPage() {
               <input
                 type="password"
                 className="settings-input settings-masterkey-input"
-                placeholder="确认 Master Key"
+                placeholder={t("settings.security.masterKey.confirm")}
                 value={masterKeyConfirm}
                 onChange={(e) => setMasterKeyConfirm(e.target.value)}
               />
@@ -735,7 +797,9 @@ export function SettingsPage() {
                 onClick={() => void handleSetMasterKey()}
                 disabled={masterKeyStatus === "saving"}
               >
-                {masterKeyStatus === "saving" ? "保存中..." : "设置"}
+                {masterKeyStatus === "saving"
+                  ? t("settings.security.masterKey.saving")
+                  : t("settings.security.masterKey.save")}
               </button>
               {hasMasterKey && (
                 <button
@@ -743,7 +807,7 @@ export function SettingsPage() {
                   type="button"
                   onClick={handleClearMasterKey}
                 >
-                  清除
+                  {t("settings.security.masterKey.clear")}
                 </button>
               )}
             </div>
@@ -760,39 +824,37 @@ export function SettingsPage() {
         </div>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">自动锁定</div>
+            <div className="settings-item-label">{t("settings.security.autoLock")}</div>
             <div className="settings-item-description">
-              软件空闲超过设定分钟后需要输入 Master Key
+              {t("settings.security.autoLock.desc")}
             </div>
           </div>
           <div className="settings-item-control">
-            <select
+            <Select
               className="settings-select"
               value={String(settings["security.lockTimeoutMinutes"])}
-              onChange={(e) =>
+              onChange={(nextValue) =>
                 updateSetting(
                   "security.lockTimeoutMinutes",
-                  Math.max(0, parseInt(e.target.value, 10) || 0),
+                  Math.max(0, parseInt(nextValue, 10) || 0),
                 )
               }
               disabled={!hasMasterKey}
-            >
-              {LOCK_TIMEOUT_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+              options={LOCK_TIMEOUT_OPTIONS.map((opt) => ({
+                value: String(opt.value),
+                label: t(opt.labelKey),
+              }))}
+            />
           </div>
         </div>
       </div>
 
       <div className="settings-section">
-        <h2>软件更新</h2>
+        <h2>{t("settings.section.update")}</h2>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">当前版本</div>
-            <div className="settings-item-description">启动时自动检查更新</div>
+            <div className="settings-item-label">{t("settings.update.current")}</div>
+            <div className="settings-item-description">{t("settings.update.autoCheck")}</div>
           </div>
           <div className="settings-item-control">
             <span className="settings-update-version">v{appVersion}</span>
@@ -800,7 +862,7 @@ export function SettingsPage() {
         </div>
         <div className="settings-item settings-item--start">
           <div className="settings-item-info">
-            <div className="settings-item-label">更新状态</div>
+            <div className="settings-item-label">{t("settings.update.status")}</div>
             <div className="settings-item-description">{updateDescription}</div>
             {updateInfo?.notes && (
               <div className="settings-update-notes">{updateInfo.notes}</div>
@@ -814,7 +876,7 @@ export function SettingsPage() {
                 onClick={() => void handleCheckUpdate()}
                 disabled={isChecking || isDownloading}
               >
-                {isChecking ? "检查中..." : "检查更新"}
+                {isChecking ? t("settings.update.checking") : t("settings.update.check")}
               </button>
               {showDownloadAction && (
                 <button
@@ -823,7 +885,7 @@ export function SettingsPage() {
                   onClick={() => void handleDownloadUpdate()}
                   disabled={isDownloading}
                 >
-                  {isDownloading ? "下载中..." : "下载并安装"}
+                  {isDownloading ? t("settings.update.downloading") : t("settings.update.download")}
                 </button>
               )}
             </div>
@@ -833,7 +895,7 @@ export function SettingsPage() {
               </span>
             )}
             {updateStatus === "downloading" && updateProgress !== null && (
-              <div className="settings-update-progress" aria-label="更新下载进度">
+              <div className="settings-update-progress" aria-label={t("settings.update.progress")}>
                 <div
                   className="settings-update-progress-bar"
                   style={{ width: `${updateProgress}%` }}
@@ -841,116 +903,112 @@ export function SettingsPage() {
               </div>
             )}
             {updateCheckedLabel && (
-              <span className="settings-update-meta">上次检查 {updateCheckedLabel}</span>
+              <span className="settings-update-meta">{updateCheckedLabel}</span>
             )}
           </div>
         </div>
       </div>
 
       <div className="settings-section">
-        <h2>终端设置</h2>
+        <h2>{t("settings.section.terminal")}</h2>
         <div className="settings-card">
           <div className="settings-card-body">
             <div className="settings-card-controls">
               <div className="settings-row settings-row--single">
                 <div className="settings-field">
-                  <label className="settings-field-label">主题</label>
-                  <select
+                  <label className="settings-field-label">{t("settings.terminal.theme")}</label>
+                  <Select
                     className="settings-select"
                     value={settings["terminal.theme"]}
-                    onChange={(e) =>
-                      updateSetting("terminal.theme", e.target.value as AppSettings["terminal.theme"])
+                    onChange={(nextValue) =>
+                      updateSetting("terminal.theme", nextValue as AppSettings["terminal.theme"])
                     }
-                  >
-                    {TERMINAL_THEME_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={TERMINAL_THEME_OPTIONS.map((opt) => ({
+                      value: opt.value,
+                      label: opt.label,
+                    }))}
+                  />
                 </div>
               </div>
               <div className="settings-row settings-row--three">
                 <div className="settings-field">
-                  <label className="settings-field-label">字体样式</label>
-                  <select
+                  <label className="settings-field-label">{t("settings.terminal.fontFamily")}</label>
+                  <Select
                     className="settings-select"
                     value={settings["terminal.fontFamily"]}
-                    onChange={(e) =>
+                    onChange={(nextValue) =>
                       updateSetting(
                         "terminal.fontFamily",
-                        e.target.value || DEFAULT_TERMINAL_FONT_FAMILY,
+                        nextValue || DEFAULT_TERMINAL_FONT_FAMILY,
                       )
                     }
-                  >
-                    {TERMINAL_FONT_OPTIONS.map((opt) => (
-                      <option key={opt.label} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={TERMINAL_FONT_OPTIONS.map((opt) => ({
+                      value: opt.value,
+                      label: opt.label,
+                    }))}
+                  />
                 </div>
                 <div className="settings-field">
-                  <label className="settings-field-label">字重</label>
-                  <select
+                  <label className="settings-field-label">{t("settings.terminal.fontWeight")}</label>
+                  <Select
                     className="settings-select"
                     value={String(settings["terminal.fontWeight"])}
-                    onChange={(e) =>
+                    onChange={(nextValue) =>
                       updateSetting(
                         "terminal.fontWeight",
-                        parseInt(e.target.value, 10) || DEFAULT_APP_SETTINGS["terminal.fontWeight"],
+                        parseInt(nextValue, 10) || DEFAULT_APP_SETTINGS["terminal.fontWeight"],
                       )
                     }
-                  >
-                    {TERMINAL_FONT_WEIGHT_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={TERMINAL_FONT_WEIGHT_OPTIONS.map((opt) => ({
+                      value: String(opt.value),
+                      label: opt.label,
+                    }))}
+                  />
                 </div>
                 <div className="settings-field">
-                  <label className="settings-field-label">字号</label>
-                  <select
+                  <label className="settings-field-label">{t("settings.terminal.fontSize")}</label>
+                  <Select
                     className="settings-select"
                     value={String(settings["terminal.fontSize"])}
-                    onChange={(e) =>
+                    onChange={(nextValue) =>
                       updateSetting(
                         "terminal.fontSize",
-                        Math.max(9, parseInt(e.target.value, 10) || DEFAULT_APP_SETTINGS["terminal.fontSize"]),
+                        Math.max(9, parseInt(nextValue, 10) || DEFAULT_APP_SETTINGS["terminal.fontSize"]),
                       )
                     }
-                  >
-                    <option value="11">11</option>
-                    <option value="12">12</option>
-                    <option value="13">13</option>
-                    <option value="14">14</option>
-                    <option value="15">15</option>
-                    <option value="16">16</option>
-                    <option value="18">18</option>
-                  </select>
+                    options={[
+                      { value: "11", label: "11" },
+                      { value: "12", label: "12" },
+                      { value: "13", label: "13" },
+                      { value: "14", label: "14" },
+                      { value: "15", label: "15" },
+                      { value: "16", label: "16" },
+                      { value: "18", label: "18" },
+                    ]}
+                  />
                 </div>
               </div>
               <div className="settings-row settings-row--two">
                 <div className="settings-field">
-                  <label className="settings-field-label">光标形状</label>
-                  <select
+                  <label className="settings-field-label">{t("settings.terminal.cursorStyle")}</label>
+                  <Select
                     className="settings-select"
                     value={settings["terminal.cursorStyle"]}
-                    onChange={(e) =>
+                    onChange={(nextValue) =>
                       updateSetting(
                         "terminal.cursorStyle",
-                        e.target.value as AppSettings["terminal.cursorStyle"],
+                        nextValue as AppSettings["terminal.cursorStyle"],
                       )
                     }
-                  >
-                    <option value="block">块状</option>
-                    <option value="underline">下划线</option>
-                    <option value="bar">竖线</option>
-                  </select>
+                    options={[
+                      { value: "block", label: t("settings.terminal.cursor.block") },
+                      { value: "underline", label: t("settings.terminal.cursor.underline") },
+                      { value: "bar", label: t("settings.terminal.cursor.bar") },
+                    ]}
+                  />
                 </div>
                 <div className="settings-field">
-                  <label className="settings-field-label">是否开启光标闪烁</label>
+                  <label className="settings-field-label">{t("settings.terminal.cursorBlink")}</label>
                   <div
                     className={`toggle-switch ${settings["terminal.cursorBlink"] ? "active" : ""}`}
                     onClick={() => updateSetting("terminal.cursorBlink", !settings["terminal.cursorBlink"])}
@@ -961,30 +1019,31 @@ export function SettingsPage() {
               </div>
               <div className="settings-row settings-row--single">
                 <div className="settings-field">
-                  <label className="settings-field-label">行间距</label>
-                  <select
+                  <label className="settings-field-label">{t("settings.terminal.lineHeight")}</label>
+                  <Select
                     className="settings-select"
                     value={String(settings["terminal.lineHeight"])}
-                    onChange={(e) =>
+                    onChange={(nextValue) =>
                       updateSetting(
                         "terminal.lineHeight",
-                        Math.max(1, Math.min(2, parseFloat(e.target.value) || DEFAULT_APP_SETTINGS["terminal.lineHeight"])),
+                        Math.max(1, Math.min(2, parseFloat(nextValue) || DEFAULT_APP_SETTINGS["terminal.lineHeight"])),
                       )
                     }
-                  >
-                    <option value="1">1.0</option>
-                    <option value="1.2">1.2</option>
-                    <option value="1.4">1.4</option>
-                    <option value="1.6">1.6</option>
-                    <option value="1.8">1.8</option>
-                  </select>
+                    options={[
+                      { value: "1", label: "1.0" },
+                      { value: "1.2", label: "1.2" },
+                      { value: "1.4", label: "1.4" },
+                      { value: "1.6", label: "1.6" },
+                      { value: "1.8", label: "1.8" },
+                    ]}
+                  />
                 </div>
               </div>
               <div className="settings-advanced">
-                <div className="settings-advanced-title">高级设置</div>
+                <div className="settings-advanced-title">{t("settings.terminal.advanced")}</div>
                 <div className="settings-row settings-row--two">
                   <div className="settings-field">
-                    <label className="settings-field-label">自动复制</label>
+                    <label className="settings-field-label">{t("settings.terminal.autoCopy")}</label>
                     <div
                       className={`toggle-switch ${settings["terminal.autoCopy"] ? "active" : ""}`}
                       onClick={() => updateSetting("terminal.autoCopy", !settings["terminal.autoCopy"])}
@@ -994,14 +1053,14 @@ export function SettingsPage() {
                   </div>
                   <div className="settings-field">
                     <div className="settings-field-description">
-                      选中文本后自动复制到剪贴板
+                      {t("settings.terminal.autoCopy.desc")}
                     </div>
                   </div>
                 </div>
               </div>
             </div>
             <div className="settings-card-preview">
-              <div className="settings-preview-header">字体设置预览</div>
+              <div className="settings-preview-header">{t("settings.terminal.preview")}</div>
               <div className="settings-preview-window">
                 <div className="settings-preview-titlebar">
                   <span className="settings-preview-dot settings-preview-dot--red" />
@@ -1033,11 +1092,11 @@ export function SettingsPage() {
       </div>
 
       <div className="settings-section">
-        <h2>快捷键</h2>
+        <h2>{t("settings.section.shortcuts")}</h2>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">新增会话</div>
-            <div className="settings-item-description">打开连接选择器</div>
+            <div className="settings-item-label">{t("settings.shortcuts.newSession")}</div>
+            <div className="settings-item-description">{t("settings.shortcuts.newSession.desc")}</div>
           </div>
           <div className="settings-item-control">
             <div className="shortcut-keys">
@@ -1048,8 +1107,8 @@ export function SettingsPage() {
         </div>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">左右分屏</div>
-            <div className="settings-item-description">为当前会话选择分屏服务器</div>
+            <div className="settings-item-label">{t("settings.shortcuts.split")}</div>
+            <div className="settings-item-description">{t("settings.shortcuts.split.desc")}</div>
           </div>
           <div className="settings-item-control">
             <div className="shortcut-keys">
@@ -1060,8 +1119,8 @@ export function SettingsPage() {
         </div>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">切换会话</div>
-            <div className="settings-item-description">在顶部标签页之间切换</div>
+            <div className="settings-item-label">{t("settings.shortcuts.switch")}</div>
+            <div className="settings-item-description">{t("settings.shortcuts.switch.desc")}</div>
           </div>
           <div className="settings-item-control">
             <div className="shortcut-keys">
@@ -1072,8 +1131,8 @@ export function SettingsPage() {
         </div>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">连接管理器</div>
-            <div className="settings-item-description">收起或打开连接管理器</div>
+            <div className="settings-item-label">{t("settings.shortcuts.connections")}</div>
+            <div className="settings-item-description">{t("settings.shortcuts.connections.desc")}</div>
           </div>
           <div className="settings-item-control">
             <div className="shortcut-keys">
@@ -1085,11 +1144,11 @@ export function SettingsPage() {
       </div>
 
       <div className="settings-section">
-        <h2>AI 配置</h2>
+        <h2>{t("settings.section.ai")}</h2>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">启用 AI</div>
-            <div className="settings-item-description">开启后可在终端内使用 AI 问答</div>
+            <div className="settings-item-label">{t("settings.ai.enabled")}</div>
+            <div className="settings-item-description">{t("settings.ai.enabled.desc")}</div>
           </div>
           <div className="settings-item-control">
             <div
@@ -1102,29 +1161,30 @@ export function SettingsPage() {
         </div>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">提供商</div>
-            <div className="settings-item-description">选择 AI 服务商</div>
+            <div className="settings-item-label">{t("settings.ai.provider")}</div>
+            <div className="settings-item-description">{t("settings.ai.provider.desc")}</div>
           </div>
           <div className="settings-item-control">
-            <select
+            <Select
               className="settings-select"
               value={settings["ai.provider"]}
-              onChange={(e) =>
-                updateSetting("ai.provider", e.target.value as AppSettings["ai.provider"])
+              onChange={(nextValue) =>
+                updateSetting("ai.provider", nextValue as AppSettings["ai.provider"])
               }
               disabled={!settings["ai.enabled"]}
-            >
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-            </select>
+              options={[
+                { value: "openai", label: "OpenAI" },
+                { value: "anthropic", label: "Anthropic" },
+              ]}
+            />
           </div>
         </div>
         {settings["ai.provider"] === "openai" ? (
           <>
             <div className="settings-item">
               <div className="settings-item-info">
-                <div className="settings-item-label">API 地址</div>
-                <div className="settings-item-description">OpenAI 兼容接口地址</div>
+                <div className="settings-item-label">{t("settings.ai.apiUrl")}</div>
+                <div className="settings-item-description">{t("settings.ai.openai.desc")}</div>
               </div>
               <div className="settings-item-control">
                 <input
@@ -1138,8 +1198,8 @@ export function SettingsPage() {
             </div>
             <div className="settings-item">
               <div className="settings-item-info">
-                <div className="settings-item-label">API 密钥</div>
-                <div className="settings-item-description">用于鉴权的密钥</div>
+                <div className="settings-item-label">{t("settings.ai.apiKey")}</div>
+                <div className="settings-item-description">{t("settings.ai.apiKey.desc")}</div>
               </div>
               <div className="settings-item-control">
                 <input
@@ -1156,8 +1216,8 @@ export function SettingsPage() {
           <>
             <div className="settings-item">
               <div className="settings-item-info">
-                <div className="settings-item-label">API 地址</div>
-                <div className="settings-item-description">Anthropic 接口地址</div>
+                <div className="settings-item-label">{t("settings.ai.apiUrl")}</div>
+                <div className="settings-item-description">{t("settings.ai.anthropic.desc")}</div>
               </div>
               <div className="settings-item-control">
                 <input
@@ -1171,8 +1231,8 @@ export function SettingsPage() {
             </div>
             <div className="settings-item">
               <div className="settings-item-info">
-                <div className="settings-item-label">API 密钥</div>
-                <div className="settings-item-description">用于鉴权的密钥</div>
+                <div className="settings-item-label">{t("settings.ai.apiKey")}</div>
+                <div className="settings-item-description">{t("settings.ai.apiKey.desc")}</div>
               </div>
               <div className="settings-item-control">
                 <input
@@ -1188,37 +1248,26 @@ export function SettingsPage() {
         )}
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">模型</div>
-            <div className="settings-item-description">用于对话的模型名称</div>
+            <div className="settings-item-label">{t("settings.ai.model")}</div>
+            <div className="settings-item-description">{t("settings.ai.model.desc")}</div>
           </div>
           <div className="settings-item-control">
-            <select
+            <Select
               className="settings-select"
               value={settings["ai.model"]}
-              onChange={(e) => updateSetting("ai.model", e.target.value)}
+              onChange={(nextValue) => updateSetting("ai.model", nextValue)}
               disabled={!settings["ai.enabled"]}
-            >
-              {(settings["ai.provider"] === "openai"
-                ? OPENAI_MODEL_OPTIONS
-                : ANTHROPIC_MODEL_OPTIONS
-              ).map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-              {!((settings["ai.provider"] === "openai"
-                ? OPENAI_MODEL_OPTIONS
-                : ANTHROPIC_MODEL_OPTIONS
-              ).some((opt) => opt.value === settings["ai.model"])) && (
-                <option value={settings["ai.model"]}>{settings["ai.model"]}</option>
-              )}
-            </select>
+              options={aiModelOptionsWithCurrent.map((opt) => ({
+                value: opt.value,
+                label: opt.label,
+              }))}
+            />
           </div>
         </div>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">连通性测试</div>
-            <div className="settings-item-description">验证 AI 服务是否可用</div>
+            <div className="settings-item-label">{t("settings.ai.test")}</div>
+            <div className="settings-item-description">{t("settings.ai.test.desc")}</div>
           </div>
           <div className="settings-item-control settings-item-control--stack">
             <button
@@ -1227,7 +1276,7 @@ export function SettingsPage() {
               onClick={() => void handleAiTest()}
               disabled={!settings["ai.enabled"] || aiTestStatus === "testing"}
             >
-              {aiTestStatus === "testing" ? "测试中..." : "测试连接"}
+              {aiTestStatus === "testing" ? t("settings.ai.test.testing") : t("settings.ai.test.action")}
             </button>
             {aiTestMessage && (
               <span className={`settings-test-status settings-test-status--${aiTestStatus}`}>
@@ -1240,12 +1289,12 @@ export function SettingsPage() {
 
 
       <div className="settings-section">
-        <h2>数据管理</h2>
+        <h2>{t("settings.section.data")}</h2>
         <div className="settings-item">
           <div className="settings-item-info">
-            <div className="settings-item-label">导出配置</div>
+            <div className="settings-item-label">{t("settings.data.export")}</div>
             <div className="settings-item-description">
-              导出当前连接、密钥与设置（启用 Master Key 的敏感字段保持加密）
+              {t("settings.data.export.desc")}
             </div>
           </div>
           <div className="settings-item-control settings-item-control--stack">
@@ -1255,29 +1304,31 @@ export function SettingsPage() {
               onClick={() => void handleExportConfig()}
               disabled={exportStatus === "saving"}
             >
-              {exportStatus === "saving" ? "导出中..." : "导出"}
+              {exportStatus === "saving"
+                ? t("settings.data.export.exporting")
+                : t("settings.data.export.action")}
             </button>
           </div>
         </div>
       </div>
 
       <div className="settings-section">
-        <h2>关于</h2>
+        <h2>{t("settings.section.about")}</h2>
         <div className="app-info">
           <div className="app-info-row">
-            <span className="app-info-label">应用名称</span>
+            <span className="app-info-label">{t("settings.about.appName")}</span>
             <span>NoTerm</span>
           </div>
           <div className="app-info-row">
-            <span className="app-info-label">版本</span>
-            <span>0.0.1</span>
+            <span className="app-info-label">{t("settings.about.version")}</span>
+            <span>{appVersion}</span>
           </div>
           <div className="app-info-row">
-            <span className="app-info-label">框架</span>
+            <span className="app-info-label">{t("settings.about.framework")}</span>
             <span>Tauri 2 + React</span>
           </div>
           <div className="app-info-row">
-            <span className="app-info-label">构建日期</span>
+            <span className="app-info-label">{t("settings.about.buildDate")}</span>
             <span>2026-02-09</span>
           </div>
         </div>

@@ -4,6 +4,7 @@ import DOMPurify from "dompurify";
 import hljs from "highlight.js";
 import "highlight.js/styles/github.css";
 import { sshApi } from "../api/ssh";
+import { useI18n } from "../i18n";
 
 export interface AiRendererProps {
   content: string;
@@ -27,6 +28,9 @@ function escapeHtml(s: string): string {
 
 const AiRenderer2: React.FC<AiRendererProps> = ({ content, sessionId, useLocal, role }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const { t } = useI18n();
+  const executeLabel = t("ai.renderer.execute");
+  const copyLabel = t("ai.renderer.copy");
 
   const renderer = new marked.Renderer();
   renderer.code = (code: string, infostring?: string) => {
@@ -38,7 +42,7 @@ const AiRenderer2: React.FC<AiRendererProps> = ({ content, sessionId, useLocal, 
     const copyIcon =
       "<svg class=\"ai-btn-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z\"/></svg>";
     const sendButton = showSend
-      ? `<button type=\"button\" class=\"ai-send-btn\" data-action=\"send\" data-code=\"${encoded}\" title=\"执行\" aria-label=\"执行\">${sendIcon}</button>`
+      ? `<button type=\"button\" class=\"ai-send-btn\" data-action=\"send\" data-code=\"${encoded}\" title=\"${executeLabel}\" aria-label=\"${executeLabel}\">${sendIcon}</button>`
       : "";
     
     // 使用 highlight.js 进行语法高亮
@@ -64,7 +68,7 @@ const AiRenderer2: React.FC<AiRendererProps> = ({ content, sessionId, useLocal, 
       }
     }
     
-    return `\n<div class="ai-code-block">\n<pre><code class="language-${lang} hljs">${highlighted}</code></pre>\n<div class="ai-code-toolbar">\n    ${sendButton}\n    <button type=\"button\" class=\"ai-copy-btn\" data-action=\"copy\" data-code=\"${encoded}\" title=\"复制\" aria-label=\"复制\">${copyIcon}</button>\n  </div>\n </div>\n`;
+    return `\n<div class="ai-code-block">\n<pre><code class="language-${lang} hljs">${highlighted}</code></pre>\n<div class="ai-code-toolbar">\n    ${sendButton}\n    <button type=\"button\" class=\"ai-copy-btn\" data-action=\"copy\" data-code=\"${encoded}\" title=\"${copyLabel}\" aria-label=\"${copyLabel}\">${copyIcon}</button>\n  </div>\n </div>\n`;
   };
 
   useEffect(() => {
@@ -117,7 +121,7 @@ const AiRenderer2: React.FC<AiRendererProps> = ({ content, sessionId, useLocal, 
     return () => {
       el.removeEventListener("click", handleClick);
     };
-  }, [content, sessionId, useLocal, role]);
+  }, [content, sessionId, useLocal, role, executeLabel, copyLabel]);
 
   return <div ref={containerRef} className="ai-renderer" />;
 };

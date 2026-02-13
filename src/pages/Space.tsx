@@ -4,6 +4,7 @@ import { Modal } from "../components/Modal";
 import type { ScriptFolder, ScriptItem } from "../store/scripts";
 import { readScriptsData, writeScriptsData } from "../store/scripts";
 import type { Tab } from "../components/TitleBar";
+import { useI18n } from "../i18n";
 import "./Space.css";
 
 type WorkspaceView = {
@@ -49,6 +50,7 @@ export function SpacePage({
   onOpenScriptTab,
   onCloseTab,
 }: SpacePageProps) {
+  const { t } = useI18n();
   const [folders, setFolders] = useState<ScriptFolder[]>([]);
   const [scripts, setScripts] = useState<ScriptItem[]>([]);
   const [view, setView] = useState<WorkspaceView>({
@@ -177,7 +179,7 @@ export function SpacePage({
   }, [folderMap, view.selectedFolderId]);
 
   const getFolderPath = (folderId: string | null) => {
-    if (!folderId) return "根目录";
+    if (!folderId) return t("space.root");
     const chain: string[] = [];
     let currentId: string | null = folderId;
     while (currentId) {
@@ -186,7 +188,7 @@ export function SpacePage({
       chain.unshift(folder.name);
       currentId = folder.parentId;
     }
-    return chain.length > 0 ? `/${chain.join("/")}` : "根目录";
+    return chain.length > 0 ? `/${chain.join("/")}` : t("space.root");
   };
 
   const openCreateFolder = () => {
@@ -201,7 +203,7 @@ export function SpacePage({
 
   const openCreateScript = () => {
     if (!view.selectedFolderId) {
-      window.alert("请先选择一个文件夹");
+      window.alert(t("space.alert.selectFolder"));
       return;
     }
     const tabId = onOpenScriptTab(null);
@@ -422,7 +424,7 @@ export function SpacePage({
                   return next;
                 });
               }}
-              aria-label={isCollapsed ? "展开" : "收起"}
+              aria-label={isCollapsed ? t("space.tree.expand") : t("space.tree.collapse")}
             >
               <AppIcon
                 icon={
@@ -440,7 +442,7 @@ export function SpacePage({
             <button
               type="button"
               onClick={() => openCreateScriptForFolder(folder.id)}
-              title="新建脚本"
+              title={t("space.action.newScript")}
             >
               <AppIcon icon="material-symbols:note-add-rounded" size={14} />
             </button>
@@ -509,17 +511,17 @@ export function SpacePage({
     <div className="space-page">
       <div className="space-header">
         <div>
-          <div className="space-title">空间</div>
-          <div className="space-subtitle">脚本管理</div>
+          <div className="space-title">{t("space.header.title")}</div>
+          <div className="space-subtitle">{t("space.header.subtitle")}</div>
         </div>
         <div className="space-actions">
           <button className="btn btn-secondary" type="button" onClick={openCreateFolder}>
             <AppIcon icon="material-symbols:create-new-folder-rounded" size={16} />
-            新建文件夹
+            {t("space.action.newFolder")}
           </button>
           <button className="btn btn-primary" type="button" onClick={openCreateScript}>
             <AppIcon icon="material-symbols:note-add-rounded" size={16} />
-            新建脚本
+            {t("space.action.newScript")}
           </button>
         </div>
       </div>
@@ -537,7 +539,7 @@ export function SpacePage({
             setDraggingScriptId(null);
           }}
         >
-          根目录
+          {t("space.root")}
         </button>
         {breadcrumb.map((folder) => (
           <button
@@ -554,7 +556,7 @@ export function SpacePage({
       <div className={`space-content ${activeScriptForm ? "space-content--with-editor" : ""}`}>
         <div className="space-panel">
           <div className="space-panel-header">
-            <span>脚本与文件夹</span>
+            <span>{t("space.panel.title")}</span>
           </div>
           <div
             className="space-panel-body"
@@ -567,7 +569,7 @@ export function SpacePage({
             }}
           >
             {folders.length === 0 && scripts.length === 0 && (
-              <div className="space-empty">暂无内容</div>
+              <div className="space-empty">{t("space.empty")}</div>
             )}
 
             {(folderChildren.get(null) ?? []).map((folder) => (
@@ -622,17 +624,17 @@ export function SpacePage({
         {activeScriptForm && (
           <div className="space-panel space-panel--editor">
             <div className="space-panel-header">
-              <span>脚本设置</span>
+              <span>{t("space.editor.title")}</span>
             </div>
             <div className="space-panel-body space-editor-body">
               <div className="space-editor-meta">
                 <div className="space-editor-meta-item">
-                  <span className="space-editor-meta-label">所属目录</span>
+                  <span className="space-editor-meta-label">{t("space.editor.folder")}</span>
                   <span>{getFolderPath(activeScriptForm.folderId)}</span>
                 </div>
               </div>
               <div className="form-group">
-                <label>脚本名称</label>
+                <label>{t("space.editor.name")}</label>
                 <input
                   type="text"
                   value={activeScriptForm.name}
@@ -645,11 +647,11 @@ export function SpacePage({
                       },
                     }))
                   }
-                  placeholder="例如 deploy-prod"
+                  placeholder={t("space.editor.namePlaceholder")}
                 />
               </div>
               <div className="form-group">
-                <label>脚本内容（bash）</label>
+                <label>{t("space.editor.content")}</label>
                 <textarea
                   value={activeScriptForm.content}
                   onChange={(event) =>
@@ -667,7 +669,7 @@ export function SpacePage({
               </div>
               <div className="space-editor-actions">
                 <button className="btn btn-primary" type="button" onClick={() => void handleSaveScript()}>
-                  保存
+                  {t("common.save")}
                 </button>
                 <button
                   className="btn btn-secondary"
@@ -678,7 +680,7 @@ export function SpacePage({
                     }
                   }}
                 >
-                  关闭
+                  {t("common.close")}
                 </button>
               </div>
             </div>
@@ -688,26 +690,26 @@ export function SpacePage({
 
       <Modal
         open={folderModalOpen}
-        title={folderForm.id ? "编辑文件夹" : "新建文件夹"}
+        title={folderForm.id ? t("space.folder.modal.editTitle") : t("space.folder.modal.newTitle")}
         onClose={() => setFolderModalOpen(false)}
         width={420}
       >
         <div className="space-modal">
           <div className="form-group">
-            <label>文件夹名称</label>
+            <label>{t("space.folder.modal.nameLabel")}</label>
             <input
               type="text"
               value={folderForm.name}
               onChange={(event) => setFolderForm((prev) => ({ ...prev, name: event.target.value }))}
-              placeholder="例如 自动化"
+              placeholder={t("space.folder.modal.namePlaceholder")}
             />
           </div>
           <div className="space-modal-actions">
             <button className="btn btn-primary" type="button" onClick={() => void handleSaveFolder()}>
-              保存
+              {t("common.save")}
             </button>
             <button className="btn btn-secondary" type="button" onClick={() => setFolderModalOpen(false)}>
-              取消
+              {t("common.cancel")}
             </button>
           </div>
         </div>

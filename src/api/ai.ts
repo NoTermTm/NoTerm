@@ -1,3 +1,5 @@
+import { getTranslator } from "../i18n";
+
 export type AiProvider = "openai" | "anthropic";
 
 export type AiMessage = {
@@ -26,19 +28,20 @@ const normalizeBaseUrl = (value: string) => {
 };
 
 export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
+  const t = await getTranslator();
   if (!settings.enabled) {
-    throw new Error("AI 未启用");
+    throw new Error(t("ai.error.disabled"));
   }
 
   const model = settings.model?.trim();
   if (!model) {
-    throw new Error("未配置模型");
+    throw new Error(t("ai.error.modelMissing"));
   }
 
   if (settings.provider === "openai") {
     const baseUrl = normalizeBaseUrl(settings.openai.baseUrl);
-    if (!baseUrl) throw new Error("未配置 OpenAI API 地址");
-    if (!settings.openai.apiKey) throw new Error("未配置 OpenAI API 密钥");
+    if (!baseUrl) throw new Error(t("ai.error.openaiUrl"));
+    if (!settings.openai.apiKey) throw new Error(t("ai.error.openaiKey"));
 
     const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: "POST",
@@ -55,7 +58,7 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
 
     if (!resp.ok) {
       const text = await resp.text();
-      throw new Error(text || "OpenAI 请求失败");
+      throw new Error(text || t("ai.error.openaiRequestFail"));
     }
 
     const data = (await resp.json()) as {
@@ -64,15 +67,15 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
 
     const content = data.choices?.[0]?.message?.content?.trim();
     if (!content) {
-      throw new Error("OpenAI 返回内容为空");
+      throw new Error(t("ai.error.openaiEmpty"));
     }
 
     return content;
   }
 
   const baseUrl = normalizeBaseUrl(settings.anthropic.baseUrl);
-  if (!baseUrl) throw new Error("未配置 Anthropic API 地址");
-  if (!settings.anthropic.apiKey) throw new Error("未配置 Anthropic API 密钥");
+  if (!baseUrl) throw new Error(t("ai.error.anthropicUrl"));
+  if (!settings.anthropic.apiKey) throw new Error(t("ai.error.anthropicKey"));
 
   const resp = await fetch(`${baseUrl}/v1/messages`, {
     method: "POST",
@@ -94,7 +97,7 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
 
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(text || "Anthropic 请求失败");
+    throw new Error(text || t("ai.error.anthropicRequestFail"));
   }
 
   const data = (await resp.json()) as {
@@ -103,7 +106,7 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
 
   const content = data.content?.[0]?.text?.trim();
   if (!content) {
-    throw new Error("Anthropic 返回内容为空");
+    throw new Error(t("ai.error.anthropicEmpty"));
   }
 
   return content;

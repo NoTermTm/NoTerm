@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { load } from "@tauri-apps/plugin-store";
 import { AppIcon } from "../components/AppIcon";
+import { Select } from "../components/Select";
 import { Modal } from "../components/Modal";
 import { generateKeypair, type GenerateKeyAlgorithm } from "../api/keys";
 import { readAppSetting } from "../store/appSettings";
@@ -13,6 +14,7 @@ import {
 import { getMasterKeySession } from "../utils/securitySession";
 import type { AuthProfile } from "../types/auth";
 import type { AuthType } from "../types/ssh";
+import { useI18n } from "../i18n";
 import "./Keys.css";
 
 let store: Awaited<ReturnType<typeof load>> | null = null;
@@ -113,24 +115,30 @@ const serializeProfile = async (profile: AuthProfile, ctx: SecurityContext) => {
   return profile;
 };
 
-function createEmptyProfile(): AuthProfile {
+function createEmptyProfile(name: string): AuthProfile {
   return {
     id: crypto.randomUUID(),
-    name: "新密钥",
+    name,
     username: "root",
     auth_type: { type: "Password", password: "" },
   };
 }
 
-function formatAuthType(auth: AuthType) {
-  if (auth.type === "Password") return "密码";
-  return "私钥";
+function formatAuthType(
+  auth: AuthType,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
+  if (auth.type === "Password") return t("keys.auth.password");
+  return t("keys.auth.key");
 }
 
 // 验证 PEM 私钥格式
-function validatePemKey(content: string): { valid: boolean; message: string } {
+function validatePemKey(
+  content: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): { valid: boolean; message: string } {
   if (!content || !content.trim()) {
-    return { valid: false, message: "请输入私钥内容" };
+    return { valid: false, message: t("connections.pem.empty") };
   }
 
   const trimmed = content.trim();
@@ -140,9 +148,9 @@ function validatePemKey(content: string): { valid: boolean; message: string } {
   const hasEnd = /-----END\s+[A-Z\s]+PRIVATE KEY-----/.test(trimmed);
   
   if (!hasBegin || !hasEnd) {
-    return { 
-      valid: false, 
-      message: "格式错误：缺少 BEGIN 或 END 标记" 
+    return {
+      valid: false,
+      message: t("connections.pem.missingMarkers"),
     };
   }
   
@@ -151,9 +159,9 @@ function validatePemKey(content: string): { valid: boolean; message: string } {
   const endMatch = trimmed.match(/-----END\s+([A-Z\s]+PRIVATE KEY)-----/);
   
   if (beginMatch && endMatch && beginMatch[1] !== endMatch[1]) {
-    return { 
-      valid: false, 
-      message: "格式错误：BEGIN 和 END 标记不匹配" 
+    return {
+      valid: false,
+      message: t("connections.pem.mismatchMarkers"),
     };
   }
   
@@ -166,9 +174,9 @@ function validatePemKey(content: string): { valid: boolean; message: string } {
   );
   
   if (contentLines.length === 0) {
-    return { 
-      valid: false, 
-      message: "格式错误：没有私钥内容" 
+    return {
+      valid: false,
+      message: t("connections.pem.noContent"),
     };
   }
   
@@ -185,16 +193,17 @@ function validatePemKey(content: string): { valid: boolean; message: string } {
   const isSupported = supportedFormats.some(format => keyType.includes(format));
   
   if (!isSupported) {
-    return { 
-      valid: false, 
-      message: `不支持的密钥类型：${keyType}` 
+    return {
+      valid: false,
+      message: t("connections.pem.unsupported", { type: keyType }),
     };
   }
   
-  return { valid: true, message: "格式正确" };
+  return { valid: true, message: t("connections.pem.valid") };
 }
 
 export function KeysPage() {
+  const { t } = useI18n();
   const [profiles, setProfiles] = useState<AuthProfile[]>([]);
   const [editing, setEditing] = useState<AuthProfile | null>(null);
   const [open, setOpen] = useState(false);
@@ -297,7 +306,7 @@ export function KeysPage() {
   }, [editing]);
 
   const onAdd = () => {
-    setEditing(createEmptyProfile());
+    setEditing(createEmptyProfile(t("keys.defaultName")));
     setOpen(true);
   };
 
@@ -334,7 +343,7 @@ export function KeysPage() {
   const onGenerateKey = async () => {
     if (!editing) return;
     if (!editing.name.trim()) {
-      setGenError("请先填写密钥名称");
+      setGenError(t("keys.error.nameRequired"));
       return;
     }
 
@@ -374,8 +383,8 @@ export function KeysPage() {
     <div className="keys-page">
       <div className="keys-header">
         <div className="keys-header-left">
-          <h1>密钥管理</h1>
-          <div className="keys-subtitle">统一管理用户名 + 密码 / PEM 私钥认证</div>
+          <h1>{t("keys.title")}</h1>
+          <div className="keys-subtitle">{t("keys.subtitle")}</div>
         </div>
         <div className="keys-header-right">
           <div className="keys-search">
@@ -385,14 +394,14 @@ export function KeysPage() {
             <input
               className="keys-search-input"
               type="text"
-              placeholder="搜索密钥名称 / 用户名 / 路径"
+              placeholder={t("keys.search.placeholder")}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
           <button className="btn btn-primary" type="button" onClick={onAdd}>
             <AppIcon icon="material-symbols:add-rounded" size={18} />
-            添加密钥
+            {t("keys.action.add")}
           </button>
         </div>
       </div>
@@ -403,8 +412,8 @@ export function KeysPage() {
             <AppIcon icon="material-symbols:key-rounded" size={64} />
           </span>
           <div>
-            <h3>暂无密钥</h3>
-            <p>添加后可在“添加服务器”时一键套用认证信息</p>
+            <h3>{t("keys.empty.title")}</h3>
+            <p>{t("keys.empty.desc")}</p>
           </div>
         </div>
       ) : (
@@ -414,7 +423,9 @@ export function KeysPage() {
               <div className="keys-item-main">
                 <div className="keys-item-title">
                   <span className="keys-item-name">{p.name}</span>
-                  <span className="keys-item-badge">{formatAuthType(p.auth_type)}</span>
+                  <span className="keys-item-badge">
+                    {formatAuthType(p.auth_type, t)}
+                  </span>
                 </div>
                 <div className="keys-item-meta">
                   <span className="keys-item-meta-chip">
@@ -432,11 +443,11 @@ export function KeysPage() {
               <div className="keys-item-actions">
                 <button className="btn btn-secondary btn-sm" onClick={() => onEdit(p)}>
                   <AppIcon icon="material-symbols:edit-rounded" size={16} />
-                  编辑
+                  {t("common.edit")}
                 </button>
                 <button className="btn btn-danger btn-sm" onClick={() => void onDelete(p.id)}>
                   <AppIcon icon="material-symbols:delete-rounded" size={16} />
-                  删除
+                  {t("common.delete")}
                 </button>
               </div>
             </div>
@@ -447,7 +458,9 @@ export function KeysPage() {
       <Modal
         open={open}
         title={
-          editing && profiles.some((p) => p.id === editing.id) ? "编辑密钥" : "添加密钥"
+          editing && profiles.some((p) => p.id === editing.id)
+            ? t("keys.modal.editTitle")
+            : t("keys.modal.addTitle")
         }
         onClose={() => {
           setOpen(false);
@@ -458,18 +471,18 @@ export function KeysPage() {
         {editing && (
           <div className="keys-form">
             <div className="form-group">
-              <label>名称</label>
+              <label>{t("keys.field.name")}</label>
               <input
                 type="text"
                 value={editing.name}
                 onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                placeholder="例如：生产环境 root 密码 / 公司跳板机私钥"
+                placeholder={t("keys.field.namePlaceholder")}
               />
             </div>
 
             <div className="form-row">
               <div className="form-group">
-                <label>用户名</label>
+                <label>{t("keys.field.username")}</label>
                 <input
                   type="text"
                   value={editing.username}
@@ -481,7 +494,7 @@ export function KeysPage() {
               </div>
 
               <div className="form-group">
-                <label>认证方式</label>
+                <label>{t("keys.field.authType")}</label>
                 <div className="auth-type-selector">
                   <button
                     className={`auth-type-btn ${authType === "Password" ? "active" : ""}`}
@@ -492,7 +505,7 @@ export function KeysPage() {
                       })
                     }
                   >
-                    密码
+                    {t("keys.auth.password")}
                   </button>
                   <button
                     className={`auth-type-btn ${authType === "PrivateKey" ? "active" : ""}`}
@@ -504,7 +517,7 @@ export function KeysPage() {
                       })
                     }
                   >
-                    私钥（PEM）
+                    {t("keys.auth.key")}
                   </button>
                 </div>
               </div>
@@ -512,7 +525,7 @@ export function KeysPage() {
 
             {authType === "Password" && (
               <div className="form-group">
-                <label>密码</label>
+                <label>{t("connections.password")}</label>
                 <div className="password-input-wrapper">
                   <input
                     type={showPassword ? "text" : "password"}
@@ -528,7 +541,11 @@ export function KeysPage() {
                     type="button"
                     className="password-toggle-btn"
                     onClick={() => setShowPassword(!showPassword)}
-                    title={showPassword ? "隐藏密码" : "显示密码"}
+                    title={
+                      showPassword
+                        ? t("connections.password.hide")
+                        : t("connections.password.show")
+                    }
                   >
                     <AppIcon
                       icon={showPassword ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
@@ -547,28 +564,28 @@ export function KeysPage() {
                     className={`keys-pk-mode-btn ${pkMode === "path" ? "active" : ""}`}
                     onClick={() => setPkMode("path")}
                   >
-                    使用路径
+                    {t("connections.pkMode.path")}
                   </button>
                   <button
                     type="button"
                     className={`keys-pk-mode-btn ${pkMode === "manual" ? "active" : ""}`}
                     onClick={() => setPkMode("manual")}
                   >
-                    手动输入
+                    {t("connections.pkMode.manual")}
                   </button>
                   <button
                     type="button"
                     className={`keys-pk-mode-btn ${pkMode === "create" ? "active" : ""}`}
                     onClick={() => setPkMode("create")}
                   >
-                    在线创建
+                    {t("keys.pkMode.create")}
                   </button>
                 </div>
 
                 {pkMode === "path" && (
                   <>
                     <div className="form-group">
-                      <label>私钥路径</label>
+                      <label>{t("connections.pk.path")}</label>
                       <input
                         type="text"
                         value={(editing.auth_type as any).key_path || ""}
@@ -586,7 +603,7 @@ export function KeysPage() {
                       />
                     </div>
                     <div className="form-group">
-                      <label>私钥密码（可选）</label>
+                      <label>{t("connections.pk.passphraseOptional")}</label>
                       <div className="password-input-wrapper">
                         <input
                           type={showPassphrase ? "text" : "password"}
@@ -606,7 +623,11 @@ export function KeysPage() {
                           type="button"
                           className="password-toggle-btn"
                           onClick={() => setShowPassphrase(!showPassphrase)}
-                          title={showPassphrase ? "隐藏密码" : "显示密码"}
+                          title={
+                            showPassphrase
+                              ? t("connections.password.hide")
+                              : t("connections.password.show")
+                          }
                         >
                           <AppIcon
                             icon={showPassphrase ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
@@ -619,14 +640,16 @@ export function KeysPage() {
                     {editing.public_key && (
                       <div className="keys-pubkey">
                         <div className="keys-pubkey-header">
-                          <div className="keys-pubkey-title">公钥（复制到服务器）</div>
+                          <div className="keys-pubkey-title">
+                            {t("keys.publicKey.title")}
+                          </div>
                           <button
                             type="button"
                             className="btn btn-secondary btn-sm"
                             onClick={() => void copyText(editing.public_key || "")}
                           >
                             <AppIcon icon="material-symbols:content-copy-rounded" size={16} />
-                            复制公钥
+                            {t("keys.publicKey.copy")}
                           </button>
                         </div>
                         <textarea
@@ -643,40 +666,50 @@ export function KeysPage() {
                   <div className="keys-generate">
                     <div className="form-row">
                       <div className="form-group">
-                        <label>算法</label>
-                        <select
+                        <label>{t("keys.generate.algorithm")}</label>
+                        <Select
                           value={genAlg}
-                          onChange={(e) => setGenAlg(e.target.value as GenerateKeyAlgorithm)}
-                        >
-                          <option value="ed25519">ed25519（推荐）</option>
-                          <option value="rsa4096">rsa 4096</option>
-                        </select>
+                          onChange={(nextValue) =>
+                            setGenAlg(nextValue as GenerateKeyAlgorithm)
+                          }
+                          options={[
+                            {
+                              value: "ed25519",
+                              label: t("keys.generate.algorithm.ed25519"),
+                            },
+                            { value: "rsa4096", label: "rsa 4096" },
+                          ]}
+                        />
                       </div>
                       <div className="form-group">
-                        <label>备注（Comment）</label>
+                        <label>{t("keys.generate.comment")}</label>
                         <input
                           type="text"
                           value={genComment}
                           onChange={(e) => setGenComment(e.target.value)}
-                          placeholder="例如：ssh-manager"
+                          placeholder={t("keys.generate.commentPlaceholder")}
                         />
                       </div>
                     </div>
 
                     <div className="form-group">
-                      <label>私钥密码（可选）</label>
+                      <label>{t("connections.pk.passphraseOptional")}</label>
                       <div className="password-input-wrapper">
                         <input
                           type={showGenPassphrase ? "text" : "password"}
                           value={genPassphrase}
                           onChange={(e) => setGenPassphrase(e.target.value)}
-                          placeholder="为空则不加密"
+                          placeholder={t("keys.generate.passphrasePlaceholder")}
                         />
                         <button
                           type="button"
                           className="password-toggle-btn"
                           onClick={() => setShowGenPassphrase(!showGenPassphrase)}
-                          title={showGenPassphrase ? "隐藏密码" : "显示密码"}
+                          title={
+                            showGenPassphrase
+                              ? t("connections.password.hide")
+                              : t("connections.password.show")
+                          }
                         >
                           <AppIcon
                             icon={showGenPassphrase ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
@@ -696,7 +729,9 @@ export function KeysPage() {
                         disabled={genBusy}
                       >
                         <AppIcon icon="material-symbols:key-vertical-rounded" size={18} />
-                        {genBusy ? "生成中…" : "生成密钥"}
+                        {genBusy
+                          ? t("keys.generate.running")
+                          : t("keys.generate.action")}
                       </button>
                       <button
                         type="button"
@@ -704,7 +739,7 @@ export function KeysPage() {
                         onClick={() => setPkMode("path")}
                         disabled={genBusy}
                       >
-                        取消
+                        {t("common.cancel")}
                       </button>
                     </div>
                   </div>
@@ -713,7 +748,7 @@ export function KeysPage() {
                 {pkMode === "manual" && (
                   <div className="keys-manual">
                     <div className="form-group">
-                      <label>私钥内容（PEM 格式）</label>
+                      <label>{t("connections.pk.content")}</label>
                       <textarea
                         className="keys-pem-textarea"
                         value={(editing.auth_type as any).key_content || ""}
@@ -730,7 +765,7 @@ export function KeysPage() {
                           });
                           // 实时验证
                           if (content.trim()) {
-                            setPemValidation(validatePemKey(content));
+                            setPemValidation(validatePemKey(content, t));
                           } else {
                             setPemValidation(null);
                           }
@@ -739,7 +774,7 @@ export function KeysPage() {
                           // 失去焦点时验证
                           const content = e.target.value;
                           if (content.trim()) {
-                            setPemValidation(validatePemKey(content));
+                            setPemValidation(validatePemKey(content, t));
                           }
                         }}
                         placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEpAIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
@@ -755,16 +790,21 @@ export function KeysPage() {
                         </div>
                       )}
                       <div className="keys-hint">
-                        <strong>注意：</strong>粘贴完整的 PEM 格式私钥内容，包括开始和结束标记。支持以下格式：<br/>
-                        • <code>-----BEGIN RSA PRIVATE KEY-----</code> (OpenSSH RSA)<br/>
-                        • <code>-----BEGIN OPENSSH PRIVATE KEY-----</code> (OpenSSH 新格式)<br/>
-                        • <code>-----BEGIN EC PRIVATE KEY-----</code> (ECDSA)<br/>
-                        • 确保包含完整的密钥内容和换行符
+                        <strong>{t("connections.pk.hint.title")}</strong>
+                        {t("connections.pk.hint.desc")}
+                        <br />
+                        • <code>-----BEGIN RSA PRIVATE KEY-----</code> (OpenSSH RSA)
+                        <br />
+                        • <code>-----BEGIN OPENSSH PRIVATE KEY-----</code> (
+                        {t("connections.pk.hint.opensshNew")})
+                        <br />
+                        • <code>-----BEGIN EC PRIVATE KEY-----</code> (ECDSA)
+                        <br />• {t("connections.pk.hint.ensureFull")}
                       </div>
                     </div>
 
                     <div className="form-group">
-                      <label>私钥密码（可选）</label>
+                      <label>{t("connections.pk.passphraseOptional")}</label>
                       <div className="password-input-wrapper">
                         <input
                           type={showPassphrase ? "text" : "password"}
@@ -779,13 +819,17 @@ export function KeysPage() {
                               },
                             })
                           }
-                          placeholder="如果私钥已加密，请输入密码"
+                          placeholder={t("connections.pk.passphrasePlaceholder")}
                         />
                         <button
                           type="button"
                           className="password-toggle-btn"
                           onClick={() => setShowPassphrase(!showPassphrase)}
-                          title={showPassphrase ? "隐藏密码" : "显示密码"}
+                          title={
+                            showPassphrase
+                              ? t("connections.password.hide")
+                              : t("connections.password.show")
+                          }
                         >
                           <AppIcon
                             icon={showPassphrase ? "material-symbols:visibility-off-rounded" : "material-symbols:visibility-rounded"}
@@ -806,7 +850,7 @@ export function KeysPage() {
                 onClick={() => void onSave()}
                 disabled={!canSave}
               >
-                保存
+                {t("common.save")}
               </button>
               <button
                 className="btn btn-secondary"
@@ -816,7 +860,7 @@ export function KeysPage() {
                   setEditing(null);
                 }}
               >
-                取消
+                {t("common.cancel")}
               </button>
             </div>
           </div>
