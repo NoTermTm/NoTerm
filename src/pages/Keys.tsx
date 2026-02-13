@@ -115,6 +115,35 @@ const serializeProfile = async (profile: AuthProfile, ctx: SecurityContext) => {
   return profile;
 };
 
+const mergeStoredProfileSecrets = (
+  profile: AuthProfile,
+  stored: AuthProfile | undefined,
+) => {
+  if (!stored) return profile;
+  if (profile.auth_type.type === "Password") {
+    if (stored.auth_type?.type !== "Password") return profile;
+    return {
+      ...profile,
+      auth_type: {
+        ...profile.auth_type,
+        password: stored.auth_type.password ?? "",
+      },
+    };
+  }
+  if (profile.auth_type.type === "PrivateKey") {
+    if (stored.auth_type?.type !== "PrivateKey") return profile;
+    return {
+      ...profile,
+      auth_type: {
+        ...profile.auth_type,
+        key_content: stored.auth_type.key_content ?? "",
+        passphrase: stored.auth_type.passphrase ?? "",
+      },
+    };
+  }
+  return profile;
+};
+
 function createEmptyProfile(name: string): AuthProfile {
   return {
     id: crypto.randomUUID(),
@@ -252,8 +281,19 @@ export function KeysPage() {
   const saveProfiles = async (next: AuthProfile[]) => {
     const s = await getStore();
     const ctx = await getSecurityContext();
+    const stored = await s.get<AuthProfile[]>("profiles");
+    const storedMap = new Map((stored ?? []).map((profile) => [profile.id, profile]));
     const persisted = await Promise.all(
-      next.map((profile) => serializeProfile(profile, ctx)),
+      next.map((profile) => {
+        if (!ctx.masterKey && ctx.savePassword) {
+          const merged = mergeStoredProfileSecrets(
+            profile,
+            storedMap.get(profile.id),
+          );
+          return merged;
+        }
+        return serializeProfile(profile, ctx);
+      }),
     );
     await s.set("profiles", persisted);
     await s.save();

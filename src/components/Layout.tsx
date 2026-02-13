@@ -356,8 +356,12 @@ export function Layout() {
   }, [isLocked]);
 
   useEffect(() => {
-    if (!securitySettings.hash || securitySettings.timeout <= 0) {
+    if (!securitySettings.hash) {
       setIsLocked(false);
+      return;
+    }
+    if (securitySettings.timeout <= 0) {
+      // Auto-lock disabled. Keep current lock state for manual locking.
       return;
     }
     const timer = window.setInterval(() => {
@@ -517,7 +521,7 @@ export function Layout() {
         };
         setMessages((prev) => [message, ...prev].slice(0, MESSAGE_LIMIT));
         setUnreadCount((prev) => prev + 1);
-        if (detail.autoOpen || detail.tone === "error") {
+        if (detail.autoOpen) {
           setMessagePanel((prev) => prev ?? buildMessagePanelPosition());
         }
       }

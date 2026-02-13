@@ -362,7 +362,7 @@ const MESSAGES: Messages = {
   "connections.empty.rdp.target": { "zh-CN": "目标：{target}", "en-US": "Target: {target}" },
   "connections.empty.readyTitle": { "zh-CN": "准备好连接服务器", "en-US": "Ready to connect" },
   "connections.empty.readyDesc": { "zh-CN": "在左侧选择服务器，然后点击“连接”按钮开始会话", "en-US": "Select a server on the left and click Connect to start a session" },
-  "connections.panel.title": { "zh-CN": "连接配置", "en-US": "Connection configuration" },
+  "connections.panel.title": { "zh-CN": "连接配置", "en-US": "Connections" },
   "connections.search.placeholder": { "zh-CN": "请输入搜索内容", "en-US": "Search connections" },
   "connections.filter.tags": { "zh-CN": "标签", "en-US": "Tags" },
   "connections.filter.colors": { "zh-CN": "颜色", "en-US": "Colors" },

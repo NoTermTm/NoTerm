@@ -396,6 +396,44 @@ const serializeConnection = async (conn: ConnectionConfig, ctx: SecurityContext)
   return conn;
 };
 
+const mergeStoredConnectionSecrets = (
+  conn: ConnectionConfig,
+  stored: ConnectionConfig | undefined,
+) => {
+  if (!stored) return conn;
+  if (conn.kind === "rdp") {
+    if (stored.kind !== "rdp") return conn;
+    return {
+      ...conn,
+      password: stored.password ?? "",
+      gatewayPassword: stored.gatewayPassword ?? "",
+    };
+  }
+  if (stored.kind === "rdp") return conn;
+  if (conn.auth_type.type === "Password") {
+    if (stored.auth_type?.type !== "Password") return conn;
+    return {
+      ...conn,
+      auth_type: {
+        ...conn.auth_type,
+        password: stored.auth_type.password ?? "",
+      },
+    };
+  }
+  if (conn.auth_type.type === "PrivateKey") {
+    if (stored.auth_type?.type !== "PrivateKey") return conn;
+    return {
+      ...conn,
+      auth_type: {
+        ...conn.auth_type,
+        key_content: stored.auth_type.key_content ?? "",
+        passphrase: stored.auth_type.passphrase ?? "",
+      },
+    };
+  }
+  return conn;
+};
+
 const deserializeProfile = async (profile: AuthProfile, ctx: SecurityContext) => {
   if (profile.auth_type.type === "Password") {
     return {
@@ -436,6 +474,35 @@ const serializeProfile = async (profile: AuthProfile, ctx: SecurityContext) => {
         ...profile.auth_type,
         key_content: await encryptMaybe(profile.auth_type.key_content, ctx),
         passphrase: await encryptMaybe(profile.auth_type.passphrase, ctx),
+      },
+    };
+  }
+  return profile;
+};
+
+const mergeStoredProfileSecrets = (
+  profile: AuthProfile,
+  stored: AuthProfile | undefined,
+) => {
+  if (!stored) return profile;
+  if (profile.auth_type.type === "Password") {
+    if (stored.auth_type?.type !== "Password") return profile;
+    return {
+      ...profile,
+      auth_type: {
+        ...profile.auth_type,
+        password: stored.auth_type.password ?? "",
+      },
+    };
+  }
+  if (profile.auth_type.type === "PrivateKey") {
+    if (stored.auth_type?.type !== "PrivateKey") return profile;
+    return {
+      ...profile,
+      auth_type: {
+        ...profile.auth_type,
+        key_content: stored.auth_type.key_content ?? "",
+        passphrase: stored.auth_type.passphrase ?? "",
       },
     };
   }
@@ -677,8 +744,19 @@ export function ConnectionsPage({
   const saveConnections = async (conns: ConnectionConfig[]) => {
     const s = await getStore();
     const ctx = await getSecurityContext();
+    const stored = await s.get<ConnectionConfig[]>("connections");
+    const storedMap = new Map((stored ?? []).map((conn) => [conn.id, conn]));
     const persisted = await Promise.all(
-      conns.map((conn) => serializeConnection(conn, ctx)),
+      conns.map((conn) => {
+        if (!ctx.masterKey && ctx.savePassword) {
+          const merged = mergeStoredConnectionSecrets(
+            conn,
+            storedMap.get(conn.id),
+          );
+          return merged;
+        }
+        return serializeConnection(conn, ctx);
+      }),
     );
     await s.set("connections", persisted);
     await s.save();
@@ -688,8 +766,19 @@ export function ConnectionsPage({
   const saveAuthProfiles = async (next: AuthProfile[]) => {
     const s = await getKeyStore();
     const ctx = await getSecurityContext();
+    const stored = await s.get<AuthProfile[]>("profiles");
+    const storedMap = new Map((stored ?? []).map((profile) => [profile.id, profile]));
     const persisted = await Promise.all(
-      next.map((profile) => serializeProfile(profile, ctx)),
+      next.map((profile) => {
+        if (!ctx.masterKey && ctx.savePassword) {
+          const merged = mergeStoredProfileSecrets(
+            profile,
+            storedMap.get(profile.id),
+          );
+          return merged;
+        }
+        return serializeProfile(profile, ctx);
+      }),
     );
     await s.set("profiles", persisted);
     await s.save();
@@ -2399,6 +2488,7 @@ export function ConnectionsPage({
                   }
                   onClick={() => {
                     setSelectedConnection(conn);
+                    void handleConnect(conn);
                   }}
                 >
                   <div className="connection-item-top">

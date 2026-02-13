@@ -315,12 +315,38 @@ export function SettingsPage() {
   const handleSetMasterKey = async () => {
     if (masterKeyInput.trim().length < 6) {
       setMasterKeyStatus("error");
-      setMasterKeyMessage(t("settings.security.masterKey.tooShort"));
+      const message = t("settings.security.masterKey.tooShort");
+      setMasterKeyMessage(message);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("settings.security.masterKey.failed"),
+              detail: message,
+              tone: "error",
+              toast: true,
+            },
+          }),
+        );
+      }
       return;
     }
     if (masterKeyInput !== masterKeyConfirm) {
       setMasterKeyStatus("error");
-      setMasterKeyMessage(t("settings.security.masterKey.mismatch"));
+      const message = t("settings.security.masterKey.mismatch");
+      setMasterKeyMessage(message);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("settings.security.masterKey.failed"),
+              detail: message,
+              tone: "error",
+              toast: true,
+            },
+          }),
+        );
+      }
       return;
     }
     setMasterKeyStatus("saving");
@@ -340,14 +366,37 @@ export function SettingsPage() {
       setMasterKeyInput("");
       setMasterKeyConfirm("");
       setMasterKeyStatus("success");
-      setMasterKeyMessage(t("settings.security.masterKey.updated"));
+      const message = t("settings.security.masterKey.updated");
+      setMasterKeyMessage(message);
       if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: message,
+              tone: "success",
+              toast: true,
+            },
+          }),
+        );
         window.dispatchEvent(new CustomEvent("master-key-updated"));
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMasterKeyStatus("error");
-      setMasterKeyMessage(message || t("settings.security.masterKey.failed"));
+      const detail = message || t("settings.security.masterKey.failed");
+      setMasterKeyMessage(detail);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("settings.security.masterKey.failed"),
+              detail,
+              tone: "error",
+              toast: true,
+            },
+          }),
+        );
+      }
     }
   };
 
