@@ -1,8 +1,17 @@
-# NoTerm
+<div align="center">
+  <h1>NoTerm</h1>
+    <p>A modern, friendly SSH terminal. It focuses on fast connection management, a clean terminal experience.</p>
+</div>
 
-A modern, friendly SSH/RDP terminal built with Tauri + React. It focuses on fast connection management, a clean terminal experience, and secure storage with a master key.
+<p align="center">
+  <a href="https://github.com/NoTermTm/NoTerm/stargazers"><img src="https://img.shields.io/github/stars/NoTermTm/NoTerm?style=flat-square" alt="Stars"></a>
+  <a href="https://github.com/NoTermTm/NoTerm/"><img src="https://img.shields.io/github/v/tag/NoTermTm/NoTerm?label=version&style=flat-square" alt="version"/></a>
+  <a href="https://github.com/NoTermTm/NoTerm/commits"><img src="https://img.shields.io/github/commit-activity/m/NoTermTm/NoTerm?style=flat-square" alt="Commits"></a>
+</p>
 
-Repo: `git@github.com:NoTermTm/NoTerm.git`
+<p align="center">
+  <img src="docs/screenshots/overview.jpg" alt=“overview”/>
+</p>
 
 ## Highlights
 
@@ -16,6 +25,14 @@ Repo: `git@github.com:NoTermTm/NoTerm.git`
 - Script snippets library and one‑click send
 - Update checker via GitHub Releases (Tauri updater)
 - i18n: English + Simplified Chinese
+
+## Screenshots
+
+![Overview](docs/screenshots/overview.jpg)
+![Connection Editor](docs/screenshots/connection-editor.jpg)
+![SFTP Transfer](docs/screenshots/sftp.jpg)
+![AI Panel](docs/screenshots/ai-panel.jpg)
+
 
 ## Tech Stack
 
@@ -64,12 +81,6 @@ Build Windows (on Windows runner):
 npm run tauri -- build --target x86_64-pc-windows-msvc
 ```
 
-## Screenshots
-
-![Overview](docs/screenshots/overview.jpg)
-![Connection Editor](docs/screenshots/connection-editor.jpg)
-![SFTP Transfer](docs/screenshots/sftp.jpg)
-![AI Panel](docs/screenshots/ai-panel.jpg)
 
 ## Installation Details
 
