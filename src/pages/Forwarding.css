@@ -1,0 +1,133 @@
+.forwarding-page {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px 24px;
+    overflow: hidden;
+}
+
+.forwarding-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.forwarding-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.forwarding-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+.forwarding-list {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow: auto;
+    padding-right: 2px;
+}
+
+.forwarding-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-tertiary);
+    font-size: 12px;
+}
+
+.forwarding-card {
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+}
+
+.forwarding-info {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.forwarding-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.forwarding-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+}
+
+.forwarding-status.is-running {
+    border-color: rgba(0, 195, 137, 0.35);
+    color: var(--success);
+    background: rgba(0, 195, 137, 0.08);
+}
+
+.forwarding-status.is-stopped {
+    border-color: rgba(107, 107, 107, 0.2);
+    color: var(--text-tertiary);
+}
+
+.forwarding-meta {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.forwarding-kind {
+    padding: 2px 6px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.forwarding-connection {
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+
+.forwarding-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.forwarding-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.forwarding-form-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 6px;
+}

@@ -13,6 +13,7 @@ export type TerminalThemeName =
 
 export type AppSettings = {
   "i18n.locale": "zh-CN" | "en-US";
+  "ui.theme": "bright" | "mint" | "dark";
   "connection.autoConnect": boolean;
   "connection.savePassword": boolean;
   "connection.keepAlive": boolean;
@@ -43,6 +44,7 @@ export const DEFAULT_TERMINAL_FONT_FAMILY =
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   "i18n.locale": "zh-CN",
+  "ui.theme": "bright",
   "connection.autoConnect": false,
   "connection.savePassword": true,
   "connection.keepAlive": true,

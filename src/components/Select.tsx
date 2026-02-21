@@ -1,5 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type { ReactNode, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { AppIcon } from "./AppIcon";
 import "./Select.css";
 
@@ -51,6 +53,7 @@ export function Select({
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>();
 
   const selectedIndex = useMemo(
     () => options.findIndex((opt) => opt.value === value),
@@ -65,13 +68,64 @@ export function Select({
     open && activeIndex >= 0 ? `${listboxId}-opt-${activeIndex}` : undefined;
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setMenuStyle(undefined);
+      return;
+    }
     const initialIndex =
       selectedIndex >= 0 && !options[selectedIndex]?.disabled
         ? selectedIndex
         : findNextEnabledIndex(options, -1, 1);
     setActiveIndex(initialIndex);
   }, [open, options, selectedIndex]);
+
+  useEffect(() => {
+    if (!open) {
+      setMenuStyle(undefined);
+      return;
+    }
+
+    const gap = 6;
+    const viewportMargin = 8;
+    const maxMenuHeight = 260;
+
+    const updateMenuPosition = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const width = Math.min(rect.width, window.innerWidth - viewportMargin * 2);
+      const left = Math.min(
+        window.innerWidth - viewportMargin - width,
+        Math.max(viewportMargin, rect.left),
+      );
+      const spaceBelow = window.innerHeight - rect.bottom - viewportMargin;
+      const spaceAbove = rect.top - viewportMargin;
+      const openUpward = spaceBelow < 180 && spaceAbove > spaceBelow;
+      const available = openUpward ? spaceAbove : spaceBelow;
+      const height = Math.max(120, Math.min(maxMenuHeight, available - gap));
+      const top = openUpward
+        ? rect.top - gap - height
+        : rect.bottom + gap;
+
+      setMenuStyle({
+        position: "fixed",
+        top: Math.max(viewportMargin, Math.round(top)),
+        left: Math.round(left),
+        width: Math.round(width),
+        minWidth: Math.round(width),
+        maxHeight: Math.round(height),
+      });
+    };
+
+    updateMenuPosition();
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+
+    return () => {
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -216,45 +270,49 @@ export function Select({
           className="select-caret"
         />
       </button>
-      {open && (
-        <div
-          className={["select-menu", menuClassName].filter(Boolean).join(" ")}
-          role="listbox"
-          id={listboxId}
-          ref={menuRef}
-        >
-          {options.map((option, index) => {
-            const isSelected = option.value === value;
-            const isActive = index === activeIndex;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                role="option"
-                id={`${listboxId}-opt-${index}`}
-                aria-selected={isSelected}
-                className={[
-                  "select-option",
-                  isSelected ? "select-option--selected" : "",
-                  isActive ? "select-option--active" : "",
-                  option.disabled ? "select-option--disabled" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                onMouseEnter={() => setActiveIndex(index)}
-                onClick={() => {
-                  if (!option.disabled) {
-                    handleSelect(option.value);
-                  }
-                }}
-                disabled={option.disabled}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {open &&
+        menuStyle &&
+        createPortal(
+          <div
+            className={["select-menu", "select-menu--portal", menuClassName].filter(Boolean).join(" ")}
+            role="listbox"
+            id={listboxId}
+            ref={menuRef}
+            style={menuStyle}
+          >
+            {options.map((option, index) => {
+              const isSelected = option.value === value;
+              const isActive = index === activeIndex;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  id={`${listboxId}-opt-${index}`}
+                  aria-selected={isSelected}
+                  className={[
+                    "select-option",
+                    isSelected ? "select-option--selected" : "",
+                    isActive ? "select-option--active" : "",
+                    option.disabled ? "select-option--disabled" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onClick={() => {
+                    if (!option.disabled) {
+                      handleSelect(option.value);
+                    }
+                  }}
+                  disabled={option.disabled}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

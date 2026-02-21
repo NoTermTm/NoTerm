@@ -9,6 +9,7 @@ import { AppIcon } from "./AppIcon";
 import { ConnectionsPage } from "../pages/Connections";
 import { KeysPage } from "../pages/Keys";
 import { SettingsPage } from "../pages/Settings";
+import { ForwardingPage } from "../pages/Forwarding";
 import { SpacePage } from "../pages/Space";
 import type { ScriptItem } from "../store/scripts";
 import {
@@ -81,6 +82,7 @@ export function Layout() {
   const SETTINGS_TAB_ID = "__settings__";
   const KEYS_TAB_ID = "__keys__";
   const SPACE_TAB_ID = "__space__";
+  const FORWARDING_TAB_ID = "__forwarding__";
   const MESSAGE_LIMIT = 50;
 
   useEffect(() => {
@@ -112,6 +114,7 @@ export function Layout() {
       disposed = true;
     };
   }, []);
+
 
   useEffect(() => {
     const onSettingsUpdate = (event: Event) => {
@@ -238,6 +241,7 @@ export function Layout() {
           activeTabId !== SETTINGS_TAB_ID &&
           activeTabId !== KEYS_TAB_ID &&
           activeTabId !== SPACE_TAB_ID &&
+          activeTabId !== FORWARDING_TAB_ID &&
           !isSpaceScriptTab(activeTabId)
         ) {
           navigate("/connections");
@@ -565,6 +569,12 @@ export function Layout() {
       panelId: "connections",
     },
     {
+      path: "/forwarding",
+      icon: "material-symbols:forward-rounded",
+      label: t("nav.forwarding"),
+      panelId: null,
+    },
+    {
       path: "/space",
       icon: "material-symbols:folder-special-outline-rounded",
       label: t("nav.space"),
@@ -634,6 +644,7 @@ export function Layout() {
           tab.id !== SETTINGS_TAB_ID &&
           tab.id !== KEYS_TAB_ID &&
           tab.id !== SPACE_TAB_ID &&
+          tab.id !== FORWARDING_TAB_ID &&
           !isSpaceScriptTab(tab.id),
       );
       
@@ -676,6 +687,24 @@ export function Layout() {
       }
       
       setActiveTabId(SETTINGS_TAB_ID);
+      setActivePanel(null);
+      navigate(path);
+      return;
+    }
+
+    if (path === "/forwarding") {
+      const existingForwardingTab = tabs.find((tab) => tab.id === FORWARDING_TAB_ID);
+
+      if (!existingForwardingTab) {
+        const forwardingTab: Tab = {
+          id: FORWARDING_TAB_ID,
+          title: t("tab.forwarding.title"),
+          subtitle: t("tab.forwarding.subtitle"),
+        };
+        setTabs((prev) => [...prev, forwardingTab]);
+      }
+
+      setActiveTabId(FORWARDING_TAB_ID);
       setActivePanel(null);
       navigate(path);
       return;
@@ -743,6 +772,9 @@ export function Layout() {
     } else if (id === KEYS_TAB_ID) {
       navigate("/keys");
       setActivePanel(null);
+    } else if (id === FORWARDING_TAB_ID) {
+      navigate("/forwarding");
+      setActivePanel(null);
     } else if (id === SPACE_TAB_ID) {
       navigate("/space");
       setActivePanel(null);
@@ -774,6 +806,9 @@ export function Layout() {
           setActivePanel(null);
         } else if (lastTab.id === KEYS_TAB_ID) {
           navigate("/keys");
+          setActivePanel(null);
+        } else if (lastTab.id === FORWARDING_TAB_ID) {
+          navigate("/forwarding");
           setActivePanel(null);
         } else if (lastTab.id === SPACE_TAB_ID) {
           navigate("/space");
@@ -848,6 +883,26 @@ export function Layout() {
       setUnlocking(false);
     }
   };
+
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const applyTheme = (value?: AppSettings["ui.theme"] | null) => {
+      const next = (value ?? DEFAULT_APP_SETTINGS["ui.theme"]) as AppSettings["ui.theme"];
+      document.documentElement.dataset.theme = next;
+    };
+    void (async () => {
+      const store = await getAppSettingsStore();
+      const current = await store.get<AppSettings["ui.theme"]>("ui.theme");
+      applyTheme(current);
+      unlisten = await store.onKeyChange<AppSettings["ui.theme"]>("ui.theme", (value) => {
+        applyTheme(value);
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   const handleResetMasterKey = async () => {
     if (resetting) return;
@@ -989,6 +1044,9 @@ export function Layout() {
           <div style={{ display: location.pathname === "/settings" ? "block" : "none", height: "100%" }}>
             <SettingsPage />
           </div>
+          <div style={{ display: location.pathname === "/forwarding" ? "block" : "none", height: "100%" }}>
+            <ForwardingPage />
+          </div>
           <div style={{ display: location.pathname === "/space" ? "block" : "none", height: "100%" }}>
             <SpacePage
               tabs={tabs}
@@ -1015,7 +1073,7 @@ export function Layout() {
           >
             <div
               className="message-popover"
-              style={{ left: messagePanel.x, top: messagePanel.y }}
+              style={{ left: messagePanel.x, bottom: 10 }}
               onMouseDown={(event) => {
                 event.preventDefault();
                 event.stopPropagation();

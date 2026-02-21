@@ -22,7 +22,7 @@ import { AppIcon } from "./AppIcon";
 import { Select } from "./Select";
 import { Modal } from "./Modal";
 import { ScriptPicker } from "./ScriptPicker";
-import { sendAiChat, type AiMessage } from "../api/ai";
+import { sendAiChatStream, type AiMessage } from "../api/ai";
 import AiRenderer from "./AiRenderer2";
 import {
   DEFAULT_APP_SETTINGS,
@@ -48,6 +48,7 @@ interface XTerminalProps {
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
 type TransferTaskDirection = "upload" | "download";
 type TransferTaskStatus = "running" | "success" | "failed";
+type AiChatMessage = AiMessage & { createdAt: number; id: string };
 
 interface TransferTask {
   id: string;
@@ -77,6 +78,12 @@ const ANTHROPIC_MODEL_OPTIONS = [
   "claude-3-5-haiku-20241022",
 ];
 const MAX_TRANSFER_TASKS = 120;
+const createMessageId = () => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
 
 export function XTerminal({
   sessionId,
@@ -100,6 +107,8 @@ export function XTerminal({
   const [connError, setConnError] = useState<string | null>(null);
   const [endpointIp, setEndpointIp] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [endpointCopied, setEndpointCopied] = useState(false);
+  const endpointCopyTimerRef = useRef<number | null>(null);
   const [xtermBg, setXtermBg] = useState<string | undefined>(undefined);
   const [sftpOpen, setSftpOpen] = useState(false);
   const [sftpPath, setSftpPath] = useState("/");
@@ -140,7 +149,9 @@ export function XTerminal({
   const [aiOpen, setAiOpen] = useState(false);
   const [scriptTarget, setScriptTarget] = useState<"current" | "all">("current");
   const [scriptText, setScriptText] = useState("");
-  const [aiMessages, setAiMessages] = useState<Array<AiMessage & { createdAt: number }>>([]);
+  const [aiMessages, setAiMessages] = useState<AiChatMessage[]>([]);
+  const aiMessagesRef = useRef<AiChatMessage[]>([]);
+  const aiHistoryRef = useRef<HTMLDivElement>(null);
   const [aiInput, setAiInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -394,6 +405,18 @@ export function XTerminal({
     }
   };
 
+  const handleCopyEndpoint = async () => {
+    if (!endpointCopyText) return;
+    await clipboardWrite(endpointCopyText);
+    setEndpointCopied(true);
+    if (endpointCopyTimerRef.current) {
+      window.clearTimeout(endpointCopyTimerRef.current);
+    }
+    endpointCopyTimerRef.current = window.setTimeout(() => {
+      setEndpointCopied(false);
+    }, 1200);
+  };
+
   const readAiSettings = async () => {
     const store = await getAppSettingsStore();
     return {
@@ -446,12 +469,30 @@ export function XTerminal({
   }, []);
 
   useEffect(() => {
+    aiMessagesRef.current = aiMessages;
+  }, [aiMessages]);
+
+  const scrollAiToBottom = () => {
+    const el = aiHistoryRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  };
+
+  useEffect(() => {
+    if (!aiOpen) return;
+    const handle = requestAnimationFrame(() => {
+      scrollAiToBottom();
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [aiOpen, aiMessages]);
+
+  useEffect(() => {
     let disposed = false;
     const loadHistory = async () => {
       try {
         const store = await getAppSettingsStore();
         const raw = await store.get<
-          Array<AiMessage & { createdAt?: number }>
+          Array<AiMessage & { createdAt?: number; id?: string }>
         >(aiHistoryKey);
         if (!disposed && Array.isArray(raw) && raw.length > 0) {
           const normalized = raw
@@ -460,6 +501,7 @@ export function XTerminal({
               role: item.role,
               content: item.content,
               createdAt: item.createdAt ?? Date.now(),
+              id: item.id ?? createMessageId(),
             }));
           setAiMessages(normalized);
         }
@@ -541,10 +583,41 @@ export function XTerminal({
     [transferTasks],
   );
 
+  const openScriptPanel = () => {
+    setTransferPanelOpen(false);
+    setScriptPanelOpen(true);
+  };
+
+  const toggleScriptPanel = () => {
+    if (scriptPanelOpen) {
+      setScriptPanelOpen(false);
+      return;
+    }
+    setTransferPanelOpen(false);
+    setScriptPanelOpen(true);
+  };
+
+  const toggleTransferPanel = () => {
+    if (transferPanelOpen) {
+      setTransferPanelOpen(false);
+      return;
+    }
+    setScriptPanelOpen(false);
+    setTransferPanelOpen(true);
+  };
+
   const endpointLabel = useMemo(() => {
     if (!endpointIp) return "--";
     return endpointIp;
   }, [endpointIp]);
+  const endpointCopyText = useMemo(() => {
+    if (!endpointIp) return "";
+    if (endpointIp === t("terminal.endpoint.local")) return "";
+    return endpointIp;
+  }, [endpointIp, t]);
+  const endpointCopyLabel = endpointCopied
+    ? t("terminal.toolbar.endpoint.copied")
+    : t("terminal.toolbar.endpoint.copy");
 
   const latencyTone = useMemo(() => {
     if (latencyMs === null) return "unknown";
@@ -921,14 +994,12 @@ export function XTerminal({
       const delta = resizing.startX - event.clientX;
       const paneWidth = paneRef.current?.clientWidth ?? 0;
       const otherWidth =
+        (resizing.type === "sftp" || !sftpOpen ? 0 : sftpWidth) +
+        (resizing.type === "ai" || !aiOpen ? 0 : aiWidth);
+      const minWidth =
         resizing.type === "sftp"
-          ? aiOpen
-            ? aiWidth
-            : 0
-          : sftpOpen
-            ? sftpWidth
-            : 0;
-      const minWidth = resizing.type === "sftp" ? 220 : 260;
+          ? 220
+          : 260;
       const maxWidth = paneWidth
         ? Math.max(minWidth, paneWidth - otherWidth - 240)
         : minWidth + 320;
@@ -1168,7 +1239,7 @@ export function XTerminal({
   const handleInsertScript = (content: string) => {
     if (!content) return;
     setScriptText(content.trimEnd());
-    setScriptPanelOpen(true);
+    openScriptPanel();
   };
 
   const getTerminalContext = (lineCount = 40) => {
@@ -1209,9 +1280,21 @@ export function XTerminal({
     setAiError(null);
     setAiBusy(true);
 
-    const userMessage: AiMessage & { createdAt: number } = { role: "user", content, createdAt: Date.now() };
-    const nextMessages = [...aiMessages, userMessage];
-    setAiMessages(nextMessages);
+    const userMessage: AiChatMessage = {
+      id: createMessageId(),
+      role: "user",
+      content,
+      createdAt: Date.now(),
+    };
+    const assistantId = createMessageId();
+    const assistantMessage: AiChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      createdAt: Date.now(),
+    };
+    const nextMessages = [...aiMessagesRef.current, userMessage];
+    setAiMessages((prev) => [...prev, userMessage, assistantMessage]);
 
     try {
       const settings = await readAiSettings();
@@ -1221,17 +1304,24 @@ export function XTerminal({
         role: "system",
         content: t("terminal.ai.system"),
       };
-      const response = await sendAiChat(nextSettings, [
-        systemMessage,
-        ...nextMessages.map(({ role, content }) => ({ role, content })),
-      ]);
-      setAiMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: response, createdAt: Date.now() },
-      ]);
+      await sendAiChatStream(
+        nextSettings,
+        [systemMessage, ...nextMessages.map(({ role, content }) => ({ role, content }))],
+        (delta) => {
+          if (!delta) return;
+          setAiMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId ? { ...msg, content: msg.content + delta } : msg,
+            ),
+          );
+        },
+      );
     } catch (error) {
       const message = formatError(error);
       setAiError(message);
+      setAiMessages((prev) =>
+        prev.filter((msg) => msg.id !== assistantId || msg.content.trim()),
+      );
     } finally {
       setAiBusy(false);
     }
@@ -1242,7 +1332,7 @@ export function XTerminal({
     const context = getTerminalContext();
     if (!context) {
       setAiError(t("terminal.ai.noContext"));
-      setScriptPanelOpen(true);
+      openScriptPanel();
       setAiOpen(true);
       return;
     }
@@ -1387,6 +1477,7 @@ export function XTerminal({
     let term: Terminal | null = null;
     let fit: FitAddon | null = null;
     let unlistenOutput: (() => void) | null = null;
+    let unlistenDisconnect: (() => void) | null = null;
     let unlistenTheme: (() => void) | null = null;
     let unlistenFontSize: (() => void) | null = null;
     let unlistenFontFamily: (() => void) | null = null;
@@ -1474,12 +1565,26 @@ export function XTerminal({
         if (ev.type !== "keydown") return true;
 
         const key = ev.key.toLowerCase();
+        const isMac = /mac|iphone|ipad|ipod/.test(navigator.platform.toLowerCase());
         const isCopy =
           (ev.ctrlKey && ev.shiftKey && key === "c") ||
           (ev.metaKey && !ev.shiftKey && key === "c");
         const isPaste =
           (ev.ctrlKey && ev.shiftKey && key === "v") ||
           (ev.metaKey && !ev.shiftKey && key === "v");
+
+        if (
+          isMac &&
+          ev.altKey &&
+          !ev.metaKey &&
+          !ev.ctrlKey &&
+          (key === "arrowleft" || key === "arrowright")
+        ) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          enqueueTerminalWrite(key === "arrowleft" ? "\u001bb" : "\u001bf");
+          return false;
+        }
 
         if (isCopy) {
           if (!term.hasSelection()) return true;
@@ -1554,6 +1659,21 @@ export function XTerminal({
         },
       );
       unlistenOutput = unlisten;
+
+      const unlistenDisconnectEvent = await listen<{
+        session_id: string;
+        reason: string;
+      }>("terminal-disconnected", (event) => {
+        if (disposed) return;
+        if (event.payload.session_id !== sessionId) return;
+        pushTerminalLog("warn", `disconnected: ${event.payload.reason}`);
+        setConnStatus("error");
+        setConnError(t("terminal.session.disconnected"));
+        if (!isLocal) {
+          startReconnectFlow();
+        }
+      });
+      unlistenDisconnect = unlistenDisconnectEvent;
 
       // Handle user input
       disposable = term.onData((data) => {
@@ -1680,6 +1800,7 @@ export function XTerminal({
       unlistenFontSize?.();
       unlistenFontFamily?.();
       unlistenOutput?.();
+      unlistenDisconnect?.();
       removeContextMenu?.();
       unlistenFontWeight?.();
       unlistenCursorStyle?.();
@@ -1723,6 +1844,19 @@ export function XTerminal({
       if (timer) window.clearTimeout(timer);
     };
   }, [host, port, isLocal, t]);
+
+  useEffect(() => {
+    setEndpointCopied(false);
+  }, [endpointCopyText]);
+
+  useEffect(
+    () => () => {
+      if (endpointCopyTimerRef.current) {
+        window.clearTimeout(endpointCopyTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const statusIcon = useMemo(() => {
     if (connStatus === "connecting") return "material-symbols:sync-rounded";
@@ -2219,7 +2353,7 @@ export function XTerminal({
                   </button>
                 </div>
               <div className="xterminal-ai-body">
-                <div className="xterminal-ai-history">
+                <div className="xterminal-ai-history" ref={aiHistoryRef}>
                   {aiMessages.length === 0 && (
                     <div className="xterminal-ai-empty">
                       {t("terminal.ai.empty")}
@@ -2230,7 +2364,7 @@ export function XTerminal({
                     const grouped = prev && prev.role === msg.role;
                     return (
                     <div
-                      key={`${msg.role}-${index}`}
+                      key={msg.id}
                       className={`xterminal-ai-message xterminal-ai-message--${msg.role}${grouped ? " xterminal-ai-message--grouped" : ""}`}
                     >
                       <div className="xterminal-ai-content">
@@ -2351,13 +2485,24 @@ export function XTerminal({
             <span className="xterminal-toolbar-label">
               {t("terminal.toolbar.endpoint")}
             </span>
-            <span className="xterminal-toolbar-value">{endpointLabel}</span>
+            <button
+              type="button"
+              className={`xterminal-toolbar-value xterminal-toolbar-value--copy ${
+                endpointCopied ? "is-copied" : ""
+              }`}
+              onClick={() => void handleCopyEndpoint()}
+              disabled={!endpointCopyText}
+              title={endpointCopyLabel}
+              aria-label={endpointCopyLabel}
+            >
+              {endpointLabel}
+            </button>
           </div>
 
           <button
             type="button"
             className="xterminal-toolbar-btn"
-            onClick={() => setScriptPanelOpen((prev) => !prev)}
+            onClick={toggleScriptPanel}
             title={t("terminal.toolbar.script")}
           >
             <AppIcon icon="material-symbols:terminal-rounded" size={16} />
@@ -2366,7 +2511,7 @@ export function XTerminal({
           <button
             type="button"
             className={`xterminal-toolbar-btn ${transferPanelOpen ? "xterminal-toolbar-btn--active" : ""}`}
-            onClick={() => setTransferPanelOpen((prev) => !prev)}
+            onClick={toggleTransferPanel}
             title={t("terminal.transfer.title")}
           >
             <AppIcon icon="material-symbols:download-rounded" size={16} />

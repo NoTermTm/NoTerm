@@ -7,16 +7,13 @@ import {
   DEFAULT_TERMINAL_FONT_FAMILY,
 } from "../store/appSettings";
 import { load } from "@tauri-apps/plugin-store";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { TERMINAL_THEME_OPTIONS, getXtermTheme } from "../terminal/xtermThemes";
 import { sendAiChat, type AiMessage } from "../api/ai";
 import { generateSalt, hashMasterKey } from "../utils/security";
 import { getModifierKeyName } from "../utils/platform";
-import {
-  clearMasterKeySession,
-  setMasterKeySession,
-} from "../utils/securitySession";
+import { clearMasterKeySession, setMasterKeySession } from "../utils/securitySession";
 import { getVersion } from "@tauri-apps/api/app";
 import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
 import { useI18n } from "../i18n";
@@ -55,6 +52,12 @@ const ANTHROPIC_MODEL_OPTIONS = [
   { label: "claude-3-5-haiku-20241022", value: "claude-3-5-haiku-20241022" },
 ];
 
+const APP_THEME_OPTIONS = [
+  { labelKey: "settings.theme.bright", value: "bright" },
+  { labelKey: "settings.theme.mint", value: "mint" },
+  { labelKey: "settings.theme.dark", value: "dark" },
+];
+
 const LOCK_TIMEOUT_OPTIONS = [
   { labelKey: "settings.security.lock.none", value: 0 },
   { labelKey: "settings.security.lock.5", value: 5 },
@@ -77,6 +80,8 @@ export function SettingsPage() {
   const [masterKeyMessage, setMasterKeyMessage] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [_, setExportMessage] = useState<string | null>(null);
+  const [importStatus, setImportStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [_importMessage, setImportMessage] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string>("--");
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "up-to-date" | "downloading" | "installed" | "error"
@@ -107,6 +112,9 @@ export function SettingsPage() {
         "i18n.locale":
           (await store.get<AppSettings["i18n.locale"]>("i18n.locale")) ??
           DEFAULT_APP_SETTINGS["i18n.locale"],
+        "ui.theme":
+          (await store.get<AppSettings["ui.theme"]>("ui.theme")) ??
+          DEFAULT_APP_SETTINGS["ui.theme"],
         "connection.autoConnect":
           (await store.get<boolean>("connection.autoConnect")) ??
           DEFAULT_APP_SETTINGS["connection.autoConnect"],
@@ -307,10 +315,128 @@ export function SettingsPage() {
     setMasterKeyMessage(null);
   }, [masterKeyInput, masterKeyConfirm]);
 
+
   useEffect(() => {
     setExportStatus("idle");
     setExportMessage(null);
   }, []);
+
+  useEffect(() => {
+    setImportStatus("idle");
+    setImportMessage(null);
+  }, []);
+
+  const handleImportConfig = async () => {
+    setImportStatus("loading");
+    setImportMessage(null);
+    try {
+      const path = await openDialog({
+        filters: [{ name: "JSON", extensions: ["json"] }],
+        multiple: false,
+      });
+      if (!path) {
+        setImportStatus("idle");
+        return;
+      }
+      const filePath = Array.isArray(path) ? path[0] : path;
+      if (!filePath) {
+        setImportStatus("idle");
+        return;
+      }
+      const raw = await readTextFile(filePath);
+      const payload = JSON.parse(raw);
+      if (!payload || typeof payload !== "object") {
+        throw new Error(t("settings.data.import.invalid"));
+      }
+      const importedSettings = (payload as { settings?: Partial<AppSettings> }).settings ?? {};
+      const connections = Array.isArray((payload as any).connections)
+        ? (payload as any).connections
+        : [];
+      const profiles = Array.isArray((payload as any).profiles)
+        ? (payload as any).profiles
+        : [];
+
+      const settingsStore = await getAppSettingsStore();
+      const keys = Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>;
+      const current = {} as Record<keyof AppSettings, AppSettings[keyof AppSettings]>;
+      for (const key of keys) {
+        const stored = await settingsStore.get<AppSettings[typeof key]>(key);
+        current[key] = (stored ?? DEFAULT_APP_SETTINGS[key]) as AppSettings[typeof key];
+      }
+
+      const protectedKeys = new Set<keyof AppSettings>([
+        "security.masterKeyHash",
+        "security.masterKeySalt",
+        "security.masterKeyEncSalt",
+        "ai.openai.apiKey",
+        "ai.anthropic.apiKey",
+      ]);
+
+      const next = { ...current } as Record<
+        keyof AppSettings,
+        AppSettings[keyof AppSettings]
+      >;
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(importedSettings, key)) {
+          const value = importedSettings[key];
+          if (
+            protectedKeys.has(key) &&
+            (value === "" || value === null || typeof value === "undefined")
+          ) {
+            continue;
+          }
+          next[key] = (value as AppSettings[typeof key]) ?? next[key];
+        }
+      }
+
+      for (const key of keys) {
+        await writeAppSetting(key, next[key] as AppSettings[typeof key]);
+      }
+      setSettings(next as AppSettings);
+
+      const connectionStore = await load("connections.json");
+      await connectionStore.set("connections", connections);
+      await connectionStore.save();
+      const keysStore = await load("keys.json");
+      await keysStore.set("profiles", profiles);
+      await keysStore.save();
+
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("master-key-updated"));
+        window.dispatchEvent(new CustomEvent("auth-profiles-updated"));
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("settings.data.import.success"),
+              detail: t("settings.data.import.success.desc"),
+              tone: "success",
+              toast: true,
+              store: false,
+            },
+          }),
+        );
+      }
+
+      setImportStatus("success");
+      setImportMessage(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setImportStatus("error");
+      setImportMessage(null);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("settings.data.import.fail"),
+              detail: message || t("settings.data.import.fail"),
+              tone: "error",
+              autoOpen: true,
+            },
+          }),
+        );
+      }
+    }
+  };
 
   const handleSetMasterKey = async () => {
     if (masterKeyInput.trim().length < 6) {
@@ -400,7 +526,7 @@ export function SettingsPage() {
     }
   };
 
-  const handleClearMasterKey = () => {
+  const handleClearMasterKey = async () => {
     updateSetting("security.masterKeyHash", "");
     updateSetting("security.masterKeySalt", "");
     updateSetting("security.masterKeyEncSalt", "");
@@ -414,6 +540,7 @@ export function SettingsPage() {
       window.dispatchEvent(new CustomEvent("master-key-updated"));
     }
   };
+
 
   const handleExportConfig = async () => {
     setExportStatus("saving");
@@ -738,6 +865,25 @@ export function SettingsPage() {
                 { value: "zh-CN", label: t("settings.language.zh") },
                 { value: "en-US", label: t("settings.language.en") },
               ]}
+            />
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">{t("settings.theme.label")}</div>
+            <div className="settings-item-description">{t("settings.theme.desc")}</div>
+          </div>
+          <div className="settings-item-control">
+            <Select
+              className="settings-select"
+              value={settings["ui.theme"]}
+              onChange={(nextValue) =>
+                updateSetting("ui.theme", nextValue as AppSettings["ui.theme"])
+              }
+              options={APP_THEME_OPTIONS.map((option) => ({
+                value: option.value,
+                label: t(option.labelKey),
+              }))}
             />
           </div>
         </div>
@@ -1127,8 +1273,8 @@ export function SettingsPage() {
                     lineHeight: settings["terminal.lineHeight"],
                   }}
                 >
-                  <span style={{ color: previewTheme.green }}>orcatem</span>{" "}
-                  <span style={{ color: previewTheme.blue }}>OpenCloudOS</span>$ ls
+                  <span style={{ color: previewTheme.green }}>NoTerm</span>{" "}
+                  <span style={{ color: previewTheme.blue }}>root</span>$ ls
                   {"\n"}-drwxr-xr-x 1 root  <span style={{ color: previewTheme.yellow }}>Document</span>
                   {"\n"}-drwxr-xr-x 1 root  <span style={{ background: previewTheme.green, color: previewTheme.background, padding: "0 4px", borderRadius: 3 }}>Downloads</span>
                   {"\n"}-drwxr-xr-x 1 root  <span style={{ background: previewSelection, color: previewTheme.foreground, padding: "0 4px", borderRadius: 3 }}>Pictures</span>
@@ -1356,6 +1502,26 @@ export function SettingsPage() {
               {exportStatus === "saving"
                 ? t("settings.data.export.exporting")
                 : t("settings.data.export.action")}
+            </button>
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">{t("settings.data.import")}</div>
+            <div className="settings-item-description">
+              {t("settings.data.import.desc")}
+            </div>
+          </div>
+          <div className="settings-item-control settings-item-control--stack">
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              onClick={() => void handleImportConfig()}
+              disabled={importStatus === "loading"}
+            >
+              {importStatus === "loading"
+                ? t("settings.data.import.importing")
+                : t("settings.data.import.action")}
             </button>
           </div>
         </div>

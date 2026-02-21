@@ -3,8 +3,9 @@ use ssh2::Session;
 use ssh2::FileStat;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::Path;
 use std::time::Duration;
 
@@ -56,10 +57,44 @@ pub struct SftpEntry {
     pub perm: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ForwardKind {
+    Local,
+    Remote,
+    Dynamic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardConfig {
+    pub id: String,
+    pub kind: ForwardKind,
+    pub connection: SshConnection,
+    pub local_bind_host: Option<String>,
+    pub local_bind_port: Option<u16>,
+    pub remote_bind_host: Option<String>,
+    pub remote_bind_port: Option<u16>,
+    pub target_host: Option<String>,
+    pub target_port: Option<u16>,
+}
+
+#[derive(Clone)]
+struct ForwardHandle {
+    stop: Arc<AtomicBool>,
+    session: Arc<Mutex<Session>>,
+}
+
 #[derive(Clone, Serialize)]
 struct TerminalOutput {
     session_id: String,
     data: String,
+}
+
+#[derive(Clone, Serialize)]
+struct TerminalDisconnected {
+    session_id: String,
+    reason: String,
 }
 
 #[derive(Clone)]
@@ -68,15 +103,45 @@ pub struct SshManager {
     channels: Arc<Mutex<HashMap<String, Arc<Mutex<ssh2::Channel>>>>>,
     sftp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>, // 独立的 SFTP 会话
     connections: Arc<Mutex<HashMap<String, SshConnection>>>, // 存储连接信息
+    forwards: Arc<Mutex<HashMap<String, ForwardHandle>>>, // 端口转发
 }
 
 impl SshManager {
+    const LIBSSH2_ERROR_EAGAIN: i32 = -37;
+
+    fn open_direct_tcpip(
+        session: &Arc<Mutex<Session>>,
+        host: &str,
+        port: u16,
+    ) -> anyhow::Result<ssh2::Channel> {
+        for _ in 0..30 {
+            let result = {
+                let sess = session.lock().unwrap();
+                sess.channel_direct_tcpip(host, port, None)
+            };
+            match result {
+                Ok(channel) => return Ok(channel),
+                Err(err) => {
+                    if matches!(
+                        err.code(),
+                        ssh2::ErrorCode::Session(code) if code == Self::LIBSSH2_ERROR_EAGAIN
+                    ) {
+                        std::thread::sleep(Duration::from_millis(20));
+                        continue;
+                    }
+                    return Err(anyhow::anyhow!(err));
+                }
+            }
+        }
+        Err(anyhow::anyhow!("Timed out opening direct-tcpip channel"))
+    }
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             channels: Arc::new(Mutex::new(HashMap::new())),
             sftp_sessions: Arc::new(Mutex::new(HashMap::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
+            forwards: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -99,6 +164,7 @@ impl SshManager {
         sess.set_timeout(30000); // 30秒超时
         sess.handshake()
             .map_err(|e| anyhow::anyhow!("SSH handshake failed: {}", e))?;
+        sess.set_keepalive(true, 15);
 
         let effective_username = if connection.username.trim().is_empty() {
             std::env::var("USER")
@@ -166,10 +232,73 @@ impl SshManager {
         Ok(sess)
     }
 
+    fn spawn_keepalive_for_session(
+        &self,
+        session_id: String,
+        session: Arc<Mutex<Session>>,
+    ) {
+        let sessions = self.sessions.clone();
+        std::thread::spawn(move || {
+            loop {
+                {
+                    let sessions_guard = sessions.lock().unwrap();
+                    if !sessions_guard.contains_key(&session_id) {
+                        break;
+                    }
+                }
+                let wait = {
+                    let sess = session.lock().unwrap();
+                    match sess.keepalive_send() {
+                        Ok(wait) => wait,
+                        Err(err) => {
+                            if matches!(err.code(), ssh2::ErrorCode::Session(code) if code == Self::LIBSSH2_ERROR_EAGAIN) {
+                                1
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                };
+                let sleep_secs = if wait == 0 { 5 } else { wait.min(60) };
+                std::thread::sleep(Duration::from_secs(sleep_secs as u64));
+            }
+        });
+    }
+
+    fn spawn_keepalive_for_forward(
+        &self,
+        session: Arc<Mutex<Session>>,
+        stop: Arc<AtomicBool>,
+    ) {
+        std::thread::spawn(move || {
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let wait = {
+                    let sess = session.lock().unwrap();
+                    match sess.keepalive_send() {
+                        Ok(wait) => wait,
+                        Err(err) => {
+                            if matches!(err.code(), ssh2::ErrorCode::Session(code) if code == Self::LIBSSH2_ERROR_EAGAIN) {
+                                1
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                };
+                let sleep_secs = if wait == 0 { 5 } else { wait.min(60) };
+                std::thread::sleep(Duration::from_secs(sleep_secs as u64));
+            }
+        });
+    }
+
     pub fn connect(&self, connection: &SshConnection) -> anyhow::Result<String> {
         let sess = self.create_authenticated_session(connection)?;
 
         let session_id = connection.id.clone();
+        let session_arc = Arc::new(Mutex::new(sess));
 
         // 存储连接信息（用于后续创建 SFTP 会话）
         let mut connections = self.connections.lock().unwrap();
@@ -178,7 +307,10 @@ impl SshManager {
 
         // 存储 shell 会话
         let mut sessions = self.sessions.lock().unwrap();
-        sessions.insert(session_id.clone(), Arc::new(Mutex::new(sess)));
+        sessions.insert(session_id.clone(), session_arc.clone());
+        drop(sessions);
+
+        self.spawn_keepalive_for_session(session_id.clone(), session_arc);
 
         Ok(session_id)
     }
@@ -207,8 +339,10 @@ impl SshManager {
         // Start reading output in background
         let session_id_clone = session_id.to_string();
         let channel_clone = channel_arc.clone();
+        let app_handle = app_handle.clone();
         std::thread::spawn(move || {
             let mut buffer = [0u8; 8192];
+            let mut disconnected_reason: Option<String> = None;
             loop {
                 let mut channel_lock = match channel_clone.lock() {
                     Ok(ch) => ch,
@@ -224,15 +358,25 @@ impl SshManager {
                         });
                     }
                     Ok(_) => {
-                        // No data available, continue
+                        disconnected_reason = Some("eof".to_string());
+                        break;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // No data available in non-blocking mode, continue
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        disconnected_reason = Some(format!("error: {}", e));
+                        break;
+                    }
                 }
                 drop(channel_lock);
                 std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if let Some(reason) = disconnected_reason {
+                let _ = app_handle.emit("terminal-disconnected", TerminalDisconnected {
+                    session_id: session_id_clone.clone(),
+                    reason,
+                });
             }
         });
 
@@ -286,20 +430,38 @@ impl SshManager {
     }
 
     pub fn execute_command(&self, session_id: &str, command: &str) -> anyhow::Result<String> {
-        let sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+        let mut last_error: Option<anyhow::Error> = None;
 
-        let sess = session.lock().unwrap();
-        let mut channel = sess.channel_session()?;
-        channel.exec(command)?;
+        // Use a dedicated blocking session (shared with SFTP pool) to avoid
+        // "session would block" conflicts with the interactive shell session.
+        for attempt in 0..2 {
+            let command_session = self.get_or_create_sftp(session_id)?;
 
-        let mut output = String::new();
-        channel.read_to_string(&mut output)?;
-        channel.wait_close()?;
+            let result = {
+                let sess = command_session.lock().unwrap();
+                let mut channel = sess.channel_session()?;
+                channel.exec(command)?;
 
-        Ok(output)
+                let mut output = String::new();
+                channel.read_to_string(&mut output)?;
+                channel.wait_close()?;
+                anyhow::Ok(output)
+            };
+
+            match result {
+                Ok(output) => return Ok(output),
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt == 0 {
+                        // Drop cached dedicated session and recreate once.
+                        let mut sftp_sessions = self.sftp_sessions.lock().unwrap();
+                        sftp_sessions.remove(session_id);
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Failed to execute command")))
     }
 
     pub fn is_connected(&self, session_id: &str) -> bool {
@@ -538,6 +700,301 @@ impl SshManager {
             .map_err(|e| anyhow::anyhow!("Failed to upload file: {}", e))?;
 
         Ok(())
+    }
+
+    pub fn start_forward(&self, config: ForwardConfig) -> anyhow::Result<()> {
+        {
+            let forwards = self.forwards.lock().unwrap();
+            if forwards.contains_key(&config.id) {
+                return Err(anyhow::anyhow!("Forward already running"));
+            }
+        }
+
+        let session = self.create_authenticated_session(&config.connection)?;
+        let session = Arc::new(Mutex::new(session));
+        let stop = Arc::new(AtomicBool::new(false));
+        self.spawn_keepalive_for_forward(session.clone(), stop.clone());
+
+        match config.kind {
+            ForwardKind::Local => {
+                let bind_host = config.local_bind_host.unwrap_or_else(|| "127.0.0.1".to_string());
+                let bind_port = config.local_bind_port.ok_or_else(|| anyhow::anyhow!("Local bind port missing"))?;
+                let target_host = config.target_host.ok_or_else(|| anyhow::anyhow!("Target host missing"))?;
+                let target_port = config.target_port.ok_or_else(|| anyhow::anyhow!("Target port missing"))?;
+                self.start_local_forward(session.clone(), stop.clone(), bind_host, bind_port, target_host, target_port)?;
+            }
+            ForwardKind::Remote => {
+                let bind_host = config.remote_bind_host.unwrap_or_else(|| "0.0.0.0".to_string());
+                let bind_port = config.remote_bind_port.ok_or_else(|| anyhow::anyhow!("Remote bind port missing"))?;
+                let target_host = config.target_host.ok_or_else(|| anyhow::anyhow!("Target host missing"))?;
+                let target_port = config.target_port.ok_or_else(|| anyhow::anyhow!("Target port missing"))?;
+                self.start_remote_forward(session.clone(), stop.clone(), bind_host, bind_port, target_host, target_port)?;
+            }
+            ForwardKind::Dynamic => {
+                let bind_host = config.local_bind_host.unwrap_or_else(|| "127.0.0.1".to_string());
+                let bind_port = config.local_bind_port.ok_or_else(|| anyhow::anyhow!("Local bind port missing"))?;
+                self.start_dynamic_forward(session.clone(), stop.clone(), bind_host, bind_port)?;
+            }
+        }
+
+        let mut forwards = self.forwards.lock().unwrap();
+        forwards.insert(
+            config.id.clone(),
+            ForwardHandle {
+                stop,
+                session,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn stop_forward(&self, id: &str) -> anyhow::Result<()> {
+        let handle = {
+            let mut forwards = self.forwards.lock().unwrap();
+            forwards.remove(id)
+        };
+
+        if let Some(handle) = handle {
+            handle.stop.store(true, Ordering::Relaxed);
+            if let Ok(sess) = handle.session.lock() {
+                let _ = sess.disconnect(None, "Forward stopped", None);
+            }
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Forward not found"))
+        }
+    }
+
+    pub fn list_forwards(&self) -> Vec<String> {
+        let forwards = self.forwards.lock().unwrap();
+        forwards.keys().cloned().collect()
+    }
+
+    fn start_local_forward(
+        &self,
+        session: Arc<Mutex<Session>>,
+        stop: Arc<AtomicBool>,
+        bind_host: String,
+        bind_port: u16,
+        target_host: String,
+        target_port: u16,
+    ) -> anyhow::Result<()> {
+        let listener = TcpListener::bind((bind_host.as_str(), bind_port))?;
+        listener.set_nonblocking(true)?;
+        std::thread::spawn(move || {
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let session = session.clone();
+                        let target_host = target_host.clone();
+                        let stop = stop.clone();
+                        std::thread::spawn(move || {
+                            if stop.load(Ordering::Relaxed) {
+                                let _ = stream.shutdown(Shutdown::Both);
+                                return;
+                            }
+                            let _ = stream.set_nonblocking(false);
+                            match Self::open_direct_tcpip(&session, &target_host, target_port) {
+                                Ok(channel) => Self::pipe_streams(channel, stream),
+                                Err(_) => {
+                                    let _ = stream.shutdown(Shutdown::Both);
+                                }
+                            }
+                        });
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(())
+    }
+
+    fn start_dynamic_forward(
+        &self,
+        session: Arc<Mutex<Session>>,
+        stop: Arc<AtomicBool>,
+        bind_host: String,
+        bind_port: u16,
+    ) -> anyhow::Result<()> {
+        let listener = TcpListener::bind((bind_host.as_str(), bind_port))?;
+        listener.set_nonblocking(true)?;
+        std::thread::spawn(move || {
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let session = session.clone();
+                        let stop = stop.clone();
+                        std::thread::spawn(move || {
+                            if stop.load(Ordering::Relaxed) {
+                                let _ = stream.shutdown(Shutdown::Both);
+                                return;
+                            }
+                            let _ = stream.set_nonblocking(false);
+                            let target = match Self::socks5_handshake(&mut stream) {
+                                Ok(target) => target,
+                                Err(_) => {
+                                    let _ = stream.shutdown(Shutdown::Both);
+                                    return;
+                                }
+                            };
+                            let _ = stream.set_read_timeout(None);
+                            let _ = stream.set_write_timeout(None);
+                            match Self::open_direct_tcpip(&session, &target.0, target.1) {
+                                Ok(channel) => {
+                                    let _ = stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+                                    Self::pipe_streams(channel, stream);
+                                }
+                                Err(_) => {
+                                    let _ = stream.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+                                    let _ = stream.shutdown(Shutdown::Both);
+                                }
+                            }
+                        });
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(())
+    }
+
+    fn start_remote_forward(
+        &self,
+        session: Arc<Mutex<Session>>,
+        stop: Arc<AtomicBool>,
+        bind_host: String,
+        bind_port: u16,
+        target_host: String,
+        target_port: u16,
+    ) -> anyhow::Result<()> {
+        let mut listener = {
+            let sess = session.lock().unwrap();
+            let (listener, _) = sess.channel_forward_listen(bind_port, Some(&bind_host), None)?;
+            listener
+        };
+
+        std::thread::spawn(move || {
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let mut channel = match listener.accept() {
+                    Ok(channel) => channel,
+                    Err(_) => {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(80));
+                        continue;
+                    }
+                };
+                let target_host = target_host.clone();
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    if stop.load(Ordering::Relaxed) {
+                        let _ = channel.close();
+                        return;
+                    }
+                    match TcpStream::connect((target_host.as_str(), target_port)) {
+                        Ok(stream) => {
+                            Self::pipe_streams(channel, stream);
+                        }
+                        Err(_) => {
+                            let _ = channel.close();
+                        }
+                    }
+                });
+            }
+        });
+        Ok(())
+    }
+
+    fn pipe_streams(channel: ssh2::Channel, stream: TcpStream) {
+        let mut channel_read = channel.clone();
+        let mut channel_write = channel;
+        let mut stream_read = match stream.try_clone() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let mut stream_write = stream;
+
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut stream_read, &mut channel_write);
+            let _ = channel_write.close();
+        });
+
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut channel_read, &mut stream_write);
+            let _ = stream_write.shutdown(Shutdown::Both);
+        });
+    }
+
+    fn socks5_handshake(stream: &mut TcpStream) -> anyhow::Result<(String, u16)> {
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+
+        let mut header = [0u8; 2];
+        stream.read_exact(&mut header)?;
+        if header[0] != 0x05 {
+            return Err(anyhow::anyhow!("Unsupported SOCKS version"));
+        }
+        let nmethods = header[1] as usize;
+        let mut methods = vec![0u8; nmethods];
+        stream.read_exact(&mut methods)?;
+        if !methods.contains(&0x00) {
+            let _ = stream.write_all(&[0x05, 0xFF]);
+            return Err(anyhow::anyhow!("No supported auth method"));
+        }
+        stream.write_all(&[0x05, 0x00])?;
+
+        let mut req = [0u8; 4];
+        stream.read_exact(&mut req)?;
+        if req[0] != 0x05 || req[1] != 0x01 {
+            let _ = stream.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+            return Err(anyhow::anyhow!("Unsupported command"));
+        }
+        let addr_type = req[3];
+        let host = match addr_type {
+            0x01 => {
+                let mut buf = [0u8; 4];
+                stream.read_exact(&mut buf)?;
+                format!("{}.{}.{}.{}", buf[0], buf[1], buf[2], buf[3])
+            }
+            0x03 => {
+                let mut len = [0u8; 1];
+                stream.read_exact(&mut len)?;
+                let mut buf = vec![0u8; len[0] as usize];
+                stream.read_exact(&mut buf)?;
+                String::from_utf8_lossy(&buf).to_string()
+            }
+            0x04 => {
+                let mut buf = [0u8; 16];
+                stream.read_exact(&mut buf)?;
+                let segments: Vec<String> = buf
+                    .chunks(2)
+                    .map(|chunk| format!("{:02x}{:02x}", chunk[0], chunk[1]))
+                    .collect();
+                segments.join(":")
+            }
+            _ => return Err(anyhow::anyhow!("Unsupported address type")),
+        };
+
+        let mut port_buf = [0u8; 2];
+        stream.read_exact(&mut port_buf)?;
+        let port = u16::from_be_bytes(port_buf);
+        Ok((host, port))
     }
 }
 

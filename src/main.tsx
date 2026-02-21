@@ -22,6 +22,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
             <Route index element={<Navigate to="/connections" replace />} />
             <Route path="sessions" element={<Navigate to="/keys" replace />} />
             <Route path="connections" element={<div />} />
+            <Route path="forwarding" element={<div />} />
             <Route path="keys" element={<KeysPage />} />
             <Route path="files" element={<Placeholder messageKey="placeholder.sftp" />} />
             <Route path="profile" element={<Placeholder messageKey="placeholder.profile" />} />

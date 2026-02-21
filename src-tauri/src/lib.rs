@@ -3,7 +3,7 @@ mod ssh_manager;
 
 use serde::{Deserialize, Serialize};
 use local_pty::LocalPtyManager;
-use ssh_manager::{SftpEntry, SshConnection, SshManager};
+use ssh_manager::{ForwardConfig, SftpEntry, SshConnection, SshManager};
 use std::fs;
 use std::sync::Mutex;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -618,6 +618,36 @@ fn ssh_list_sessions(state: State<AppState>) -> Vec<String> {
 }
 
 #[tauri::command]
+async fn ssh_forward_start(
+    state: State<'_, AppState>,
+    config: ForwardConfig,
+) -> Result<(), String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || manager.start_forward(config))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_forward_stop(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || manager.stop_forward(&id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn ssh_forward_list(state: State<AppState>) -> Vec<String> {
+    let manager = state.ssh_manager.lock().unwrap();
+    manager.list_forwards()
+}
+
+#[tauri::command]
 async fn ssh_sftp_list_dir(
     state: State<'_, AppState>,
     session_id: String,
@@ -756,6 +786,9 @@ pub fn run() {
             ssh_execute_command,
             ssh_is_connected,
             ssh_list_sessions,
+            ssh_forward_start,
+            ssh_forward_stop,
+            ssh_forward_list,
             ssh_sftp_list_dir,
             ssh_sftp_download_file,
             ssh_sftp_upload_file,
