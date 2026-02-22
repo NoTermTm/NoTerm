@@ -94,6 +94,10 @@
     gap: 4px;
 }
 
+.xterminal-smart-menu {
+    min-width: 190px;
+}
+
 .xterminal-term-menu-item {
     border: none;
     background: transparent;
@@ -932,6 +936,162 @@
     flex-direction: column;
     gap: 12px;
     padding: 16px 16px 14px;
+}
+
+.xterminal-ai-insights {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.xterminal-ai-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-radius: 12px;
+    padding: 12px;
+    border: none;
+    background: var(--ai-surface-soft);
+    box-shadow: var(--ai-insight-card-shadow);
+}
+
+.xterminal-ai-card--log {
+    background: var(--ai-surface-muted);
+}
+
+.xterminal-ai-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.xterminal-ai-card-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.xterminal-ai-card-time {
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+.xterminal-ai-card-subtitle {
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--ai-insight-subtitle-bg);
+    border: 1px solid var(--ai-insight-subtitle-border);
+    border-radius: 8px;
+    padding: 5px 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.xterminal-ai-table {
+    border-radius: 10px;
+    border: 1px solid var(--ai-border);
+    background: var(--ai-insight-table-bg);
+    overflow: hidden;
+}
+
+.xterminal-ai-table-head,
+.xterminal-ai-table-row {
+    display: grid;
+    gap: 8px;
+    align-items: center;
+}
+
+.xterminal-ai-table-head--docker,
+.xterminal-ai-table-row--docker {
+    grid-template-columns: 1.2fr 1.2fr 1.1fr 1fr;
+}
+
+.xterminal-ai-table-head--ls,
+.xterminal-ai-table-row--ls {
+    grid-template-columns: 1.4fr 1fr 0.8fr 1fr;
+}
+
+.xterminal-ai-table-head {
+    padding: 8px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--ai-border);
+    background: var(--ai-insight-table-head-bg);
+}
+
+.xterminal-ai-table-body {
+    max-height: 190px;
+    overflow: auto;
+}
+
+.xterminal-ai-table-row {
+    width: 100%;
+    border: none;
+    background: transparent;
+    text-align: left;
+    color: var(--text-primary);
+    padding: 8px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.xterminal-ai-table-row + .xterminal-ai-table-row {
+    border-top: 1px solid color-mix(in srgb, var(--ai-border) 70%, transparent);
+}
+
+.xterminal-ai-table-row span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.xterminal-ai-table-row:hover {
+    background: var(--ai-insight-row-hover-bg);
+}
+
+.xterminal-ai-table-row:focus-visible {
+    outline: 2px solid var(--ai-insight-row-focus-outline);
+    outline-offset: -2px;
+    background: var(--ai-insight-row-focus-bg);
+}
+
+.xterminal-ai-log-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 160px;
+    overflow: auto;
+}
+
+.xterminal-ai-log-item {
+    border-radius: 8px;
+    border: 1px solid var(--ai-insight-log-item-border);
+    background: var(--ai-insight-log-item-bg);
+    padding: 8px 9px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.xterminal-ai-log-time {
+    font-size: 10px;
+    color: var(--text-tertiary);
+}
+
+.xterminal-ai-log-text {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-primary);
 }
 
 .xterminal-script-header {

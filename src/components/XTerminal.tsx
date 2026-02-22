@@ -30,6 +30,19 @@ import {
   type TerminalThemeName,
 } from "../store/appSettings";
 import { getXtermTheme } from "../terminal/xtermThemes";
+import {
+  categorizeLogLine,
+  detectSmartCommand,
+  parseDockerPsOutput,
+  parseLsOutput,
+  sanitizeTerminalChunk,
+  shellEscapeArg,
+  stripSymlinkSuffix,
+  type DockerPsRow,
+  type LogCategory,
+  type LsTableRow,
+  type SmartCommandInfo,
+} from "../terminal/smartTerminal";
 import { getModifierKeyAbbr, getModifierKeyLabel } from "../utils/platform";
 import { useI18n } from "../i18n";
 
@@ -63,6 +76,52 @@ interface TransferTask {
   finishedAt?: number;
 }
 
+type SmartTableState =
+  | {
+      kind: "ls";
+      command: string;
+      rows: LsTableRow[];
+      updatedAt: number;
+    }
+  | {
+      kind: "docker-ps";
+      command: string;
+      rows: DockerPsRow[];
+      updatedAt: number;
+    };
+
+type SmartMenuState =
+  | {
+      kind: "ls";
+      row: LsTableRow;
+      x: number;
+      y: number;
+    }
+  | {
+      kind: "docker-ps";
+      row: DockerPsRow;
+      x: number;
+      y: number;
+    };
+
+type SmartTrackedCommand = SmartCommandInfo & {
+  output: string;
+  startedAt: number;
+};
+
+type LogSignal = {
+  ts: number;
+  category: LogCategory;
+};
+
+type LogSummaryItem = {
+  id: string;
+  ts: number;
+  loginFailed: number;
+  dbTimeout: number;
+  errorCount: number;
+};
+
 const OPENAI_MODEL_OPTIONS = [
   "gpt-4o",
   "gpt-4o-mini",
@@ -78,6 +137,11 @@ const ANTHROPIC_MODEL_OPTIONS = [
   "claude-3-5-haiku-20241022",
 ];
 const MAX_TRANSFER_TASKS = 120;
+const MAX_SMART_OUTPUT_CHARS = 160_000;
+const MAX_LOG_SIGNALS = 900;
+const LOG_SUMMARY_WINDOW_MS = 60_000;
+const MAX_LOG_SUMMARIES = 12;
+
 const createMessageId = () => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -183,6 +247,15 @@ export function XTerminal({
   const lastInputAtRef = useRef<number>(0);
   const [termMenu, setTermMenu] = useState<{ x: number; y: number } | null>(null);
   const termMenuRef = useRef<HTMLDivElement>(null);
+  const [smartTable, setSmartTable] = useState<SmartTableState | null>(null);
+  const [smartMenu, setSmartMenu] = useState<SmartMenuState | null>(null);
+  const smartMenuRef = useRef<HTMLDivElement>(null);
+  const [logSummaries, setLogSummaries] = useState<LogSummaryItem[]>([]);
+  const inputCommandBufferRef = useRef("");
+  const inputEscapeModeRef = useRef(false);
+  const trackedCommandRef = useRef<SmartTrackedCommand | null>(null);
+  const logSignalsRef = useRef<LogSignal[]>([]);
+  const logSummaryTimerRef = useRef<number | null>(null);
   const autoCopyRef = useRef<boolean>(DEFAULT_APP_SETTINGS["terminal.autoCopy"]);
   const lastSelectionRef = useRef<string>("");
   const lastCopyAtRef = useRef<number>(0);
@@ -197,6 +270,183 @@ export function XTerminal({
     t(`terminal.transfer.status.${status}`);
   const transferDirectionLabel = (direction: TransferTaskDirection) =>
     t(`terminal.transfer.direction.${direction}`);
+  const hasAiInsights = !!smartTable || logSummaries.length > 0;
+
+  const scheduleLogSummaryUpdate = () => {
+    if (logSummaryTimerRef.current) return;
+    logSummaryTimerRef.current = window.setTimeout(() => {
+      logSummaryTimerRef.current = null;
+      const now = Date.now();
+      const windowStart = now - LOG_SUMMARY_WINDOW_MS;
+      const recentSignals = logSignalsRef.current.filter((item) => item.ts >= windowStart);
+      logSignalsRef.current = logSignalsRef.current.filter(
+        (item) => item.ts >= now - LOG_SUMMARY_WINDOW_MS * 5,
+      );
+      if (recentSignals.length === 0) return;
+
+      const loginFailed = recentSignals.filter(
+        (item) => item.category === "login_failed",
+      ).length;
+      const dbTimeout = recentSignals.filter(
+        (item) => item.category === "db_timeout",
+      ).length;
+      const errorCount = recentSignals.filter((item) => item.category === "error").length;
+      if (loginFailed === 0 && dbTimeout === 0 && errorCount === 0) return;
+
+      setLogSummaries((prev) => {
+        const last = prev[prev.length - 1];
+        if (
+          last &&
+          last.loginFailed === loginFailed &&
+          last.dbTimeout === dbTimeout &&
+          last.errorCount === errorCount
+        ) {
+          return prev;
+        }
+        const next = [
+          ...prev,
+          {
+            id: createMessageId(),
+            ts: now,
+            loginFailed,
+            dbTimeout,
+            errorCount,
+          },
+        ];
+        if (next.length > MAX_LOG_SUMMARIES) {
+          next.splice(0, next.length - MAX_LOG_SUMMARIES);
+        }
+        return next;
+      });
+      setAiOpen(true);
+    }, 1000);
+  };
+
+  const consumeTailOutput = (cleanChunk: string) => {
+    const signals: LogSignal[] = [];
+    const lines = cleanChunk.split(/\n/);
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const category = categorizeLogLine(line);
+      if (!category) continue;
+      signals.push({ ts: Date.now(), category });
+    }
+    if (signals.length === 0) return;
+    logSignalsRef.current = [...logSignalsRef.current, ...signals];
+    if (logSignalsRef.current.length > MAX_LOG_SIGNALS) {
+      logSignalsRef.current.splice(0, logSignalsRef.current.length - MAX_LOG_SIGNALS);
+    }
+    scheduleLogSummaryUpdate();
+  };
+
+  const beginSmartTracking = (tracking: SmartCommandInfo | null) => {
+    if (!tracking) {
+      trackedCommandRef.current = null;
+      setSmartMenu(null);
+      setSmartTable(null);
+      return;
+    }
+    trackedCommandRef.current = {
+      ...tracking,
+      output: "",
+      startedAt: Date.now(),
+    };
+    setSmartMenu(null);
+    setSmartTable(null);
+
+    if (tracking.kind === "tail-follow") {
+      logSignalsRef.current = [];
+      setLogSummaries([]);
+      return;
+    }
+  };
+
+  const consumeTerminalInput = (data: string) => {
+    for (const ch of data) {
+      if (inputEscapeModeRef.current) {
+        if (/[A-Za-z~]/.test(ch)) {
+          inputEscapeModeRef.current = false;
+        }
+        continue;
+      }
+
+      if (ch === "\u001b") {
+        inputEscapeModeRef.current = true;
+        continue;
+      }
+
+      if (ch === "\r") {
+        const command = inputCommandBufferRef.current.trim();
+        inputCommandBufferRef.current = "";
+        beginSmartTracking(command ? detectSmartCommand(command) : null);
+        continue;
+      }
+
+      if (ch === "\u0003") {
+        // Ctrl+C typically interrupts follow-mode commands.
+        inputCommandBufferRef.current = "";
+        trackedCommandRef.current = null;
+        continue;
+      }
+
+      if (ch === "\u0015") {
+        // Ctrl+U clears current shell line.
+        inputCommandBufferRef.current = "";
+        continue;
+      }
+
+      if (ch === "\u007f" || ch === "\b") {
+        inputCommandBufferRef.current = inputCommandBufferRef.current.slice(0, -1);
+        continue;
+      }
+
+      if (ch < " " || ch === "\t" || ch === "\n") continue;
+
+      inputCommandBufferRef.current += ch;
+      if (inputCommandBufferRef.current.length > 320) {
+        inputCommandBufferRef.current = inputCommandBufferRef.current.slice(-320);
+      }
+    }
+  };
+
+  const consumeSmartOutput = (chunk: string) => {
+    const tracking = trackedCommandRef.current;
+    if (!tracking) return;
+
+    const cleanChunk = sanitizeTerminalChunk(chunk);
+    if (!cleanChunk) return;
+
+    if (tracking.kind === "tail-follow") {
+      consumeTailOutput(cleanChunk);
+      return;
+    }
+
+    tracking.output = (tracking.output + cleanChunk).slice(-MAX_SMART_OUTPUT_CHARS);
+
+    if (tracking.kind === "ls") {
+      const rows = parseLsOutput(tracking.output);
+      if (!rows.length) return;
+      setSmartTable({
+        kind: "ls",
+        command: tracking.command,
+        rows,
+        updatedAt: Date.now(),
+      });
+      setAiOpen(true);
+      return;
+    }
+
+    const rows = parseDockerPsOutput(tracking.output);
+    if (!rows.length) return;
+    setSmartTable({
+      kind: "docker-ps",
+      command: tracking.command,
+      rows,
+      updatedAt: Date.now(),
+    });
+    setAiOpen(true);
+  };
 
   const writeToShell = (data: string) => {
     if (isLocal) {
@@ -216,6 +466,15 @@ export function XTerminal({
   useEffect(() => {
     sftpDraggingRef.current = sftpDragging;
   }, [sftpDragging]);
+
+  useEffect(
+    () => () => {
+      if (logSummaryTimerRef.current) {
+        window.clearTimeout(logSummaryTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const pushTerminalLog = (
     level: "info" | "warn" | "error",
@@ -1044,6 +1303,31 @@ export function XTerminal({
     };
   }, [termMenu]);
 
+  useEffect(() => {
+    if (!smartMenu) return;
+
+    const closeMenu = () => setSmartMenu(null);
+    const onPointerDown = (event: Event) => {
+      const target = event.target as Node | null;
+      if (smartMenuRef.current && target && smartMenuRef.current.contains(target)) {
+        return;
+      }
+      closeMenu();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("contextmenu", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("contextmenu", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [smartMenu]);
+
   useLayoutEffect(() => {
     if (!termMenu || !termMenuRef.current) return;
 
@@ -1058,6 +1342,21 @@ export function XTerminal({
     if (nextX === termMenu.x && nextY === termMenu.y) return;
     setTermMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
   }, [termMenu]);
+
+  useLayoutEffect(() => {
+    if (!smartMenu || !smartMenuRef.current) return;
+
+    const menuEl = smartMenuRef.current;
+    const rect = menuEl.getBoundingClientRect();
+    const margin = 8;
+    const maxX = window.innerWidth - rect.width - margin;
+    const maxY = window.innerHeight - rect.height - margin;
+    const nextX = clamp(smartMenu.x, margin, Math.max(margin, maxX));
+    const nextY = clamp(smartMenu.y, margin, Math.max(margin, maxY));
+
+    if (nextX === smartMenu.x && nextY === smartMenu.y) return;
+    setSmartMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
+  }, [smartMenu]);
 
   useLayoutEffect(() => {
     if (!sftpMenu || !sftpMenuRef.current) return;
@@ -1470,6 +1769,50 @@ export function XTerminal({
     setTermMenu(null);
   };
 
+  const openSmartMenu = (
+    event: {
+      preventDefault: () => void;
+      stopPropagation: () => void;
+      clientX: number;
+      clientY: number;
+    },
+    payload: SmartMenuState,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSmartMenu({
+      ...payload,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const runSmartAction = (command: string) => {
+    if (!command.trim()) return;
+    enqueueTerminalWrite(`${command}\n`);
+    setSmartMenu(null);
+  };
+
+  const handleSmartStopContainer = (row: DockerPsRow) => {
+    runSmartAction(`docker stop ${shellEscapeArg(row.containerId)}`);
+  };
+
+  const handleSmartEditFile = (row: LsTableRow) => {
+    const target = stripSymlinkSuffix(row.name).trim();
+    if (!target) return;
+    runSmartAction(`vi ${shellEscapeArg(target)}`);
+  };
+
+  const handleSmartEnterDir = (row: LsTableRow) => {
+    const target = stripSymlinkSuffix(row.name).trim();
+    if (!target) return;
+    runSmartAction(`cd ${shellEscapeArg(target)}`);
+  };
+
+  const handleSmartMenuClose = () => {
+    setSmartMenu(null);
+  };
+
   useEffect(() => {
     if (!terminalRef.current) return;
 
@@ -1647,6 +1990,7 @@ export function XTerminal({
           if (!term) return;
           if (event.payload.session_id === sessionId) {
             term.write(event.payload.data);
+            consumeSmartOutput(event.payload.data);
             lastOutputAtRef.current = Date.now();
             if (terminalIssueRef.current) {
               pushTerminalLog(
@@ -1678,6 +2022,7 @@ export function XTerminal({
       // Handle user input
       disposable = term.onData((data) => {
         lastInputAtRef.current = Date.now();
+        consumeTerminalInput(data);
         enqueueTerminalWrite(data);
       });
 
@@ -2353,8 +2698,118 @@ export function XTerminal({
                   </button>
                 </div>
               <div className="xterminal-ai-body">
+                {hasAiInsights && (
+                  <div className="xterminal-ai-insights">
+                    {smartTable && (
+                      <section className="xterminal-ai-card">
+                        <div className="xterminal-ai-card-head">
+                          <div className="xterminal-ai-card-title">
+                            <AppIcon icon="material-symbols:table-view-rounded" size={15} />
+                            {t("terminal.ai.smartTable.title")}
+                          </div>
+                          <span className="xterminal-ai-card-time">
+                            {new Date(smartTable.updatedAt).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <div className="xterminal-ai-card-subtitle">
+                          {t("terminal.ai.smartTable.command", { command: smartTable.command })}
+                        </div>
+                        {smartTable.kind === "docker-ps" ? (
+                          <div className="xterminal-ai-table">
+                            <div className="xterminal-ai-table-head xterminal-ai-table-head--docker">
+                              <span>{t("terminal.ai.table.docker.name")}</span>
+                              <span>{t("terminal.ai.table.docker.image")}</span>
+                              <span>{t("terminal.ai.table.docker.status")}</span>
+                              <span>{t("terminal.ai.table.docker.ports")}</span>
+                            </div>
+                            <div className="xterminal-ai-table-body">
+                              {smartTable.rows.map((row) => (
+                                <button
+                                  key={row.id}
+                                  type="button"
+                                  className="xterminal-ai-table-row xterminal-ai-table-row--docker"
+                                  onClick={(event) =>
+                                    openSmartMenu(event, {
+                                      kind: "docker-ps",
+                                      row,
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                    })
+                                  }
+                                >
+                                  <span>{row.name || row.containerId}</span>
+                                  <span>{row.image || "--"}</span>
+                                  <span>{row.status || "--"}</span>
+                                  <span>{row.ports || "--"}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="xterminal-ai-table">
+                            <div className="xterminal-ai-table-head xterminal-ai-table-head--ls">
+                              <span>{t("terminal.ai.table.ls.name")}</span>
+                              <span>{t("terminal.ai.table.ls.mode")}</span>
+                              <span>{t("terminal.ai.table.ls.size")}</span>
+                              <span>{t("terminal.ai.table.ls.modified")}</span>
+                            </div>
+                            <div className="xterminal-ai-table-body">
+                              {smartTable.rows.map((row) => (
+                                <button
+                                  key={row.id}
+                                  type="button"
+                                  className="xterminal-ai-table-row xterminal-ai-table-row--ls"
+                                  onClick={(event) =>
+                                    openSmartMenu(event, {
+                                      kind: "ls",
+                                      row,
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                    })
+                                  }
+                                >
+                                  <span>{row.name}</span>
+                                  <span>{row.mode}</span>
+                                  <span>{row.size}</span>
+                                  <span>{row.modified}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </section>
+                    )}
+
+                    {logSummaries.length > 0 && (
+                      <section className="xterminal-ai-card xterminal-ai-card--log">
+                        <div className="xterminal-ai-card-head">
+                          <div className="xterminal-ai-card-title">
+                            <AppIcon icon="material-symbols:analytics-rounded" size={15} />
+                            {t("terminal.ai.logSummary.title")}
+                          </div>
+                        </div>
+                        <div className="xterminal-ai-log-list">
+                          {[...logSummaries].reverse().map((item) => (
+                            <div key={item.id} className="xterminal-ai-log-item">
+                              <div className="xterminal-ai-log-time">
+                                {new Date(item.ts).toLocaleTimeString()}
+                              </div>
+                              <div className="xterminal-ai-log-text">
+                                {t("terminal.ai.logSummary.line", {
+                                  loginFailed: item.loginFailed,
+                                  dbTimeout: item.dbTimeout,
+                                  errorCount: item.errorCount,
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                  </div>
+                )}
                 <div className="xterminal-ai-history" ref={aiHistoryRef}>
-                  {aiMessages.length === 0 && (
+                  {aiMessages.length === 0 && !hasAiInsights && (
                     <div className="xterminal-ai-empty">
                       {t("terminal.ai.empty")}
                     </div>
@@ -2752,6 +3207,89 @@ export function XTerminal({
                   <AppIcon icon="material-symbols:forum-rounded" size={16} />
                   {t("terminal.menu.ai.ask")}
                 </button>
+              </div>
+            </div>,
+            document.body,
+          )}
+        {smartMenu &&
+          createPortal(
+            <div
+              className="xterminal-term-menu-layer"
+              onMouseDown={handleSmartMenuClose}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              <div
+                className="xterminal-term-menu xterminal-smart-menu"
+                ref={smartMenuRef}
+                style={{ left: smartMenu.x, top: smartMenu.y }}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                {smartMenu.kind === "docker-ps" ? (
+                  <>
+                    <button
+                      type="button"
+                      className="xterminal-term-menu-item"
+                      onClick={() => handleSmartStopContainer(smartMenu.row)}
+                    >
+                      <AppIcon icon="material-symbols:stop-circle-outline-rounded" size={16} />
+                      {t("terminal.ai.smartMenu.stopContainer")}
+                    </button>
+                    <button
+                      type="button"
+                      className="xterminal-term-menu-item"
+                      onClick={() => {
+                        void clipboardWrite(smartMenu.row.containerId);
+                        setSmartMenu(null);
+                      }}
+                    >
+                      <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
+                      {t("terminal.ai.smartMenu.copyContainerId")}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {smartMenu.row.entryType === "dir" ? (
+                      <button
+                        type="button"
+                        className="xterminal-term-menu-item"
+                        onClick={() => handleSmartEnterDir(smartMenu.row)}
+                      >
+                        <AppIcon icon="material-symbols:folder-open-rounded" size={16} />
+                        {t("terminal.ai.smartMenu.enterDir")}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="xterminal-term-menu-item"
+                        onClick={() => handleSmartEditFile(smartMenu.row)}
+                      >
+                        <AppIcon icon="material-symbols:edit-square-outline-rounded" size={16} />
+                        {t("terminal.ai.smartMenu.editFile")}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="xterminal-term-menu-item"
+                      onClick={() => {
+                        void clipboardWrite(stripSymlinkSuffix(smartMenu.row.name).trim());
+                        setSmartMenu(null);
+                      }}
+                    >
+                      <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
+                      {t("terminal.ai.smartMenu.copyFileName")}
+                    </button>
+                  </>
+                )}
               </div>
             </div>,
             document.body,
