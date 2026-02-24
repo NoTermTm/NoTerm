@@ -38,7 +38,7 @@ const AiRenderer2: React.FC<AiRendererProps> = ({ content, sessionId, useLocal, 
     const encoded = escapeAttr(code);
     const showSend = role === "assistant";
     const sendIcon =
-      "<svg class=\"ai-btn-icon\"  viewBox=\"0 0 24 24\"><path fill=\"currentColor\" d=\"M2 20V4h20v16zm2-2h16V8H4zm3.5-1l-1.4-1.4L8.675 13l-2.6-2.6L7.5 9l4 4zm4.5 0v-2h6v2z\"/></svg>";
+      "<svg class=\"ai-btn-icon\"  viewBox=\"0 0 24 24\"><path fill=\"currentColor\" d=\"M8 5v14l11-7z\"/></svg>";
     const copyIcon =
       "<svg class=\"ai-btn-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z\"/></svg>";
     const sendButton = showSend
@@ -68,7 +68,7 @@ const AiRenderer2: React.FC<AiRendererProps> = ({ content, sessionId, useLocal, 
       }
     }
     
-    return `\n<div class="ai-code-block">\n<pre><code class="language-${lang} hljs">${highlighted}</code></pre>\n<div class="ai-code-toolbar">\n    ${sendButton}\n    <button type=\"button\" class=\"ai-copy-btn\" data-action=\"copy\" data-code=\"${encoded}\" title=\"${copyLabel}\" aria-label=\"${copyLabel}\">${copyIcon}</button>\n  </div>\n </div>\n`;
+    return `\n<div class="ai-code-block">\n<div class="ai-code-toolbar">\n    ${sendButton}\n    <button type=\"button\" class=\"ai-copy-btn\" data-action=\"copy\" data-code=\"${encoded}\" title=\"${copyLabel}\" aria-label=\"${copyLabel}\">${copyIcon}</button>\n  </div>\n<pre><code class="language-${lang} hljs">${highlighted}</code></pre>\n </div>\n`;
   };
 
   useEffect(() => {

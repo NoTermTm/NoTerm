@@ -281,7 +281,7 @@ export function XTerminal({
   isSplit = false,
   onSendScript,
 }: XTerminalProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminalInstance = useRef<Terminal | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
@@ -351,7 +351,7 @@ export function XTerminal({
   } | null>(null);
   const [forceRunConfirmInput, setForceRunConfirmInput] = useState("");
   const [forceRunConfirmError, setForceRunConfirmError] = useState<string | null>(null);
-  const [aiWidth, setAiWidth] = useState(360);
+  const [aiWidth, setAiWidth] = useState(380);
   const [aiProvider, setAiProvider] = useState<"openai" | "anthropic">(
     DEFAULT_APP_SETTINGS["ai.provider"],
   );
@@ -430,21 +430,32 @@ export function XTerminal({
       {
         id: "ai",
         syntax: "#ai <question>",
+        insertText: "#ai ",
         description: t("terminal.ai.quick.command.ai"),
       },
       {
         id: "fix",
         syntax: "#fix <issue>",
+        insertText: "#fix ",
         description: t("terminal.ai.quick.command.fix"),
       },
       {
         id: "help",
         syntax: "#help",
+        insertText: "#help",
         description: t("terminal.ai.quick.command.help"),
       },
     ],
     [t],
   );
+  const shouldShowQuickOverlay = useMemo(() => {
+    const draft = terminalQuickDraft.trim();
+    if (!draft.startsWith("#")) return false;
+    if (draft === "#") return true;
+    const parsed = parseTerminalHashCommand(draft);
+    if (!parsed) return false;
+    return parsed.kind === "unknown";
+  }, [terminalQuickDraft]);
 
   const setTerminalQuickDraftState = (value: string) => {
     if (terminalQuickDraftRef.current === value) return;
@@ -456,9 +467,6 @@ export function XTerminal({
     const normalized = buffer.trimStart();
     const nextDraft = normalized.startsWith("#") ? normalized.slice(0, 160) : "";
     setTerminalQuickDraftState(nextDraft);
-    if (nextDraft) {
-      setAiOpen(true);
-    }
   };
 
   const scheduleLogSummaryUpdate = () => {
@@ -971,6 +979,20 @@ export function XTerminal({
     if (!endpointCopyText) return;
     await clipboardWrite(endpointCopyText);
     setEndpointCopied(true);
+    window.dispatchEvent(
+      new CustomEvent("app-message", {
+        detail: {
+          title: t("terminal.toolbar.endpoint.toast.title"),
+          detail: t("terminal.toolbar.endpoint.toast.detail", {
+            ip: endpointCopyText,
+          }),
+          tone: "success",
+          toast: true,
+          toastDuration: 1800,
+          store: false,
+        },
+      }),
+    );
     if (endpointCopyTimerRef.current) {
       window.clearTimeout(endpointCopyTimerRef.current);
     }
@@ -2017,6 +2039,7 @@ export function XTerminal({
   const buildConversationSystemPrompt = (terminalContext: string) =>
     [
       t("terminal.ai.system"),
+      locale === "en-US" ? "Respond in English only." : "请仅使用中文回复。",
       "",
       "Always tailor commands and paths to the terminal facts below.",
       "If information is uncertain, state assumptions briefly before commands.",
@@ -2028,86 +2051,169 @@ export function XTerminal({
     ].join("\n");
 
   const buildAgentSystemPrompt = (terminalContext: string) =>
-    [
-      "你是终端 Agent。目标是把用户请求转换成可审核的命令计划。",
-      `当前唯一可用会话 session_id: ${sessionId}`,
-      "你必须优先根据“终端事实”选择命令，尤其是操作系统与发行版差异。",
-      "",
-      buildTerminalFactsForPrompt(terminalContext),
-      "",
-      "必须只输出 JSON，不要输出 Markdown，不要输出代码块标记。",
-      "JSON 协议：",
-      "{",
-      '  "id": "plan_xxx",',
-      `  "session_id": "${sessionId}",`,
-      '  "summary": "简短摘要",',
-      '  "actions": [',
-      "    {",
-      '      "id": "action_xxx",',
-      `      "session_id": "${sessionId}",`,
-      '      "command": "单条命令",',
-      '      "risk": "low|medium|high|critical",',
-      '      "reason": "为什么执行",',
-      '      "expected_effect": "预期结果",',
-      '      "timeout_sec": 30',
-      "    }",
-      "  ]",
-      "}",
-      "限制：",
-      "- 最多 5 个 action；",
-      "- 禁止拼接命令，不要包含 ; && || |；",
-      "- 命令必须可在 shell 中直接执行；",
-      "- 如果无法生成可执行步骤，返回 actions=[] 并在 summary 说明原因。",
-    ].join("\n");
+    (locale === "en-US"
+      ? [
+          "You are a terminal Agent. Convert the user request into an auditable command plan.",
+          "Use English only for all text fields in JSON (summary, reason, expected_effect).",
+          `The only available session_id is: ${sessionId}`,
+          "You must prioritize terminal facts, especially OS/distribution differences.",
+          "",
+          buildTerminalFactsForPrompt(terminalContext),
+          "",
+          "Output JSON only. Do not output Markdown or code fences.",
+          "JSON contract:",
+          "{",
+          '  "id": "plan_xxx",',
+          `  "session_id": "${sessionId}",`,
+          '  "summary": "short summary",',
+          '  "actions": [',
+          "    {",
+          '      "id": "action_xxx",',
+          `      "session_id": "${sessionId}",`,
+          '      "command": "single command",',
+          '      "risk": "low|medium|high|critical",',
+          '      "reason": "why this action is needed",',
+          '      "expected_effect": "expected outcome",',
+          '      "timeout_sec": 30',
+          "    }",
+          "  ]",
+          "}",
+          "Constraints:",
+          "- At most 5 actions;",
+          "- No command chaining; do not include ; && || | ;",
+          "- Commands must be directly executable in shell;",
+          "- If no executable steps are possible, return actions=[] and explain in summary.",
+        ]
+      : [
+          "你是终端 Agent。目标是把用户请求转换成可审核的命令计划。",
+          "JSON 中所有文本字段（summary/reason/expected_effect）必须使用中文。",
+          `当前唯一可用会话 session_id: ${sessionId}`,
+          "你必须优先根据“终端事实”选择命令，尤其是操作系统与发行版差异。",
+          "",
+          buildTerminalFactsForPrompt(terminalContext),
+          "",
+          "必须只输出 JSON，不要输出 Markdown，不要输出代码块标记。",
+          "JSON 协议：",
+          "{",
+          '  "id": "plan_xxx",',
+          `  "session_id": "${sessionId}",`,
+          '  "summary": "简短摘要",',
+          '  "actions": [',
+          "    {",
+          '      "id": "action_xxx",',
+          `      "session_id": "${sessionId}",`,
+          '      "command": "单条命令",',
+          '      "risk": "low|medium|high|critical",',
+          '      "reason": "为什么执行",',
+          '      "expected_effect": "预期结果",',
+          '      "timeout_sec": 30',
+          "    }",
+          "  ]",
+          "}",
+          "限制：",
+          "- 最多 5 个 action；",
+          "- 禁止拼接命令，不要包含 ; && || |；",
+          "- 命令必须可在 shell 中直接执行；",
+          "- 如果无法生成可执行步骤，返回 actions=[] 并在 summary 说明原因。",
+        ]).join("\n");
 
   const buildAgentDecisionSystemPrompt = (terminalContext: string) =>
-    [
-      "你是终端 Agent 执行监督器。",
-      "根据已执行步骤结果，决定是否继续执行、更新后续计划或停止。",
-      "",
-      buildTerminalFactsForPrompt(terminalContext),
-      "",
-      "必须仅输出 JSON，不要输出 Markdown。格式：",
-      "{",
-      '  "decision": "continue | update_plan | stop",',
-      '  "note": "给用户的简短说明",',
-      '  "plan": {',
-      '    "id": "plan_xxx",',
-      `    "session_id": "${sessionId}",`,
-      '    "summary": "可选摘要",',
-      '    "actions": [',
-      "      {",
-      '        "id": "action_xxx",',
-      `        "session_id": "${sessionId}",`,
-      '        "command": "仅后续要执行的单条命令",',
-      '        "risk": "low|medium|high|critical",',
-      '        "reason": "原因",',
-      '        "expected_effect": "预期影响",',
-      '        "timeout_sec": 30',
-      "      }",
-      "    ]",
-      "  }",
-      "}",
-      "约束：",
-      "- plan.actions 只包含“尚未执行”的后续步骤；",
-      "- 不要重复已执行步骤；",
-      "- 每次最多返回 5 个后续步骤；",
-      "- 若无需变更计划，decision=continue 且省略 plan；",
-      "- 若应停止执行，decision=stop。",
-    ].join("\n");
+    (locale === "en-US"
+      ? [
+          "You are a terminal Agent execution supervisor.",
+          "Use English only for all text fields in JSON (note, summary, reason, expected_effect).",
+          "Based on completed steps, decide whether to continue, update the remaining plan, or stop.",
+          "",
+          buildTerminalFactsForPrompt(terminalContext),
+          "",
+          "Output JSON only. Do not output Markdown. Format:",
+          "{",
+          '  "decision": "continue | update_plan | stop",',
+          '  "note": "short user-facing note",',
+          '  "plan": {',
+          '    "id": "plan_xxx",',
+          `    "session_id": "${sessionId}",`,
+          '    "summary": "optional summary",',
+          '    "actions": [',
+          "      {",
+          '        "id": "action_xxx",',
+          `        "session_id": "${sessionId}",`,
+          '        "command": "single follow-up command only",',
+          '        "risk": "low|medium|high|critical",',
+          '        "reason": "reason",',
+          '        "expected_effect": "expected effect",',
+          '        "timeout_sec": 30',
+          "      }",
+          "    ]",
+          "  }",
+          "}",
+          "Constraints:",
+          "- plan.actions must include only not-yet-executed follow-up steps;",
+          "- Do not repeat executed steps;",
+          "- Return at most 5 follow-up steps;",
+          "- If no plan change is needed, set decision=continue and omit plan;",
+          "- If execution should stop, set decision=stop.",
+        ]
+      : [
+          "你是终端 Agent 执行监督器。",
+          "JSON 中所有文本字段（note/summary/reason/expected_effect）必须使用中文。",
+          "根据已执行步骤结果，决定是否继续执行、更新后续计划或停止。",
+          "",
+          buildTerminalFactsForPrompt(terminalContext),
+          "",
+          "必须仅输出 JSON，不要输出 Markdown。格式：",
+          "{",
+          '  "decision": "continue | update_plan | stop",',
+          '  "note": "给用户的简短说明",',
+          '  "plan": {',
+          '    "id": "plan_xxx",',
+          `    "session_id": "${sessionId}",`,
+          '    "summary": "可选摘要",',
+          '    "actions": [',
+          "      {",
+          '        "id": "action_xxx",',
+          `        "session_id": "${sessionId}",`,
+          '        "command": "仅后续要执行的单条命令",',
+          '        "risk": "low|medium|high|critical",',
+          '        "reason": "原因",',
+          '        "expected_effect": "预期影响",',
+          '        "timeout_sec": 30',
+          "      }",
+          "    ]",
+          "  }",
+          "}",
+          "约束：",
+          "- plan.actions 只包含“尚未执行”的后续步骤；",
+          "- 不要重复已执行步骤；",
+          "- 每次最多返回 5 个后续步骤；",
+          "- 若无需变更计划，decision=continue 且省略 plan；",
+          "- 若应停止执行，decision=stop。",
+        ]).join("\n");
 
   const buildAgentFinalReportSystemPrompt = (terminalContext: string) =>
-    [
-      "你是终端 Agent 汇报助手。",
-      "请根据执行记录给出用户可读总结。",
-      "",
-      buildTerminalFactsForPrompt(terminalContext),
-      "",
-      "输出要求：",
-      "- 使用简洁中文 Markdown；",
-      "- 必须包含：总体结论、每一步结果、失败原因（如有）、下一步建议；",
-      "- 每一步结果要明确成功/失败与关键信息。",
-    ].join("\n");
+    (locale === "en-US"
+      ? [
+          "You are a terminal Agent reporting assistant.",
+          "Produce a user-readable summary based on execution records.",
+          "",
+          buildTerminalFactsForPrompt(terminalContext),
+          "",
+          "Output requirements:",
+          "- Use concise English Markdown;",
+          "- Must include: overall conclusion, step-by-step results, failure reasons (if any), and next suggestions;",
+          "- For each step, clearly mark success/failure and key details.",
+        ]
+      : [
+          "你是终端 Agent 汇报助手。",
+          "请根据执行记录给出用户可读总结。",
+          "",
+          buildTerminalFactsForPrompt(terminalContext),
+          "",
+          "输出要求：",
+          "- 使用简洁中文 Markdown；",
+          "- 必须包含：总体结论、每一步结果、失败原因（如有）、下一步建议；",
+          "- 每一步结果要明确成功/失败与关键信息。",
+        ]).join("\n");
 
   const getEffectiveAiSettings = async () => {
     const settings = await readAiSettings();
@@ -2988,13 +3094,23 @@ export function XTerminal({
     if (!parsed) return;
     setAiOpen(true);
     setAiError(null);
-    const strictCommandPrompt = [
-      "你必须给出可执行的下一步命令，不能只说“我会帮你处理”。",
-      "输出格式：",
-      "1) 一句话说明方案；",
-      "2) 至少一个 bash 代码块，包含可直接执行命令；",
-      "3) 每条命令后简短说明作用与风险。",
-    ].join("\n");
+    const strictCommandPrompt =
+      locale === "en-US"
+        ? [
+            "Respond in English only.",
+            "You must provide executable next-step commands, not only high-level promises.",
+            "Output format:",
+            "1) One short sentence explaining the approach;",
+            "2) At least one bash fenced code block with runnable commands;",
+            "3) A short note after each command describing purpose and risk.",
+          ].join("\n")
+        : [
+            "你必须给出可执行的下一步命令，不能只说“我会帮你处理”。",
+            "输出格式：",
+            "1) 一句话说明方案；",
+            "2) 至少一个 bash 代码块，包含可直接执行命令；",
+            "3) 每条命令后简短说明作用与风险。",
+          ].join("\n");
 
     if (parsed.kind === "help") {
       const lines = terminalQuickCommands.map(
@@ -3241,6 +3357,14 @@ export function XTerminal({
     if (!command.trim()) return;
     enqueueTerminalWrite(`${command}\n`);
     setSmartMenu(null);
+  };
+
+  const handleApplyTerminalQuickCommand = (command: string) => {
+    if (!command.trim()) return;
+    inputCommandBufferRef.current = command;
+    syncTerminalQuickDraftFromBuffer(command);
+    enqueueTerminalWrite(`\u0015${command}`);
+    terminalInstance.current?.focus();
   };
 
   const handleSmartStopContainer = (row: DockerPsRow) => {
@@ -3740,7 +3864,7 @@ export function XTerminal({
                 title={t("terminal.split.vertical")}
                 aria-label={t("terminal.split.vertical")}
               >
-                <AppIcon icon="material-symbols:splitscreen-right" size={18} />
+                <AppIcon icon="proicons:panel-right-open" size={18} />
               </button>
               <button
                 className="xterminal-topbar-btn"
@@ -3749,7 +3873,7 @@ export function XTerminal({
                 title={t("terminal.split.horizontal")}
                 aria-label={t("terminal.split.horizontal")}
               >
-                <AppIcon icon="material-symbols:splitscreen-bottom" size={18} />
+                <AppIcon icon="proicons:panel-bottom-open" size={18} />
               </button>
             </>
           )}
@@ -3765,7 +3889,7 @@ export function XTerminal({
             }}
             title={t("terminal.sftp.open")}
           >
-            <AppIcon icon="material-symbols:folder-open-outline-rounded" size={18} />
+            <AppIcon icon="proicons:folder-multiple" size={18} />
           </button>
           <button
             className={`xterminal-topbar-btn ${aiOpen ? "xterminal-topbar-btn--active" : ""}`}
@@ -3773,19 +3897,8 @@ export function XTerminal({
             onClick={() => setAiOpen((prev) => !prev)}
             title={t("terminal.ai.toggle")}
           >
-            <AppIcon icon="material-symbols:forum-rounded" size={18} />
+            <AppIcon icon="proicons:openai" size={18} />
           </button>
-          {onCloseSession && (
-            <button
-              className="xterminal-topbar-btn"
-              type="button"
-              onClick={onCloseSession}
-              title={t("terminal.close")}
-              aria-label={t("terminal.close")}
-            >
-              <AppIcon icon="material-symbols:close-rounded" size={18} />
-            </button>
-          )}
           {connStatus === "error" && (
             <button
               className="xterminal-topbar-btn"
@@ -3828,6 +3941,33 @@ export function XTerminal({
         <div className="xterminal-pane" ref={paneRef}>
           <div className="xterminal-pad">
             <div className="xterminal-mount" ref={terminalRef} />
+            {shouldShowQuickOverlay && (
+              <section className="xterminal-quick-overlay">
+                <div className="xterminal-quick-overlay-head">
+                  <div className="xterminal-quick-overlay-title">
+                    <AppIcon icon="material-symbols:terminal-rounded" size={15} />
+                    {t("terminal.ai.quick.title")}
+                  </div>
+                </div>
+                <div className="xterminal-quick-overlay-current">
+                  {t("terminal.ai.quick.detected", { command: terminalQuickDraft })}
+                </div>
+                <div className="xterminal-quick-overlay-list">
+                  {terminalQuickCommands.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className="xterminal-quick-overlay-item"
+                      onClick={() => handleApplyTerminalQuickCommand(item.insertText)}
+                    >
+                      <div className="xterminal-quick-overlay-command">{item.syntax}</div>
+                      <div className="xterminal-quick-overlay-desc">{item.description}</div>
+                    </button>
+                  ))}
+                </div>
+                <div className="xterminal-quick-overlay-tip">{t("terminal.quick.overlay.tip")}</div>
+              </section>
+            )}
           </div>
           {sftpOpen && (
             <>
@@ -4200,7 +4340,7 @@ export function XTerminal({
                     onClick={() => setAiOpen(false)}
                     title={t("common.close")}
                   >
-                    <AppIcon icon="material-symbols:close-rounded" size={16} />
+                    <AppIcon icon="proicons:cancel" size={16} />
                   </button>
               </div>
               <div className="xterminal-ai-body">
@@ -4209,30 +4349,8 @@ export function XTerminal({
                   ref={aiHistoryRef}
                   onScroll={updateAiAutoStickFlag}
                 >
-                  {(terminalQuickDraft || hasAiInsights) && (
+                  {hasAiInsights && (
                     <div className="xterminal-ai-insights">
-                      {terminalQuickDraft && (
-                        <section className="xterminal-ai-card xterminal-ai-card--quick">
-                          <div className="xterminal-ai-card-head">
-                            <div className="xterminal-ai-card-title">
-                              <AppIcon icon="material-symbols:terminal-rounded" size={15} />
-                              {t("terminal.ai.quick.title")}
-                            </div>
-                          </div>
-                          <div className="xterminal-ai-quick-current">
-                            {t("terminal.ai.quick.detected", { command: terminalQuickDraft })}
-                          </div>
-                          <div className="xterminal-ai-quick-list">
-                            {terminalQuickCommands.map((item) => (
-                              <div key={item.id} className="xterminal-ai-quick-item">
-                                <div className="xterminal-ai-quick-command">{item.syntax}</div>
-                                <div className="xterminal-ai-quick-desc">{item.description}</div>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="xterminal-ai-quick-tip">{t("terminal.ai.quick.tip")}</div>
-                        </section>
-                      )}
                       {smartTable && (
                         <section className="xterminal-ai-card">
                           <div className="xterminal-ai-card-head">
@@ -4340,7 +4458,7 @@ export function XTerminal({
                       )}
                     </div>
                   )}
-                  {aiMessages.length === 0 && !hasAiInsights && !terminalQuickDraft && (
+                  {aiMessages.length === 0 && !hasAiInsights && (
                     <div className="xterminal-ai-empty">
                       {t("terminal.ai.empty")}
                     </div>
@@ -4564,7 +4682,7 @@ export function XTerminal({
                           >
                             <AppIcon
                               className="xterminal-ai-model-icon"
-                              icon="material-symbols:smart-toy-outline"
+                              icon="proicons:egg-fried"
                               size={16}
                             />
                             <span className="xterminal-ai-model-value">
@@ -4606,7 +4724,7 @@ export function XTerminal({
                           title={t("terminal.ai.clearContext")}
                           aria-label={t("terminal.ai.clearContext")}
                         >
-                          <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
+                          <AppIcon icon="proicons:delete" size={16} />
                         </button>
                         <button
                           type="button"
@@ -4616,7 +4734,7 @@ export function XTerminal({
                           title={t("terminal.ai.stop")}
                           aria-label={t("terminal.ai.stop")}
                         >
-                          <AppIcon icon="material-symbols:stop-circle-outline-rounded" size={16} />
+                          <AppIcon icon="proicons:record-stop" size={16} />
                         </button>
                         <button
                           type="button"
@@ -4629,7 +4747,7 @@ export function XTerminal({
                           title={t("terminal.ai.send")}
                           aria-label={t("terminal.ai.send")}
                         >
-                          <AppIcon icon="material-symbols:send-outline-rounded" size={16}/>
+                          <AppIcon icon="proicons:send" size={16}/>
                         </button>
                       </div>
                     </div>
@@ -4643,7 +4761,7 @@ export function XTerminal({
 
         <div className="xterminal-toolbar">
           <div className="xterminal-toolbar-item">
-            <AppIcon icon="material-symbols:speed-rounded" size={16} />
+            <AppIcon icon="proicons:globe" size={16} />
             <span className="xterminal-toolbar-label">
               {t("terminal.toolbar.latency")}
             </span>
@@ -4660,7 +4778,7 @@ export function XTerminal({
             className="xterminal-toolbar-item"
             style={{ flex: 1, minWidth: 0 }}
           >
-            <AppIcon icon="material-symbols:lan" size={16} />
+            <AppIcon icon="proicons:server" size={16} />
             <span className="xterminal-toolbar-label">
               {t("terminal.toolbar.endpoint")}
             </span>
@@ -4684,7 +4802,7 @@ export function XTerminal({
             onClick={toggleScriptPanel}
             title={t("terminal.toolbar.script")}
           >
-            <AppIcon icon="material-symbols:terminal-rounded" size={16} />
+            <AppIcon icon="proicons:terminal" size={16} />
             {t("terminal.toolbar.quickActions")}
           </button>
           <button
@@ -4693,7 +4811,7 @@ export function XTerminal({
             onClick={toggleTransferPanel}
             title={t("terminal.transfer.title")}
           >
-            <AppIcon icon="material-symbols:download-rounded" size={16} />
+            <AppIcon icon="proicons:arrow-download" size={16} />
             {t("terminal.transfer.title")}
             {(runningTransferCount > 0 || failedTransferCount > 0) && (
               <span
@@ -4716,7 +4834,7 @@ export function XTerminal({
                   className="xterminal-script-link"
                   onClick={() => setScriptPickerOpen(true)}
                 >
-                  <AppIcon icon="material-symbols:code-blocks-rounded" size={16} />
+                  <AppIcon icon="proicons:terminal" size={16} />
                   {t("terminal.script.library")}
                 </button>
                 <button
@@ -4724,7 +4842,7 @@ export function XTerminal({
                   className="xterminal-script-link"
                   onClick={() => setScriptText("")}
                 >
-                  <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
+                  <AppIcon icon="proicons:delete" size={16} />
                   {t("terminal.script.clear")}
                 </button>
               </div>
@@ -4887,7 +5005,7 @@ export function XTerminal({
                   onClick={() => void handleTermCopy()}
                   disabled={!terminalInstance.current?.hasSelection()}
                 >
-                  <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
+                  <AppIcon icon="proicons:copy" size={16} />
                   {t("terminal.menu.copy")}
                 </button>
                 <button
@@ -4903,7 +5021,7 @@ export function XTerminal({
                     event.stopPropagation();
                   }}
                 >
-                  <AppIcon icon="material-symbols:content-paste-rounded" size={16} />
+                  <AppIcon icon="proicons:clipboard-paste" size={16} />
                   {t("terminal.menu.paste")}
                 </button>
                 <button
@@ -4911,7 +5029,7 @@ export function XTerminal({
                   className="xterminal-term-menu-item"
                   onClick={handleTermClear}
                 >
-                  <AppIcon icon="material-symbols:delete-sweep-rounded" size={16} />
+                  <AppIcon icon="proicons:delete" size={16} />
                   {t("terminal.menu.clear")}
                 </button>
                 <div className="xterminal-term-menu-divider" />
@@ -4920,7 +5038,7 @@ export function XTerminal({
                   className="xterminal-term-menu-item"
                   onClick={() => void openAiFromTerminal("fix")}
                 >
-                  <AppIcon icon="material-symbols:build-rounded" size={16} />
+                  <AppIcon icon="proicons:wrench" size={16} />
                   {t("terminal.menu.ai.fix")}
                 </button>
                 <button
@@ -4928,7 +5046,7 @@ export function XTerminal({
                   className="xterminal-term-menu-item"
                   onClick={() => void openAiFromTerminal("ask")}
                 >
-                  <AppIcon icon="material-symbols:forum-rounded" size={16} />
+                  <AppIcon icon="proicons:egg-fried" size={16} />
                   {t("terminal.menu.ai.ask")}
                 </button>
               </div>

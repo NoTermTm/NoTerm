@@ -315,6 +315,96 @@
     padding: 12px;
     box-sizing: border-box;
     min-width: 0;
+    position: relative;
+}
+
+.xterminal-quick-overlay {
+    position: absolute;
+    right: 20px;
+    top: 16px;
+    width: min(400px, calc(100% - 40px));
+    max-height: calc(100% - 32px);
+    overflow: auto;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--ai-brand) 34%, var(--ai-border) 66%);
+    background:
+        radial-gradient(circle at top right, rgba(255, 193, 7, 0.22), transparent 58%),
+        color-mix(in srgb, var(--bg-primary) 92%, #ffffff 8%);
+    box-shadow: 0 14px 30px rgba(15, 23, 42, 0.24);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 9;
+}
+
+.xterminal-quick-overlay-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.xterminal-quick-overlay-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.xterminal-quick-overlay-current {
+    font-size: 11px;
+    color: var(--text-secondary);
+    border-radius: 8px;
+    padding: 6px 8px;
+    border: 1px solid color-mix(in srgb, var(--ai-brand) 26%, var(--ai-border) 74%);
+    background: color-mix(in srgb, var(--ai-brand) 8%, var(--bg-primary) 92%);
+}
+
+.xterminal-quick-overlay-list {
+    display: grid;
+    gap: 6px;
+}
+
+.xterminal-quick-overlay-item {
+    border: 1px solid var(--ai-border);
+    border-radius: 10px;
+    background: var(--bg-primary);
+    padding: 8px 9px;
+    display: grid;
+    gap: 3px;
+    text-align: left;
+    cursor: pointer;
+    transition: transform 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.xterminal-quick-overlay-item:hover {
+    border-color: color-mix(in srgb, var(--ai-brand) 42%, var(--ai-border) 58%);
+    background: color-mix(in srgb, var(--ai-brand-soft) 36%, var(--bg-primary) 64%);
+    transform: translateY(-1px);
+}
+
+.xterminal-quick-overlay-item:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--ai-brand) 48%, #ffffff 52%);
+    outline-offset: 1px;
+}
+
+.xterminal-quick-overlay-command {
+    font-size: 11px;
+    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+    color: color-mix(in srgb, var(--ai-brand) 78%, #1f1f1f 22%);
+}
+
+.xterminal-quick-overlay-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.xterminal-quick-overlay-tip {
+    font-size: 11px;
+    color: var(--text-tertiary);
 }
 
 .xterminal-sftp {
@@ -951,7 +1041,7 @@
 
 .xterminal-ai-close {
     border: none;
-    background: var(--bg-tertiary);
+    background: none;
     color: var(--text-secondary);
     padding: 4px;
     border-radius: 8px;
@@ -963,9 +1053,7 @@
 }
 
 .xterminal-ai-close:hover {
-    background: var(--ai-brand-soft);
     color: var(--text-primary);
-    transform: translateY(-1px);
 }
 
 .xterminal-ai-body {
@@ -1328,7 +1416,6 @@
 .xterminal-ai-message--user {
     background: var(--ai-user-gradient);
     border-color: transparent;
-    box-shadow: 0 12px 26px color-mix(in srgb, var(--ai-brand) 28%, transparent);
     align-self: flex-end;
 }
 .xterminal-ai-message--user  .ai-renderer {
@@ -1911,16 +1998,21 @@
     background: transparent;
     margin: 2px 0;
 }
+
 .ai-code-block {
     margin: 10px 0;
     position: relative;
-    border-radius: 12px;
+    border-radius: 6px;
     overflow: hidden;
     background: var(--ai-code-bg, var(--ai-surface-muted));
     box-sizing: border-box;
     border: 1px solid var(--ai-code-border, var(--ai-border));
     display: flex;
     flex-direction: column;
+    -webkit-border-radius: 6px;
+    -moz-border-radius: 6px;
+    -ms-border-radius: 6px;
+    -o-border-radius: 6px;
 }
 .ai-code-block pre {
     margin: 0;
@@ -1936,6 +2028,7 @@
 }
 .ai-code-toolbar {
     display: flex;
+    justify-content: flex-end;
     gap: 10px;
     opacity: 1;
     transform: none;
@@ -1967,8 +2060,8 @@
     color: var(--text-primary);
 }
 .ai-btn-icon {
-    width: 16px;
-    height: 16px;
+    width: 12px;
+    height: 12px;
     fill: currentColor;
 }
 .ai-btn-text {

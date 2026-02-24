@@ -51,6 +51,9 @@ importers:
         specifier: ^7.13.0
         version: 7.13.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
     devDependencies:
+      '@iconify-json/proicons':
+        specifier: ^1.2.19
+        version: 1.2.19
       '@iconify-json/simple-icons':
         specifier: ^1.2.71
         version: 1.2.71
@@ -329,6 +332,9 @@ packages:
 
   '@iconify-json/material-symbols@1.2.56':
     resolution: {integrity: sha512-pd2xlJ/9Ld/uo8cHjqNKGv4+piPEWajfslqheEyNMfZl/oBq5C/zVKo4Xx33/saYp4IYBp6BXReimynRdRk8LA==}
+
+  '@iconify-json/proicons@1.2.19':
+    resolution: {integrity: sha512-OPE9a1ZSTlW24dekf5yaP+C+U8a60t1FZF4FVbvroKeMqGly6VG5WdEjnCDbzMePIZEdUhy5ZbdEm1sc+WSHBg==}
 
   '@iconify-json/simple-icons@1.2.71':
     resolution: {integrity: sha512-rNoDFbq1fAYiEexBvrw613/xiUOPEu5MKVV/X8lI64AgdTzLQUUemr9f9fplxUMPoxCBP2rWzlhOEeTHk/Sf0Q==}
@@ -1048,6 +1054,10 @@ snapshots:
     optional: true
 
   '@iconify-json/material-symbols@1.2.56':
+    dependencies:
+      '@iconify/types': 2.0.0
+
+  '@iconify-json/proicons@1.2.19':
     dependencies:
       '@iconify/types': 2.0.0
 

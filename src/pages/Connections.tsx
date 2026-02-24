@@ -2760,7 +2760,7 @@ export function ConnectionsPage({
                       }}
                     >
                       <AppIcon
-                        icon="material-symbols:play-arrow-rounded"
+                        icon="proicons:play"
                         size={16}
                       />
                       {t("connections.action.connect")}
@@ -2790,7 +2790,7 @@ export function ConnectionsPage({
                         setIsEditModalOpen(true);
                       }}
                     >
-                      <AppIcon icon="material-symbols:edit-rounded" size={16} />
+                      <AppIcon icon="proicons:pencil" size={16} />
                       {t("common.edit")}
                     </button>
                     <button
@@ -2802,7 +2802,7 @@ export function ConnectionsPage({
                       }}
                     >
                       <AppIcon
-                        icon="material-symbols:delete-rounded"
+                        icon="proicons:delete"
                         size={16}
                       />
                       {t("common.delete")}

@@ -38,16 +38,7 @@ export function SlidePanel({
               onClick={onAdd}
               title="Add new"
             >
-              <AppIcon icon="material-symbols:add-rounded" size={18} />
-            </button>
-          )}
-          {closePanel && (
-            <button
-              className="slide-panel-add-btn"
-              title="Close Slider"
-              onClick={closePanel}
-            >
-              <AppIcon icon="material-symbols:close-small" size={18} />
+              <AppIcon icon="proicons:add" size={14} />
             </button>
           )}
         </div>

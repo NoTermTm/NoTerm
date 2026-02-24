@@ -184,6 +184,7 @@ export function Layout() {
       if (isLocked) return;
       const key = event.key.toLowerCase();
       const isCmdOrCtrl = event.metaKey || event.ctrlKey;
+      const isTerminalKeyTarget = isTerminalTarget(event);
 
       const isReload =
         key === "f5" ||
@@ -262,6 +263,12 @@ export function Layout() {
         event.preventDefault();
         event.stopPropagation();
         forceLock();
+        return;
+      }
+
+      // Keep browser/app navigation guards outside terminal;
+      // let terminal handle word-jump/navigation keys like Option+Arrow.
+      if (isTerminalKeyTarget && (isBackForward || isBackspaceNav)) {
         return;
       }
 
