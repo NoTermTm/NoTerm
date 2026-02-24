@@ -7,7 +7,7 @@ use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use std::fs::OpenOptions;
@@ -95,6 +95,16 @@ struct TerminalOutput {
 struct TerminalDisconnected {
     session_id: String,
     reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlledCommandResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub duration_ms: u64,
+    pub timed_out: bool,
 }
 
 #[derive(Clone)]
@@ -462,6 +472,104 @@ impl SshManager {
         }
 
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Failed to execute command")))
+    }
+
+    pub fn execute_command_controlled(
+        &self,
+        session_id: &str,
+        command: &str,
+        timeout_sec: u64,
+    ) -> anyhow::Result<ControlledCommandResult> {
+        let connection = {
+            let connections = self.connections.lock().unwrap();
+            connections
+                .get(session_id)
+                .ok_or_else(|| anyhow::anyhow!("Connection info not found for session: {}", session_id))?
+                .clone()
+        };
+
+        let timeout_sec = timeout_sec.clamp(3, 300);
+        let timeout = Duration::from_secs(timeout_sec);
+        let started_at = Instant::now();
+
+        let session = self.create_authenticated_session(&connection)?;
+        session.set_blocking(false);
+        session.set_timeout((timeout_sec * 1000) as u32);
+
+        let mut channel = session.channel_session()?;
+        channel.exec(command)?;
+
+        let mut stdout = Vec::<u8>::new();
+        let mut stderr = Vec::<u8>::new();
+        let mut timed_out = false;
+        let mut buf = [0u8; 8192];
+
+        loop {
+            let mut had_progress = false;
+
+            loop {
+                match channel.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        stdout.extend_from_slice(&buf[..n]);
+                        had_progress = true;
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(err) => return Err(anyhow::anyhow!("Failed to read stdout: {}", err)),
+                }
+            }
+
+            loop {
+                let mut stderr_stream = channel.stderr();
+                match stderr_stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        stderr.extend_from_slice(&buf[..n]);
+                        had_progress = true;
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(err) => return Err(anyhow::anyhow!("Failed to read stderr: {}", err)),
+                }
+            }
+
+            if channel.eof() {
+                break;
+            }
+
+            if started_at.elapsed() >= timeout {
+                timed_out = true;
+                let _ = channel.close();
+                break;
+            }
+
+            if !had_progress {
+                std::thread::sleep(Duration::from_millis(12));
+            }
+        }
+
+        let _ = channel.wait_close();
+        let exit_code = if timed_out {
+            -1
+        } else {
+            channel.exit_status().unwrap_or(-1)
+        };
+
+        if timed_out {
+            if !stderr.is_empty() {
+                stderr.extend_from_slice(b"\n");
+            }
+            stderr.extend_from_slice(b"Command timed out");
+        }
+
+        let _ = session.disconnect(None, "command finished", None);
+
+        Ok(ControlledCommandResult {
+            exit_code,
+            stdout: String::from_utf8_lossy(&stdout).to_string(),
+            stderr: String::from_utf8_lossy(&stderr).to_string(),
+            duration_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            timed_out,
+        })
     }
 
     pub fn is_connected(&self, session_id: &str) -> bool {

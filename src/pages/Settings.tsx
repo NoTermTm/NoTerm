@@ -184,6 +184,9 @@ export function SettingsPage() {
         "ai.model":
           (await store.get<string>("ai.model")) ??
           DEFAULT_APP_SETTINGS["ai.model"],
+        "ai.agentMode":
+          (await store.get<AppSettings["ai.agentMode"]>("ai.agentMode")) ??
+          DEFAULT_APP_SETTINGS["ai.agentMode"],
       };
       if (!disposed) setSettings(next);
     };

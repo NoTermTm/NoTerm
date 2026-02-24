@@ -3,7 +3,7 @@ mod ssh_manager;
 
 use serde::{Deserialize, Serialize};
 use local_pty::LocalPtyManager;
-use ssh_manager::{ForwardConfig, SftpEntry, SshConnection, SshManager};
+use ssh_manager::{ControlledCommandResult, ForwardConfig, SftpEntry, SshConnection, SshManager};
 use std::fs;
 use std::sync::Mutex;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -12,6 +12,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 use tauri::Manager;
+use tokio::process::Command as TokioCommand;
 
 struct AppState {
     ssh_manager: Mutex<SshManager>,
@@ -606,6 +607,71 @@ fn ssh_execute_command(
 }
 
 #[tauri::command]
+async fn ssh_execute_command_controlled(
+    state: State<'_, AppState>,
+    session_id: String,
+    command: String,
+    timeout_sec: u64,
+) -> Result<ControlledCommandResult, String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || {
+        manager.execute_command_controlled(&session_id, &command, timeout_sec)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn local_execute_command_controlled(
+    session_id: String,
+    command: String,
+    timeout_sec: u64,
+) -> Result<ControlledCommandResult, String> {
+    let _ = session_id;
+    let cmd_text = command.trim().to_string();
+    if cmd_text.is_empty() {
+        return Err("Command is empty".to_string());
+    }
+
+    let timeout_sec = timeout_sec.clamp(3, 300);
+    let started_at = Instant::now();
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = TokioCommand::new("cmd");
+        c.args(["/C", &cmd_text]);
+        c
+    } else {
+        let mut c = TokioCommand::new("/bin/sh");
+        c.args(["-lc", &cmd_text]);
+        c
+    };
+
+    cmd.kill_on_drop(true);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let timed = tokio::time::timeout(Duration::from_secs(timeout_sec), cmd.output()).await;
+    match timed {
+        Ok(Ok(output)) => Ok(ControlledCommandResult {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            duration_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            timed_out: false,
+        }),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Ok(ControlledCommandResult {
+            exit_code: -1,
+            stdout: String::new(),
+            stderr: "Command timed out".to_string(),
+            duration_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            timed_out: true,
+        }),
+    }
+}
+
+#[tauri::command]
 fn ssh_is_connected(state: State<AppState>, session_id: String) -> bool {
     let manager = state.ssh_manager.lock().unwrap();
     manager.is_connected(&session_id)
@@ -784,6 +850,8 @@ pub fn run() {
             local_resize_pty,
             local_disconnect,
             ssh_execute_command,
+            ssh_execute_command_controlled,
+            local_execute_command_controlled,
             ssh_is_connected,
             ssh_list_sessions,
             ssh_forward_start,

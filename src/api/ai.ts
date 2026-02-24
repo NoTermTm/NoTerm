@@ -1,4 +1,5 @@
 import { getTranslator } from "../i18n";
+import type { AgentAction, AgentPlan, AgentPlanParseResult, AgentRisk } from "../types/agent";
 
 export type AiProvider = "openai" | "anthropic";
 
@@ -11,6 +12,7 @@ export type AiSettings = {
   enabled: boolean;
   provider: AiProvider;
   model: string;
+  agentMode?: "suggest_only" | "confirm_then_execute";
   openai: {
     baseUrl: string;
     apiKey: string;
@@ -74,6 +76,130 @@ const readSseStream = async (
     parseSseEvents(decoder.decode(value, { stream: true }), bufferRef, onEvent);
   }
   parseSseEvents(decoder.decode(), bufferRef, onEvent);
+};
+
+const createId = (prefix: string) => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `${prefix}_${crypto.randomUUID()}`;
+  }
+  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+};
+
+const normalizeRisk = (value: unknown): AgentRisk => {
+  const risk = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (risk === "low" || risk === "medium" || risk === "high" || risk === "critical") {
+    return risk;
+  }
+  return "medium";
+};
+
+const extractJsonCandidate = (text: string): { json: string | null; note: string } => {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    const note = text.replace(fenced[0], "").trim();
+    return { json: fenced[1].trim(), note };
+  }
+
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    const json = text.slice(start, end + 1).trim();
+    const note = `${text.slice(0, start)} ${text.slice(end + 1)}`.trim();
+    return { json, note };
+  }
+
+  return { json: null, note: text.trim() };
+};
+
+const normalizeAction = (
+  input: Record<string, unknown>,
+  defaultSessionId: string,
+): AgentAction | null => {
+  const command = String(input.command ?? "").trim();
+  if (!command) return null;
+
+  const timeoutRaw = Number(input.timeout_sec ?? input.timeoutSec ?? 30);
+  const timeoutSec = Number.isFinite(timeoutRaw)
+    ? Math.min(300, Math.max(3, Math.floor(timeoutRaw)))
+    : 30;
+
+  return {
+    id: String(input.id ?? createId("action")),
+    session_id: String(input.session_id ?? input.sessionId ?? defaultSessionId),
+    command,
+    risk: normalizeRisk(input.risk),
+    reason: String(input.reason ?? ""),
+    expected_effect: String(input.expected_effect ?? input.expectedEffect ?? ""),
+    timeout_sec: timeoutSec,
+  };
+};
+
+const normalizePlan = (raw: unknown): AgentPlan | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  const container = (data.plan && typeof data.plan === "object"
+    ? (data.plan as Record<string, unknown>)
+    : data) as Record<string, unknown>;
+
+  const sessionId = String(
+    container.session_id ?? container.sessionId ?? data.session_id ?? data.sessionId ?? "",
+  ).trim();
+  if (!sessionId) return null;
+
+  const rawActions = Array.isArray(container.actions) ? container.actions : [];
+  const actions = rawActions
+    .map((item) =>
+      item && typeof item === "object"
+        ? normalizeAction(item as Record<string, unknown>, sessionId)
+        : null,
+    )
+    .filter((item): item is AgentAction => !!item)
+    .slice(0, 5);
+
+  return {
+    id: String(container.id ?? createId("plan")),
+    session_id: sessionId,
+    summary:
+      typeof container.summary === "string" ? container.summary.trim() : undefined,
+    actions,
+  };
+};
+
+export const parseAgentPlanFromText = (text: string): AgentPlanParseResult => {
+  const { json, note } = extractJsonCandidate(text || "");
+  if (!json) {
+    return {
+      plan: null,
+      note,
+      error: "未检测到 JSON 计划",
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    const plan = normalizePlan(parsed);
+    if (!plan) {
+      return {
+        plan: null,
+        note,
+        raw_json: json,
+        error: "JSON 解析成功，但计划结构不合法",
+      };
+    }
+
+    return {
+      plan,
+      note,
+      raw_json: json,
+    };
+  } catch {
+    return {
+      plan: null,
+      note,
+      raw_json: json,
+      error: "JSON 解析失败",
+    };
+  }
 };
 
 export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
@@ -165,6 +291,9 @@ export async function sendAiChatStream(
   settings: AiSettings,
   messages: AiMessage[],
   onDelta: AiStreamHandler,
+  options?: {
+    signal?: AbortSignal;
+  },
 ) {
   const t = await getTranslator();
   if (!settings.enabled) {
@@ -183,6 +312,7 @@ export async function sendAiChatStream(
 
     const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: "POST",
+      signal: options?.signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${settings.openai.apiKey}`,
@@ -230,6 +360,7 @@ export async function sendAiChatStream(
 
   const resp = await fetch(`${baseUrl}/v1/messages`, {
     method: "POST",
+    signal: options?.signal,
     headers: {
       "Content-Type": "application/json",
       "x-api-key": settings.anthropic.apiKey,

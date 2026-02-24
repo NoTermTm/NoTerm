@@ -2328,6 +2328,7 @@ export function ConnectionsPage({
           host={session.connection.host}
           port={session.connection.port}
           isLocal={session.kind === "local"}
+          osType={session.connection.osType ?? "unknown"}
           onConnect={handleTerminalConnect}
           onRequestSplit={onRequestSplit}
           onCloseSession={onCloseSession}
