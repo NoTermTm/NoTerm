@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   DEFAULT_APP_SETTINGS,
   type AppSettings,
@@ -8,7 +8,8 @@ import {
 } from "../store/appSettings";
 import { load } from "@tauri-apps/plugin-store";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { mkdir, readFile, readTextFile, remove, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { BaseDirectory } from "@tauri-apps/api/path";
 import { TERMINAL_THEME_OPTIONS, getXtermTheme } from "../terminal/xtermThemes";
 import { sendAiChat, type AiMessage } from "../api/ai";
 import { generateSalt, hashMasterKey } from "../utils/security";
@@ -18,6 +19,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
 import { useI18n } from "../i18n";
 import { Select } from "../components/Select";
+import { toRgba } from "../utils/color";
+import { loadTerminalBackgroundUrl, TERMINAL_BG_DIR } from "../utils/terminalBackground";
 import "./Settings.css";
 
 const TERMINAL_FONT_OPTIONS = [
@@ -68,10 +71,23 @@ const LOCK_TIMEOUT_OPTIONS = [
   { labelKey: "settings.security.lock.120", value: 120 },
 ];
 
+const TERMINAL_BG_MAX_BYTES = 4 * 1024 * 1024;
+const TERMINAL_BG_ALLOWED: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
+
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const previewTheme = getXtermTheme(settings["terminal.theme"]);
   const previewSelection = previewTheme.selectionBackground ?? "rgba(15, 143, 255, 0.18)";
+  const terminalBackgroundImage = settings["terminal.backgroundImage"];
+  const [terminalBackgroundUrl, setTerminalBackgroundUrl] = useState("");
+  const terminalBackgroundUrlRef = useRef("");
   const [aiTestStatus, setAiTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [aiTestMessage, setAiTestMessage] = useState<string | null>(null);
   const [masterKeyInput, setMasterKeyInput] = useState("");
@@ -94,11 +110,23 @@ export function SettingsPage() {
   } | null>(null);
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const [updateCheckedAt, setUpdateCheckedAt] = useState<string | null>(null);
+  const [terminalBgUploading, setTerminalBgUploading] = useState(false);
   const updateRef = useRef<Awaited<ReturnType<typeof checkForUpdates>> | null>(null);
   const updateStatusRef = useRef(updateStatus);
   const hasMasterKey = Boolean(settings["security.masterKeyHash"]);
   const modifierKeyName = getModifierKeyName();
   const { t } = useI18n();
+  const previewOverlay = terminalBackgroundUrl
+    ? toRgba(previewTheme.background ?? "#0f111a", settings["terminal.backgroundOpacity"])
+    : (previewTheme.background ?? "#0f111a");
+  const previewBackgroundStyle = terminalBackgroundUrl
+    ? ({
+        ["--settings-term-bg-image"]: `url("${terminalBackgroundUrl}")`,
+        ["--settings-term-bg-overlay"]: previewOverlay,
+        ["--settings-term-bg-blur"]: `${settings["terminal.backgroundBlur"]}px`,
+        backgroundColor: previewTheme.background ?? "#0f111a",
+      } as CSSProperties)
+    : { backgroundColor: previewTheme.background ?? "#0f111a" };
 
   useEffect(() => {
     updateStatusRef.current = updateStatus;
@@ -163,6 +191,15 @@ export function SettingsPage() {
         "terminal.autoCopy":
           (await store.get<boolean>("terminal.autoCopy")) ??
           DEFAULT_APP_SETTINGS["terminal.autoCopy"],
+        "terminal.backgroundImage":
+          (await store.get<string>("terminal.backgroundImage")) ??
+          DEFAULT_APP_SETTINGS["terminal.backgroundImage"],
+        "terminal.backgroundOpacity":
+          (await store.get<number>("terminal.backgroundOpacity")) ??
+          DEFAULT_APP_SETTINGS["terminal.backgroundOpacity"],
+        "terminal.backgroundBlur":
+          (await store.get<number>("terminal.backgroundBlur")) ??
+          DEFAULT_APP_SETTINGS["terminal.backgroundBlur"],
         "ai.enabled":
           (await store.get<boolean>("ai.enabled")) ??
           DEFAULT_APP_SETTINGS["ai.enabled"],
@@ -196,6 +233,43 @@ export function SettingsPage() {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const run = async () => {
+      if (!terminalBackgroundImage) {
+        if (!disposed) setTerminalBackgroundUrl("");
+        return;
+      }
+      const resolved = await loadTerminalBackgroundUrl(terminalBackgroundImage);
+      if (disposed) {
+        if (resolved.startsWith("blob:")) {
+          URL.revokeObjectURL(resolved);
+        }
+        return;
+      }
+      const prev = terminalBackgroundUrlRef.current;
+      if (prev && prev.startsWith("blob:") && prev !== resolved) {
+        URL.revokeObjectURL(prev);
+      }
+      terminalBackgroundUrlRef.current = resolved;
+      setTerminalBackgroundUrl(resolved);
+    };
+    void run();
+    return () => {
+      disposed = true;
+    };
+  }, [terminalBackgroundImage]);
+
+  useEffect(
+    () => () => {
+      const prev = terminalBackgroundUrlRef.current;
+      if (prev && prev.startsWith("blob:")) {
+        URL.revokeObjectURL(prev);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -541,6 +615,105 @@ export function SettingsPage() {
     setMasterKeyMessage(t("settings.security.masterKey.cleared"));
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("master-key-updated"));
+    }
+  };
+
+  const handleSelectTerminalBackground = async () => {
+    setTerminalBgUploading(true);
+    try {
+      const previousPath = settings["terminal.backgroundImage"];
+      const path = await openDialog({
+        filters: [
+          { name: t("settings.terminal.backgroundImage"), extensions: Object.keys(TERMINAL_BG_ALLOWED) },
+        ],
+        multiple: false,
+      });
+      if (!path) return;
+      const filePath = Array.isArray(path) ? path[0] : path;
+      if (!filePath) return;
+      const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+      const mime = TERMINAL_BG_ALLOWED[ext];
+      if (!mime) {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("app-message", {
+              detail: {
+                title: t("settings.terminal.backgroundImage"),
+                detail: t("settings.terminal.backgroundImage.unsupported"),
+                tone: "error",
+                toast: true,
+              },
+            }),
+          );
+        }
+        return;
+      }
+      const bytes = await readFile(filePath);
+      if (bytes.length > TERMINAL_BG_MAX_BYTES) {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("app-message", {
+              detail: {
+                title: t("settings.terminal.backgroundImage"),
+                detail: t("settings.terminal.backgroundImage.tooLarge"),
+                tone: "error",
+                toast: true,
+              },
+            }),
+          );
+        }
+        return;
+      }
+      await mkdir(TERMINAL_BG_DIR, { baseDir: BaseDirectory.AppLocalData, recursive: true });
+      const stamp = Date.now();
+      const rand = Math.random().toString(36).slice(2, 8);
+      const fileName = `${TERMINAL_BG_DIR}/${stamp}-${rand}.${ext}`;
+      await writeFile(fileName, bytes, { baseDir: BaseDirectory.AppLocalData });
+      updateSetting("terminal.backgroundImage", fileName);
+      if (
+        previousPath &&
+        previousPath !== fileName &&
+        !previousPath.startsWith("data:") &&
+        !previousPath.startsWith("http") &&
+        !previousPath.startsWith("blob:") &&
+        previousPath.startsWith(`${TERMINAL_BG_DIR}/`)
+      ) {
+        await remove(previousPath, { baseDir: BaseDirectory.AppLocalData });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("settings.terminal.backgroundImage.fail"),
+              detail: message || t("settings.terminal.backgroundImage.fail"),
+              tone: "error",
+              autoOpen: true,
+            },
+          }),
+        );
+      }
+    } finally {
+      setTerminalBgUploading(false);
+    }
+  };
+
+  const handleRemoveTerminalBackground = async () => {
+    const previousPath = settings["terminal.backgroundImage"];
+    updateSetting("terminal.backgroundImage", "");
+    if (
+      previousPath &&
+      !previousPath.startsWith("data:") &&
+      !previousPath.startsWith("http") &&
+      !previousPath.startsWith("blob:") &&
+      previousPath.startsWith(`${TERMINAL_BG_DIR}/`)
+    ) {
+      try {
+        await remove(previousPath, { baseDir: BaseDirectory.AppLocalData });
+      } catch {
+        // Ignore cleanup errors; preference reset already applied.
+      }
     }
   };
 
@@ -1256,6 +1429,107 @@ export function SettingsPage() {
                   </div>
                 </div>
               </div>
+              <div className="settings-group">
+                <div className="settings-group-header">
+                  <div className="settings-group-title">
+                    {t("settings.terminal.backgroundGroup")}
+                  </div>
+                  <div className="settings-group-desc">
+                    {t("settings.terminal.backgroundGroup.desc")}
+                  </div>
+                </div>
+                <div className="settings-group-body">
+                  <div className="settings-row settings-row--single">
+                    <div className="settings-field">
+                      <label className="settings-field-label">{t("settings.terminal.backgroundImage")}</label>
+                      <div className="settings-inline-actions">
+                        {terminalBackgroundUrl && (
+                          <span
+                            className="settings-bg-thumb"
+                            style={{ backgroundImage: `url("${terminalBackgroundUrl}")` }}
+                            aria-hidden="true"
+                          />
+                        )}
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          type="button"
+                          onClick={() => void handleSelectTerminalBackground()}
+                          disabled={terminalBgUploading}
+                        >
+                          {terminalBgUploading
+                            ? t("settings.terminal.backgroundImage.uploading")
+                            : t("settings.terminal.backgroundImage.upload")}
+                        </button>
+                        {terminalBackgroundImage && (
+                          <button
+                            className="btn btn-danger btn-sm"
+                            type="button"
+                            onClick={handleRemoveTerminalBackground}
+                          >
+                            {t("settings.terminal.backgroundImage.remove")}
+                          </button>
+                        )}
+                        <span className="settings-inline-meta">
+                          {terminalBackgroundImage
+                            ? t("settings.terminal.backgroundImage.ready")
+                            : t("settings.terminal.backgroundImage.empty")}
+                        </span>
+                      </div>
+                      <div className="settings-field-description">
+                        {t("settings.terminal.backgroundImage.desc")}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="settings-row settings-row--two">
+                    <div className="settings-field">
+                      <label className="settings-field-label">{t("settings.terminal.backgroundOpacity")}</label>
+                      <div className="settings-range-row">
+                        <input
+                          className="settings-range"
+                          type="range"
+                          min="0.2"
+                          max="0.9"
+                          step="0.05"
+                          value={String(settings["terminal.backgroundOpacity"])}
+                          onChange={(event) =>
+                            updateSetting(
+                              "terminal.backgroundOpacity",
+                              Math.min(0.9, Math.max(0.2, parseFloat(event.target.value) || 0.6)),
+                            )
+                          }
+                          disabled={!terminalBackgroundImage}
+                        />
+                        <span className="settings-range-value">
+                          {Math.round(settings["terminal.backgroundOpacity"] * 100)}%
+                        </span>
+                      </div>
+                    </div>
+                    <div className="settings-field">
+                      <label className="settings-field-label">{t("settings.terminal.backgroundBlur")}</label>
+                      <div className="settings-range-row">
+                        <input
+                          className="settings-range"
+                          type="range"
+                          min="0"
+                          max="16"
+                          step="1"
+                          value={String(settings["terminal.backgroundBlur"])}
+                          onChange={(event) =>
+                            updateSetting(
+                              "terminal.backgroundBlur",
+                              Math.min(16, Math.max(0, parseFloat(event.target.value) || 0)),
+                            )
+                          }
+                          disabled={!terminalBackgroundImage}
+                        />
+                        <span className="settings-range-value">
+                          {settings["terminal.backgroundBlur"]}px
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
             <div className="settings-card-preview">
               <div className="settings-preview-header">{t("settings.terminal.preview")}</div>
@@ -1266,12 +1540,12 @@ export function SettingsPage() {
                   <span className="settings-preview-dot settings-preview-dot--green" />
                 </div>
                 <pre
-                  className="settings-preview-content"
+                  className={`settings-preview-content${terminalBackgroundUrl ? " settings-preview-content--bg" : ""}`}
                   style={{
                     fontFamily: settings["terminal.fontFamily"],
                     fontSize: settings["terminal.fontSize"],
                     fontWeight: settings["terminal.fontWeight"],
-                    background: previewTheme.background,
+                    ...previewBackgroundStyle,
                     color: previewTheme.foreground,
                     lineHeight: settings["terminal.lineHeight"],
                   }}

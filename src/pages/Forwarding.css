@@ -46,12 +46,16 @@
 .forwarding-card {
     border: 1px solid var(--border-color);
     background: var(--bg-primary);
-    border-radius: 12px;
     padding: 12px 14px;
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
     gap: 16px;
+    border-radius: 6px;
+    -webkit-border-radius: 6px;
+    -moz-border-radius: 6px;
+    -ms-border-radius: 6px;
+    -o-border-radius: 6px;
 }
 
 .forwarding-info {

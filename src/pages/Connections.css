@@ -446,7 +446,11 @@
 .connection-detail-actions .btn {
     padding: 8px 16px;
     font-size: 13px;
-    border-radius: 12px;
+    border-radius: 4px;
+    -webkit-border-radius: 4px;
+    -moz-border-radius: 4px;
+    -ms-border-radius: 4px;
+    -o-border-radius: 4px;
 }
 
 .connection-form {
@@ -497,15 +501,16 @@
 .connection-type-switch-btn {
     flex: 1;
     border: 1px solid var(--border-color);
-    border-radius: 10px;
     background: var(--bg-secondary);
     color: var(--text-secondary);
     font-size: 12px;
     font-weight: 600;
-    transition:
-        border-color 0.18s ease,
-        color 0.18s ease,
-        background-color 0.18s ease;
+    transition:        border-color 0.18s ease,        color 0.18s ease,        background-color 0.18s ease;
+    border-radius: 4px;
+    -webkit-border-radius: 4px;
+    -moz-border-radius: 4px;
+    -ms-border-radius: 4px;
+    -o-border-radius: 4px;
 }
 
 .connection-type-switch-btn:hover {

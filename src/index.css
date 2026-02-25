@@ -120,7 +120,7 @@
 }
 
 :root[data-theme="dark"] {
-    --bg-primary: #0f131a;
+    --bg-primary: #141414;
     --bg-secondary: #151a23;
     --bg-tertiary: #1b2230;
     --bg-hover: #202838;
@@ -365,13 +365,15 @@ textarea {
     padding: 8px 10px;
     background-color: var(--bg-primary);
     border: 1px solid var(--border-color);
-    border-radius: 10px;
     color: var(--text-primary);
     font-size: 12px;
-    transition:
-        border-color 0.15s ease,
-        box-shadow 0.15s ease;
+    transition:        border-color 0.15s ease,        box-shadow 0.15s ease;
     box-sizing: border-box;
+    border-radius: 4px;
+    -webkit-border-radius: 4px;
+    -moz-border-radius: 4px;
+    -ms-border-radius: 4px;
+    -o-border-radius: 4px;
 }
 
 .form-group input:focus,
@@ -399,10 +401,14 @@ textarea {
     padding: 8px;
     background-color: var(--bg-secondary);
     border: 1px solid var(--border-color);
-    border-radius: 10px;
     color: var(--text-primary);
     font-size: 12px;
     transition: all 0.15s ease;
+    border-radius: 4px;
+    -webkit-border-radius: 4px;
+    -moz-border-radius: 4px;
+    -ms-border-radius: 4px;
+    -o-border-radius: 4px;
 }
 
 .auth-type-btn:hover {

@@ -7,6 +7,40 @@
     overflow: hidden;
     position: relative;
     --xterminal-toolbar-h: 32px;
+    --xterminal-bg-image: none;
+    --xterminal-bg-overlay: transparent;
+    --xterminal-bg-blur: 0px;
+}
+
+.xterminal-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--xterminal-xterm-bg, var(--bg-secondary));
+    position: relative;
+}
+
+.xterminal--bg .xterminal-body::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(var(--xterminal-bg-overlay), var(--xterminal-bg-overlay)),
+        var(--xterminal-bg-image);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    filter: blur(var(--xterminal-bg-blur));
+    transform: scale(1.05);
+    z-index: 0;
+    pointer-events: none;
+}
+
+.xterminal--bg .xterminal-body > * {
+    position: relative;
+    z-index: 1;
 }
 
 .xterminal-topbar {
@@ -144,17 +178,39 @@
     color: var(--text-green) !important;
 }
 
+.xterminal-topbar-status--spin .app-icon {
+    animation: xterminal-spin 0.9s linear infinite;
+    -webkit-animation: xterminal-spin 0.9s linear infinite;
+}
+
 .xterminal-topbar-status {
     color: var(--text-tertiary);
     flex: 0 0 auto;
     display: flex;
     align-items: center;
 }
-
-.xterminal-topbar-status--spin .app-icon {
-    animation: xterminal-spin 0.9s linear infinite;
-    -webkit-animation: xterminal-spin 0.9s linear infinite;
+.xterminal-topbar-status .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 100%;
+    -webkit-border-radius: 100%;
+    -moz-border-radius: 100%;
+    -ms-border-radius: 100%;
+    -o-border-radius: 100%;
 }
+
+.xterminal-topbar-status .dot-green {
+    background-color: var(--text-green);
+}
+
+.xterminal-topbar-status .dot-red {
+    background-color: var(--danger);
+}
+
+.xterminal-topbar-status .dot-spin {
+    animation: dot-loading  2s ease-in-out infinite;
+    -webkit-animation: dot-loading  2s ease-in-out infinite;
+} 
 
 .xterminal-topbar-text {
     min-width: 0;
@@ -211,15 +267,6 @@
     border-color: var(--accent);
     color: var(--accent);
     background: rgba(15, 143, 255, 0.08);
-}
-
-.xterminal-body {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    background: var(--xterminal-xterm-bg, var(--bg-secondary));
 }
 
 .xterminal-alert {
@@ -764,6 +811,10 @@
 
 .xterminal-mount .xterm-viewport {
     background: var(--xterminal-xterm-bg, var(--bg-secondary));
+}
+
+.xterminal--bg .xterm-scrollable-element {
+    background: transparent !important;
 }
 
 .xterminal-toolbar {
@@ -2404,6 +2455,15 @@
     }
     to {
         transform: rotate(360deg);
+    }
+}
+
+@keyframes dot-loading {
+    0%, 100% {
+        opacity: 0.15;
+    }
+    50% {
+        opacity: 1;
     }
 }
 

@@ -30,6 +30,9 @@ export type AppSettings = {
   "terminal.cursorBlink": boolean;
   "terminal.lineHeight": number;
   "terminal.autoCopy": boolean;
+  "terminal.backgroundImage": string;
+  "terminal.backgroundOpacity": number;
+  "terminal.backgroundBlur": number;
   "ai.enabled": boolean;
   "ai.provider": "openai" | "anthropic";
   "ai.openai.baseUrl": string;
@@ -62,6 +65,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "terminal.cursorBlink": true,
   "terminal.lineHeight": 1.4,
   "terminal.autoCopy": false,
+  "terminal.backgroundImage": "",
+  "terminal.backgroundOpacity": 0.6,
+  "terminal.backgroundBlur": 6,
   "ai.enabled": false,
   "ai.provider": "openai",
   "ai.openai.baseUrl": "https://api.openai.com",

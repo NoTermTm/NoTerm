@@ -203,6 +203,39 @@
     gap: 14px;
 }
 
+.settings-group {
+    border: 1px dashed var(--border-light);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.settings-group-header {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.settings-group-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.settings-group-desc {
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+
+.settings-group-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
 .settings-advanced {
     border: 1px dashed var(--border-light);
     border-radius: 10px;
@@ -251,6 +284,29 @@
     color: var(--text-tertiary);
     line-height: 1.4;
     margin-top: 6px;
+}
+
+.settings-inline-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.settings-inline-meta {
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+
+.settings-bg-thumb {
+    width: 46px;
+    height: 32px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-tertiary);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
 }
 
 .settings-card-preview {
@@ -307,6 +363,42 @@
     color: inherit;
     line-height: 1.6;
     white-space: pre-wrap;
+    position: relative;
+    overflow: hidden;
+}
+
+.settings-preview-content--bg::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(var(--settings-term-bg-overlay), var(--settings-term-bg-overlay)),
+        var(--settings-term-bg-image);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    filter: blur(var(--settings-term-bg-blur));
+    transform: scale(1.05);
+    z-index: 0;
+    pointer-events: none;
+}
+
+.settings-range-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.settings-range {
+    flex: 1;
+    accent-color: var(--accent);
+}
+
+.settings-range-value {
+    min-width: 46px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: right;
 }
 
 .toggle-switch {

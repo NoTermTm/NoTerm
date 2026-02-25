@@ -56,6 +56,8 @@ import type {
   AgentActionStatus,
 } from "../types/agent";
 import { getModifierKeyAbbr, getModifierKeyLabel } from "../utils/platform";
+import { toRgba } from "../utils/color";
+import { loadTerminalBackgroundUrl } from "../utils/terminalBackground";
 import { useI18n } from "../i18n";
 
 interface XTerminalProps {
@@ -295,6 +297,17 @@ export function XTerminal({
   const [endpointCopied, setEndpointCopied] = useState(false);
   const endpointCopyTimerRef = useRef<number | null>(null);
   const [xtermBg, setXtermBg] = useState<string | undefined>(undefined);
+  const [xtermBaseBg, setXtermBaseBg] = useState<string | undefined>(undefined);
+  const [terminalBgImage, setTerminalBgImage] = useState<string>("");
+  const [terminalBgOpacity, setTerminalBgOpacity] = useState<number>(
+    DEFAULT_APP_SETTINGS["terminal.backgroundOpacity"],
+  );
+  const [terminalBgBlur, setTerminalBgBlur] = useState<number>(
+    DEFAULT_APP_SETTINGS["terminal.backgroundBlur"],
+  );
+  const terminalBgImageRef = useRef<string>(DEFAULT_APP_SETTINGS["terminal.backgroundImage"]);
+  const terminalBgObjectUrlRef = useRef<string>("");
+  const themeNameRef = useRef<TerminalThemeName>(DEFAULT_APP_SETTINGS["terminal.theme"]);
   const [sftpOpen, setSftpOpen] = useState(false);
   const [sftpPath, setSftpPath] = useState("/");
   const [sftpEntries, setSftpEntries] = useState<SftpEntry[]>([]);
@@ -3403,6 +3416,9 @@ export function XTerminal({
     let unlistenCursorBlink: (() => void) | null = null;
     let unlistenLineHeight: (() => void) | null = null;
     let unlistenAutoCopy: (() => void) | null = null;
+    let unlistenBackgroundImage: (() => void) | null = null;
+    let unlistenBackgroundOpacity: (() => void) | null = null;
+    let unlistenBackgroundBlur: (() => void) | null = null;
     let disposable: { dispose: () => void } | null = null;
     let selectionDisposable: { dispose: () => void } | null = null;
     let resizeObserver: ResizeObserver | null = null;
@@ -3442,11 +3458,45 @@ export function XTerminal({
       const autoCopy =
         (await store.get<boolean>("terminal.autoCopy")) ??
         DEFAULT_APP_SETTINGS["terminal.autoCopy"];
+      const backgroundImage =
+        (await store.get<string>("terminal.backgroundImage")) ??
+        DEFAULT_APP_SETTINGS["terminal.backgroundImage"];
+      const backgroundOpacity =
+        (await store.get<number>("terminal.backgroundOpacity")) ??
+        DEFAULT_APP_SETTINGS["terminal.backgroundOpacity"];
+      const backgroundBlur =
+        (await store.get<number>("terminal.backgroundBlur")) ??
+        DEFAULT_APP_SETTINGS["terminal.backgroundBlur"];
 
       if (disposed || !terminalRef.current) return;
 
       const xtermTheme = getXtermTheme(themeName);
-      setXtermBg(xtermTheme.background);
+      const baseBg = xtermTheme.background ?? "#0f111a";
+      const hasBgImage = Boolean(backgroundImage);
+      const themeBg = hasBgImage ? "transparent" : baseBg;
+      const resolvedBackgroundImage = await loadTerminalBackgroundUrl(backgroundImage);
+      if (disposed) {
+        if (resolvedBackgroundImage.startsWith("blob:")) {
+          URL.revokeObjectURL(resolvedBackgroundImage);
+        }
+        return;
+      }
+      if (
+        terminalBgObjectUrlRef.current &&
+        terminalBgObjectUrlRef.current.startsWith("blob:") &&
+        terminalBgObjectUrlRef.current !== resolvedBackgroundImage
+      ) {
+        URL.revokeObjectURL(terminalBgObjectUrlRef.current);
+      }
+      terminalBgObjectUrlRef.current =
+        resolvedBackgroundImage.startsWith("blob:") ? resolvedBackgroundImage : "";
+      themeNameRef.current = themeName;
+      terminalBgImageRef.current = backgroundImage;
+      setTerminalBgImage(resolvedBackgroundImage);
+      setTerminalBgOpacity(backgroundOpacity);
+      setTerminalBgBlur(backgroundBlur);
+      setXtermBaseBg(baseBg);
+      setXtermBg(themeBg);
       autoCopyRef.current = autoCopy;
 
       term = new Terminal({
@@ -3456,7 +3506,7 @@ export function XTerminal({
         fontWeight,
         fontSize,
         fontFamily,
-        theme: xtermTheme,
+        theme: { ...xtermTheme, background: themeBg },
         allowProposedApi: true,
         scrollback: 10000,
       });
@@ -3636,9 +3686,14 @@ export function XTerminal({
         (v) => {
           if (!term || disposed) return;
           const next = v ?? DEFAULT_APP_SETTINGS["terminal.theme"];
-          const t = getXtermTheme(next);
-          setXtermBg(t.background);
-          term.options.theme = t;
+          const theme = getXtermTheme(next);
+          const baseBg = theme.background ?? "#0f111a";
+          const hasBgImage = Boolean(terminalBgImageRef.current);
+          const themeBg = hasBgImage ? "transparent" : baseBg;
+          themeNameRef.current = next;
+          setXtermBaseBg(baseBg);
+          setXtermBg(themeBg);
+          term.options.theme = { ...theme, background: themeBg };
           term.refresh(0, Math.max(0, term.rows - 1));
         },
       );
@@ -3706,6 +3761,66 @@ export function XTerminal({
           }
         },
       );
+      unlistenBackgroundImage = await store.onKeyChange<string>(
+        "terminal.backgroundImage",
+        (v) => {
+          if (!term || disposed) return;
+          const next = v ?? DEFAULT_APP_SETTINGS["terminal.backgroundImage"];
+          terminalBgImageRef.current = next;
+          const themeName = themeNameRef.current;
+          const theme = getXtermTheme(themeName);
+          const baseBg = theme.background ?? "#0f111a";
+          const hasBgImage = Boolean(next);
+          const themeBg = hasBgImage ? "transparent" : baseBg;
+          setXtermBaseBg(baseBg);
+          setXtermBg(themeBg);
+          term.options.theme = { ...theme, background: themeBg };
+          term.refresh(0, Math.max(0, term.rows - 1));
+          if (!next) {
+            if (
+              terminalBgObjectUrlRef.current &&
+              terminalBgObjectUrlRef.current.startsWith("blob:")
+            ) {
+              URL.revokeObjectURL(terminalBgObjectUrlRef.current);
+            }
+            terminalBgObjectUrlRef.current = "";
+            setTerminalBgImage("");
+            return;
+          }
+          void loadTerminalBackgroundUrl(next).then((resolved) => {
+            if (disposed) {
+              if (resolved.startsWith("blob:")) {
+                URL.revokeObjectURL(resolved);
+              }
+              return;
+            }
+            if (
+              terminalBgObjectUrlRef.current &&
+              terminalBgObjectUrlRef.current.startsWith("blob:") &&
+              terminalBgObjectUrlRef.current !== resolved
+            ) {
+              URL.revokeObjectURL(terminalBgObjectUrlRef.current);
+            }
+            terminalBgObjectUrlRef.current =
+              resolved.startsWith("blob:") ? resolved : "";
+            setTerminalBgImage(resolved);
+          });
+        },
+      );
+      unlistenBackgroundOpacity = await store.onKeyChange<number>(
+        "terminal.backgroundOpacity",
+        (v) => {
+          if (disposed) return;
+          setTerminalBgOpacity(v ?? DEFAULT_APP_SETTINGS["terminal.backgroundOpacity"]);
+        },
+      );
+      unlistenBackgroundBlur = await store.onKeyChange<number>(
+        "terminal.backgroundBlur",
+        (v) => {
+          if (disposed) return;
+          setTerminalBgBlur(v ?? DEFAULT_APP_SETTINGS["terminal.backgroundBlur"]);
+        },
+      );
 
       // Initial resize (after fonts are applied)
       setTimeout(() => {
@@ -3739,7 +3854,17 @@ export function XTerminal({
       unlistenCursorBlink?.();
       unlistenLineHeight?.();
       unlistenAutoCopy?.();
+      unlistenBackgroundImage?.();
+      unlistenBackgroundOpacity?.();
+      unlistenBackgroundBlur?.();
       selectionDisposable?.dispose();
+      if (
+        terminalBgObjectUrlRef.current &&
+        terminalBgObjectUrlRef.current.startsWith("blob:")
+      ) {
+        URL.revokeObjectURL(terminalBgObjectUrlRef.current);
+        terminalBgObjectUrlRef.current = "";
+      }
       const pendingExec = agentTerminalExecutionRef.current;
       if (pendingExec) {
         finalizeAgentTerminalExecution(pendingExec, {
@@ -3800,11 +3925,13 @@ export function XTerminal({
   );
 
   const statusIcon = useMemo(() => {
-    if (connStatus === "connecting") return "material-symbols:sync-rounded";
-    if (connStatus === "connected")
-      return "material-symbols:check-circle-rounded";
-    if (connStatus === "error") return "material-symbols:error-rounded";
-    return "material-symbols:cloud-off-rounded";
+    const connStatusMap: Record<ConnectionStatus, string> = {
+      'connecting': 'dot-green dot-spin',
+      'connected': 'dot-green',
+      'error': 'dot-red dot-spin',
+      'idle': 'dot-red',
+    }
+    return connStatusMap[connStatus];
   }, [connStatus, t]);
 
   const statusText = useMemo(() => {
@@ -3814,17 +3941,29 @@ export function XTerminal({
     return t("terminal.status.idle");
   }, [connStatus]);
 
+  const terminalStyle = useMemo(() => {
+    if (!xtermBg && !terminalBgImage) return undefined;
+    const style: CSSProperties = {};
+    const customStyle = style as Record<string, string>;
+    if (xtermBg) {
+      customStyle["--xterminal-xterm-bg"] = xtermBg;
+    }
+    if (terminalBgImage) {
+      customStyle["--xterminal-bg-image"] = `url("${terminalBgImage}")`;
+      customStyle["--xterminal-bg-overlay"] = toRgba(
+        xtermBaseBg ?? "#0f111a",
+        terminalBgOpacity,
+      );
+      customStyle["--xterminal-bg-blur"] = `${terminalBgBlur}px`;
+    }
+    return style;
+  }, [terminalBgBlur, terminalBgImage, terminalBgOpacity, xtermBaseBg, xtermBg]);
+
   return (
     <>
       <div
-        className="xterminal"
-        style={
-          xtermBg
-            ? ({
-                ["--xterminal-xterm-bg"]: xtermBg,
-              } as CSSProperties)
-            : undefined
-        }
+        className={`xterminal${terminalBgImage ? " xterminal--bg" : ""}`}
+        style={terminalStyle}
       >
       <div className="xterminal-topbar">
         <div className= {[
@@ -3832,6 +3971,7 @@ export function XTerminal({
           `xterminal-topbar-left--${connStatus}`
         ].filter(Boolean).join(" ")}
           title={connError ?? undefined}>
+          {/* 状态按钮 */}
           <span
             className={[
               "xterminal-topbar-status",
@@ -3843,8 +3983,13 @@ export function XTerminal({
               .join(" ")}
             aria-hidden="true"
           >
-            <AppIcon icon={statusIcon} size={18} />
+            <span className={[
+              "dot",
+              statusIcon,
+            ].join(" ")}></span>
+            {/* <AppIcon icon={statusIcon} size={18} /> */}
           </span>
+          {/* 连接状态文本 */}
           <span className="xterminal-topbar-text">
             {statusText}
             {connStatus === "error" && connError ? `：${connError}` : ""}
