@@ -206,20 +206,6 @@ const hasExecutableCommand = (text: string): boolean => {
 
 const escapeForRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const OPENAI_MODEL_OPTIONS = [
-  "gpt-4o",
-  "gpt-4o-mini",
-  "gpt-4.1",
-  "gpt-4.1-mini",
-  "gpt-4.1-nano",
-];
-
-const ANTHROPIC_MODEL_OPTIONS = [
-  "claude-sonnet-4-5-20250929",
-  "claude-opus-4-20250514",
-  "claude-3-5-sonnet-20240620",
-  "claude-3-5-haiku-20241022",
-];
 const MAX_TRANSFER_TASKS = 120;
 const MAX_SMART_OUTPUT_CHARS = 160_000;
 const MAX_LOG_SIGNALS = 900;
@@ -369,6 +355,7 @@ export function XTerminal({
     DEFAULT_APP_SETTINGS["ai.provider"],
   );
   const [aiModel, setAiModel] = useState<string>("");
+  const [aiModelOptions, setAiModelOptions] = useState<string[]>([]);
   const [agentMode, setAgentMode] = useState<AgentMode>(
     DEFAULT_APP_SETTINGS["ai.agentMode"],
   );
@@ -411,7 +398,8 @@ export function XTerminal({
   const autoCopyRef = useRef<boolean>(DEFAULT_APP_SETTINGS["terminal.autoCopy"]);
   const lastSelectionRef = useRef<string>("");
   const lastCopyAtRef = useRef<number>(0);
-  const modelOptions = aiProvider === "openai" ? OPENAI_MODEL_OPTIONS : ANTHROPIC_MODEL_OPTIONS;
+  const modelOptions =
+    aiModelOptions.length > 0 ? aiModelOptions : aiModel ? [aiModel] : [];
   const modelOptionsWithCurrent =
     aiModel && !modelOptions.includes(aiModel)
       ? [aiModel, ...modelOptions]
@@ -1026,6 +1014,9 @@ export function XTerminal({
       model:
         (await store.get<string>("ai.model")) ??
         DEFAULT_APP_SETTINGS["ai.model"],
+      models:
+        (await store.get<string[]>("ai.models")) ??
+        DEFAULT_APP_SETTINGS["ai.models"],
       agentMode:
         (await store.get<AgentMode>("ai.agentMode")) ??
         DEFAULT_APP_SETTINGS["ai.agentMode"],
@@ -1052,6 +1043,7 @@ export function XTerminal({
     const settings = await readAiSettings();
     setAiProvider(settings.provider);
     setAgentMode(settings.agentMode || DEFAULT_APP_SETTINGS["ai.agentMode"]);
+    setAiModelOptions(settings.models ?? []);
     if (!aiModelTouchedRef.current) {
       setAiModel(settings.model);
     }

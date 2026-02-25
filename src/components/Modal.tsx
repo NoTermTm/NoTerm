@@ -9,6 +9,7 @@ type ModalProps = {
   children: React.ReactNode;
   onClose: () => void;
   width?: number;
+  bodyNoScroll?: boolean;
 };
 
 function getFocusable(root: HTMLElement) {
@@ -25,7 +26,7 @@ function getFocusable(root: HTMLElement) {
   return Array.from(nodes).filter((el) => el.offsetParent !== null);
 }
 
-export function Modal({ open, title, children, onClose, width }: ModalProps) {
+export function Modal({ open, title, children, onClose, width, bodyNoScroll = false }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
 
@@ -125,7 +126,7 @@ export function Modal({ open, title, children, onClose, width }: ModalProps) {
             <AppIcon icon="material-symbols:close-rounded" size={18} />
           </button>
         </div>
-        <div className="modal-body">{children}</div>
+        <div className={`modal-body${bodyNoScroll ? " modal-body--no-scroll" : ""}`}>{children}</div>
       </div>
     </div>,
     portalTarget,

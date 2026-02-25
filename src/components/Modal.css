@@ -74,6 +74,11 @@
     min-height: 0;
     overflow: auto;
     padding: 16px;
+    box-sizing: border-box;
+}
+
+.modal-body--no-scroll {
+    overflow: hidden;
 }
 
 @keyframes modal-in {
@@ -86,4 +91,3 @@
         transform: translateY(0) scale(1);
     }
 }
-

@@ -11,7 +11,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { mkdir, readFile, readTextFile, remove, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { BaseDirectory } from "@tauri-apps/api/path";
 import { TERMINAL_THEME_OPTIONS, getXtermTheme } from "../terminal/xtermThemes";
-import { sendAiChat, type AiMessage } from "../api/ai";
+import { sendAiChat, type AiMessage, type AiProvider } from "../api/ai";
 import { generateSalt, hashMasterKey } from "../utils/security";
 import { getModifierKeyName } from "../utils/platform";
 import { clearMasterKeySession, setMasterKeySession } from "../utils/securitySession";
@@ -19,8 +19,11 @@ import { getVersion } from "@tauri-apps/api/app";
 import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
 import { useI18n } from "../i18n";
 import { Select } from "../components/Select";
+import { Modal } from "../components/Modal";
+import { AppIcon } from "../components/AppIcon";
 import { toRgba } from "../utils/color";
 import { loadTerminalBackgroundUrl, TERMINAL_BG_DIR } from "../utils/terminalBackground";
+import { readAllAiModels, writeAiModels } from "../store/aiModels";
 import "./Settings.css";
 
 const TERMINAL_FONT_OPTIONS = [
@@ -38,21 +41,6 @@ const TERMINAL_FONT_WEIGHT_OPTIONS = [
   { label: "Medium", value: 500 },
   { label: "Semibold", value: 600 },
   { label: "Bold", value: 700 },
-];
-
-const OPENAI_MODEL_OPTIONS = [
-  { label: "gpt-4o", value: "gpt-4o" },
-  { label: "gpt-4o-mini", value: "gpt-4o-mini" },
-  { label: "gpt-4.1", value: "gpt-4.1" },
-  { label: "gpt-4.1-mini", value: "gpt-4.1-mini" },
-  { label: "gpt-4.1-nano", value: "gpt-4.1-nano" },
-];
-
-const ANTHROPIC_MODEL_OPTIONS = [
-  { label: "claude-sonnet-4-5-20250929", value: "claude-sonnet-4-5-20250929" },
-  { label: "claude-opus-4-20250514", value: "claude-opus-4-20250514" },
-  { label: "claude-3-5-sonnet-20240620", value: "claude-3-5-sonnet-20240620" },
-  { label: "claude-3-5-haiku-20241022", value: "claude-3-5-haiku-20241022" },
 ];
 
 const APP_THEME_OPTIONS = [
@@ -80,6 +68,24 @@ const TERMINAL_BG_ALLOWED: Record<string, string> = {
   gif: "image/gif",
 };
 
+type AiModelStatus = "idle" | "loading" | "success" | "error";
+
+const normalizeBaseUrl = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+};
+
+const detectModelCapability = (model: string) => {
+  const lower = model.toLowerCase();
+  if (lower.includes("embedding") || lower.includes("bge")) return "Embedding";
+  if (lower.includes("rerank")) return "Reranker";
+  if (lower.includes("vision")) return "Vision";
+  if (lower.includes("audio")) return "Audio";
+  if (lower.includes("reason") || lower.includes("r1")) return "Reasoning";
+  return "Chat";
+};
+
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
@@ -90,6 +96,25 @@ export function SettingsPage() {
   const terminalBackgroundUrlRef = useRef("");
   const [aiTestStatus, setAiTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [aiTestMessage, setAiTestMessage] = useState<string | null>(null);
+  const [aiModels, setAiModels] = useState<Record<AiProvider, string[]>>({
+    openai: [],
+    anthropic: [],
+  });
+  const [aiModelStatus, setAiModelStatus] = useState<Record<AiProvider, AiModelStatus>>({
+    openai: "idle",
+    anthropic: "idle",
+  });
+  const [aiModelMessage, setAiModelMessage] = useState<Record<AiProvider, string | null>>({
+    openai: null,
+    anthropic: null,
+  });
+  const aiModelAutoSignatureRef = useRef<Record<AiProvider, string>>({
+    openai: "",
+    anthropic: "",
+  });
+  const [aiModelSearch, setAiModelSearch] = useState("");
+  const [aiModelCustomInput, setAiModelCustomInput] = useState("");
+  const [aiModelModalOpen, setAiModelModalOpen] = useState(false);
   const [masterKeyInput, setMasterKeyInput] = useState("");
   const [masterKeyConfirm, setMasterKeyConfirm] = useState("");
   const [masterKeyStatus, setMasterKeyStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
@@ -221,6 +246,9 @@ export function SettingsPage() {
         "ai.model":
           (await store.get<string>("ai.model")) ??
           DEFAULT_APP_SETTINGS["ai.model"],
+        "ai.models":
+          (await store.get<string[]>("ai.models")) ??
+          DEFAULT_APP_SETTINGS["ai.models"],
         "ai.agentMode":
           (await store.get<AppSettings["ai.agentMode"]>("ai.agentMode")) ??
           DEFAULT_APP_SETTINGS["ai.agentMode"],
@@ -228,6 +256,19 @@ export function SettingsPage() {
       if (!disposed) setSettings(next);
     };
 
+    void run();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+
+  useEffect(() => {
+    let disposed = false;
+    const run = async () => {
+      const cached = await readAllAiModels();
+      if (!disposed) setAiModels(cached);
+    };
     void run();
     return () => {
       disposed = true;
@@ -717,6 +758,148 @@ export function SettingsPage() {
     }
   };
 
+  const fetchAiModels = async (provider: AiProvider, force = false) => {
+    const models = aiModels[provider];
+    if (!force && models.length > 0) return;
+
+    const baseUrl =
+      provider === "openai" ? settings["ai.openai.baseUrl"] : settings["ai.anthropic.baseUrl"];
+    const apiKey =
+      provider === "openai" ? settings["ai.openai.apiKey"] : settings["ai.anthropic.apiKey"];
+    const normalizedBase = normalizeBaseUrl(baseUrl);
+    const signature = `${normalizedBase}|${apiKey.trim()}`;
+    if (force) {
+      aiModelAutoSignatureRef.current[provider] = signature;
+    }
+
+    if (!normalizedBase) {
+      setAiModelStatus((prev) => ({ ...prev, [provider]: "error" }));
+      setAiModelMessage((prev) => ({
+        ...prev,
+        [provider]:
+          provider === "openai"
+            ? t("settings.ai.error.openaiUrl")
+            : t("settings.ai.error.anthropicUrl"),
+      }));
+      return;
+    }
+
+    if (!apiKey.trim()) {
+      setAiModelStatus((prev) => ({ ...prev, [provider]: "error" }));
+      setAiModelMessage((prev) => ({
+        ...prev,
+        [provider]:
+          provider === "openai"
+            ? t("settings.ai.error.openaiKey")
+            : t("settings.ai.error.anthropicKey"),
+      }));
+      return;
+    }
+
+    setAiModelStatus((prev) => ({ ...prev, [provider]: "loading" }));
+    setAiModelMessage((prev) => ({
+      ...prev,
+      [provider]: t("settings.ai.model.refreshing"),
+    }));
+
+    try {
+      const apiRoot = normalizedBase.endsWith("/v1")
+        ? normalizedBase
+        : `${normalizedBase}/v1`;
+      const url = `${apiRoot}/models`;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (provider === "openai") {
+        headers.Authorization = `Bearer ${apiKey.trim()}`;
+      } else {
+        headers["x-api-key"] = apiKey.trim();
+        headers["anthropic-version"] = "2023-06-01";
+      }
+
+      const resp = await fetch(url, { headers, method: "GET" });
+      if (!resp.ok) {
+        throw new Error(`${resp.status} ${resp.statusText}`.trim());
+      }
+      const data = (await resp.json()) as { data?: Array<{ id?: string }> };
+      const list: string[] = Array.isArray(data.data)
+        ? data.data
+            .map((item: { id?: string }) => item?.id)
+            .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        : [];
+      const unique: string[] = Array.from(new Set(list)).sort();
+
+      await writeAiModels(provider, unique);
+      setAiModels((prev) => ({ ...prev, [provider]: unique }));
+      setAiModelStatus((prev) => ({ ...prev, [provider]: "success" }));
+      setAiModelMessage((prev) => ({
+        ...prev,
+        [provider]:
+          unique.length > 0
+            ? t("settings.ai.model.refresh.success", { count: unique.length })
+            : t("settings.ai.model.refresh.empty"),
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAiModelStatus((prev) => ({ ...prev, [provider]: "error" }));
+      setAiModelMessage((prev) => ({
+        ...prev,
+        [provider]: message || t("settings.ai.model.refresh.fail"),
+      }));
+    }
+  };
+
+  const updateAiModelsSelection = (next: string[]) => {
+    const unique = Array.from(new Set(next.map((item) => item.trim()).filter(Boolean)));
+    updateSetting("ai.models", unique);
+    if (!unique.includes(settings["ai.model"])) {
+      updateSetting("ai.model", unique[0] ?? "");
+    }
+  };
+
+  const toggleAiModelSelection = (model: string) => {
+    if (selectedModels.includes(model)) {
+      updateAiModelsSelection(selectedModels.filter((item) => item !== model));
+    } else {
+      updateAiModelsSelection([...selectedModels, model]);
+    }
+  };
+
+  const handleAddCustomModel = () => {
+    const value = aiModelCustomInput.trim();
+    if (!value) return;
+    updateAiModelsSelection([...selectedModels, value]);
+    setAiModelCustomInput("");
+  };
+
+  useEffect(() => {
+    const provider = settings["ai.provider"];
+    if (!settings["ai.enabled"]) return;
+    const cached = aiModels[provider];
+    const baseUrl =
+      provider === "openai" ? settings["ai.openai.baseUrl"] : settings["ai.anthropic.baseUrl"];
+    const apiKey =
+      provider === "openai" ? settings["ai.openai.apiKey"] : settings["ai.anthropic.apiKey"];
+    const signature = `${normalizeBaseUrl(baseUrl)}|${apiKey.trim()}`;
+
+    if (cached.length > 0) return;
+    if (aiModelStatus[provider] === "loading") return;
+
+    if (aiModelAutoSignatureRef.current[provider] === signature) return;
+    aiModelAutoSignatureRef.current[provider] = signature;
+    void fetchAiModels(provider, true);
+  }, [
+    aiModels,
+    aiModelStatus,
+    settings["ai.anthropic.apiKey"],
+    settings["ai.anthropic.baseUrl"],
+    settings["ai.enabled"],
+    settings["ai.openai.apiKey"],
+    settings["ai.openai.baseUrl"],
+    settings["ai.provider"],
+  ]);
+
 
   const handleExportConfig = async () => {
     setExportStatus("saving");
@@ -1006,18 +1189,24 @@ export function SettingsPage() {
   const isDownloading = updateStatus === "downloading";
   const isChecking = updateStatus === "checking";
   const showDownloadAction = Boolean(updateInfo) && updateStatus !== "installed";
-  const aiModelOptions =
-    settings["ai.provider"] === "openai"
-      ? OPENAI_MODEL_OPTIONS
-      : ANTHROPIC_MODEL_OPTIONS;
-  const aiModelOptionsWithCurrent = aiModelOptions.some(
-    (opt) => opt.value === settings["ai.model"],
-  )
-    ? aiModelOptions
-    : [
-        ...aiModelOptions,
-        { value: settings["ai.model"], label: settings["ai.model"] },
-      ];
+  const currentProvider = settings["ai.provider"];
+  const currentModelList = aiModels[currentProvider] ?? [];
+  const selectedModels =
+    settings["ai.models"] && settings["ai.models"].length > 0
+      ? settings["ai.models"]
+      : settings["ai.model"]
+        ? [settings["ai.model"]]
+        : [];
+  const mergedModels = Array.from(new Set([...currentModelList, ...selectedModels]));
+  const searchKeyword = aiModelSearch.trim().toLowerCase();
+  const filteredModels = searchKeyword
+    ? mergedModels.filter((model) => model.toLowerCase().includes(searchKeyword))
+    : mergedModels;
+  const aiModelStatusValue = aiModelStatus[currentProvider];
+  const aiModelMessageValue = aiModelMessage[currentProvider];
+  const currentProviderLabel = currentProvider === "openai" ? "OpenAI" : "Anthropic";
+  const previewedModels = selectedModels.slice(0, 6);
+  const extraModelsCount = Math.max(0, selectedModels.length - previewedModels.length);
 
   return (
     <div className="settings-page">
@@ -1723,19 +1912,252 @@ export function SettingsPage() {
             <div className="settings-item-label">{t("settings.ai.model")}</div>
             <div className="settings-item-description">{t("settings.ai.model.desc")}</div>
           </div>
-          <div className="settings-item-control">
-            <Select
-              className="settings-select"
-              value={settings["ai.model"]}
-              onChange={(nextValue) => updateSetting("ai.model", nextValue)}
-              disabled={!settings["ai.enabled"]}
-              options={aiModelOptionsWithCurrent.map((opt) => ({
-                value: opt.value,
-                label: opt.label,
-              }))}
-            />
+          <div className="settings-item-control settings-item-control--stack">
+            <div className="settings-model-current">
+              <span className="settings-model-current-label">
+                {t("settings.ai.model.current")}
+              </span>
+              {selectedModels.length > 0 ? (
+                <Select
+                  className="settings-select settings-select--compact"
+                  value={settings["ai.model"]}
+                  onChange={(nextValue) => updateSetting("ai.model", nextValue)}
+                  disabled={!settings["ai.enabled"]}
+                  options={selectedModels.map((model) => ({
+                    value: model,
+                    label: model,
+                  }))}
+                />
+              ) : (
+                <input
+                  type="text"
+                  className="settings-input settings-input--compact"
+                  value={settings["ai.model"]}
+                  onChange={(e) => updateSetting("ai.model", e.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                  placeholder={t("settings.ai.model.placeholder")}
+                />
+              )}
+              <button
+                className="btn btn-secondary btn-sm settings-model-manage"
+                type="button"
+                onClick={() => setAiModelModalOpen(true)}
+                disabled={!settings["ai.enabled"]}
+              >
+                {t("settings.ai.model.manage")}
+              </button>
+            </div>
+            <div className="settings-models-selected">
+              {selectedModels.length === 0 ? (
+                <span className="settings-inline-meta">
+                  {t("settings.ai.model.selected.empty")}
+                </span>
+              ) : (
+                <>
+                  {previewedModels.map((model) => (
+                    <span key={model} className="settings-model-chip">
+                      {model}
+                    </span>
+                  ))}
+                  {extraModelsCount > 0 && (
+                    <span className="settings-model-chip">
+                      +{extraModelsCount}
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+            {aiModelMessageValue && (
+              <span
+                className={`settings-test-status ${
+                  aiModelStatusValue === "success"
+                    ? "settings-test-status--success"
+                    : aiModelStatusValue === "error"
+                      ? "settings-test-status--error"
+                      : ""
+                }`}
+              >
+                {aiModelMessageValue}
+              </span>
+            )}
           </div>
         </div>
+        <Modal
+          open={aiModelModalOpen}
+          onClose={() => setAiModelModalOpen(false)}
+          title={t("settings.ai.model.manage.title")}
+          width={1180}
+          bodyNoScroll
+        >
+          <div className="settings-model-modal">
+            <div className="settings-model-subtitle">
+              {t("settings.ai.model.manage.subtitle")}
+            </div>
+            <div className="settings-model-toolbar">
+              <label className="settings-model-search-wrap">
+                <AppIcon
+                  icon="material-symbols:search-rounded"
+                  size={18}
+                  className="settings-model-search-icon"
+                />
+                <input
+                  type="text"
+                  className="settings-input settings-model-search-input"
+                  value={aiModelSearch}
+                  onChange={(event) => setAiModelSearch(event.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                  placeholder={t("settings.ai.model.search.placeholder")}
+                />
+              </label>
+              <button
+                className="btn btn-secondary settings-model-refresh-btn"
+                type="button"
+                onClick={() => void fetchAiModels(currentProvider, true)}
+                disabled={!settings["ai.enabled"] || aiModelStatusValue === "loading"}
+              >
+                <AppIcon icon="material-symbols:refresh-rounded" size={16} />
+                {aiModelStatusValue === "loading"
+                  ? t("settings.ai.model.refreshing")
+                  : t("settings.ai.model.refresh")}
+              </button>
+            </div>
+            <div className="settings-model-grid">
+              <section className="settings-model-panel">
+                <div className="settings-model-panel-head">
+                  <div className="settings-model-panel-title-wrap">
+                    <span className="settings-model-panel-title">
+                      {t("settings.ai.model.selected")}
+                    </span>
+                    <span className="settings-model-panel-count">{selectedModels.length}</span>
+                  </div>
+                  <span className="settings-model-panel-hint">
+                    {t("settings.ai.model.selected.hint")}
+                  </span>
+                </div>
+                <div className="settings-model-selected-panel">
+                  {selectedModels.length === 0 ? (
+                    <span className="settings-inline-meta">
+                      {t("settings.ai.model.selected.empty")}
+                    </span>
+                  ) : (
+                    selectedModels.map((model) => (
+                      <button
+                        key={model}
+                        type="button"
+                        className="settings-model-token"
+                        onClick={() => toggleAiModelSelection(model)}
+                        disabled={!settings["ai.enabled"]}
+                      >
+                        <span className="settings-model-token-text">{model}</span>
+                        <AppIcon icon="material-symbols:close-small-rounded" size={16} />
+                      </button>
+                    ))
+                  )}
+                </div>
+              </section>
+              <section className="settings-model-panel settings-model-panel--available">
+                <div className="settings-model-panel-head">
+                  <div className="settings-model-panel-title-wrap">
+                    <span className="settings-model-panel-title">
+                      {t("settings.ai.model.available")}
+                    </span>
+                    <span className="settings-model-panel-count">{filteredModels.length}</span>
+                  </div>
+                  <span className="settings-model-panel-hint">
+                    {t("settings.ai.model.available.hint")}
+                  </span>
+                </div>
+                <div className="settings-models-list settings-models-list--panel">
+                  {filteredModels.length === 0 ? (
+                    <div className="settings-inline-meta">
+                      {t("settings.ai.model.search.empty")}
+                    </div>
+                  ) : (
+                    filteredModels.map((model) => {
+                      const selected = selectedModels.includes(model);
+                      return (
+                        <button
+                          key={model}
+                          type="button"
+                          className={`settings-model-row${selected ? " is-selected" : ""}`}
+                          onClick={() => toggleAiModelSelection(model)}
+                          disabled={!settings["ai.enabled"]}
+                        >
+                          <span
+                            className={`settings-model-radio${selected ? " is-selected" : ""}`}
+                            aria-hidden="true"
+                          />
+                          <div className="settings-model-row-main">
+                            <span className="settings-model-row-name">{model}</span>
+                            <span className="settings-model-row-badges">
+                              <span className="settings-model-row-badge">
+                                {currentProviderLabel}
+                              </span>
+                              <span className="settings-model-row-badge">
+                                {detectModelCapability(model)}
+                              </span>
+                            </span>
+                          </div>
+                          <span
+                            className={`settings-model-row-status${selected ? " is-selected" : ""}`}
+                          >
+                            {selected
+                              ? t("settings.ai.model.state.selected")
+                              : t("settings.ai.model.state.unselected")}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </section>
+            </div>
+            <div className="settings-model-footer">
+              <label className="settings-model-add-wrap">
+                <AppIcon
+                  icon="material-symbols:add-rounded"
+                  size={18}
+                  className="settings-model-add-icon"
+                />
+                <input
+                  type="text"
+                  className="settings-input settings-model-add-input"
+                  value={aiModelCustomInput}
+                  onChange={(event) => setAiModelCustomInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handleAddCustomModel();
+                    }
+                  }}
+                  disabled={!settings["ai.enabled"]}
+                  placeholder={t("settings.ai.model.add.placeholder")}
+                />
+              </label>
+              <button
+                className="btn settings-model-add-btn"
+                type="button"
+                onClick={handleAddCustomModel}
+                disabled={!settings["ai.enabled"] || !aiModelCustomInput.trim()}
+              >
+                {t("settings.ai.model.add")}
+              </button>
+            </div>
+            {aiModelMessageValue && (
+              <span
+                className={`settings-test-status ${
+                  aiModelStatusValue === "success"
+                    ? "settings-test-status--success"
+                    : aiModelStatusValue === "error"
+                      ? "settings-test-status--error"
+                      : ""
+                }`}
+              >
+                {aiModelMessageValue}
+              </span>
+            )}
+          </div>
+        </Modal>
         <div className="settings-item">
           <div className="settings-item-info">
             <div className="settings-item-label">{t("settings.ai.test")}</div>

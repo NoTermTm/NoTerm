@@ -40,6 +40,7 @@ export type AppSettings = {
   "ai.anthropic.baseUrl": string;
   "ai.anthropic.apiKey": string;
   "ai.model": string;
+  "ai.models": string[];
   "ai.agentMode": "suggest_only" | "confirm_then_execute";
 };
 
@@ -75,6 +76,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "ai.anthropic.baseUrl": "https://api.anthropic.com",
   "ai.anthropic.apiKey": "",
   "ai.model": "claude-sonnet-4-5-20250929",
+  "ai.models": [],
   "ai.agentMode": "suggest_only",
 };
 
