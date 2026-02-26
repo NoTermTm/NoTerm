@@ -169,7 +169,8 @@ jobs:
             if (target.includes("windows")) {
               prefer.push(".nsis.zip.sig", ".msi.zip.sig");
             } else if (target.includes("apple-darwin")) {
-              prefer.push(".app.tar.gz.sig", ".app.zip.sig", ".dmg.sig", ".tar.gz.sig", ".zip.sig");
+              // Updater artifacts on macOS are app archives, not dmg installers.
+              prefer.push(".app.tar.gz.sig", ".app.zip.sig", ".tar.gz.sig", ".zip.sig");
             }
 
             for (const suffix of prefer) {
@@ -221,9 +222,20 @@ jobs:
             }
 
             const payloadName = path.basename(payloadRel);
-            const payloadParsed = path.parse(payloadName);
             const suffix = targetToSuffix(target);
-            const normalizedPayloadName = `${payloadParsed.name}_${suffix}${payloadParsed.ext}`;
+            const knownExts = [
+              ".app.tar.gz",
+              ".nsis.zip",
+              ".msi.zip",
+              ".app.zip",
+              ".tar.gz",
+              ".zip",
+              ".exe",
+              ".dmg",
+            ];
+            const ext = knownExts.find((item) => payloadName.endsWith(item)) ?? path.extname(payloadName);
+            const base = payloadName.slice(0, payloadName.length - ext.length);
+            const normalizedPayloadName = `${base}_${suffix}${ext}`;
             const normalizedSigName = `${normalizedPayloadName}.sig`;
 
             fs.copyFileSync(payloadAbs, path.join(releaseAssetsDir, normalizedPayloadName));
@@ -236,7 +248,7 @@ jobs:
           }
 
           const latest = {
-            version: tag,
+            version: tag.replace(/^v/, ""),
             notes: "",
             pub_date: new Date().toISOString(),
             platforms,
