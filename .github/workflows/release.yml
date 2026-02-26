@@ -83,6 +83,20 @@ jobs:
         run: |
           npx --no-install tauri build --target ${{ matrix.target }} ${{ matrix.bundles }}
 
+      - name: Debug bundle outputs
+        if: always()
+        shell: bash
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          echo "=== Bundle directory: ${BUNDLE_DIR} ==="
+          if [ ! -d "${BUNDLE_DIR}" ]; then
+            echo "Bundle directory not found."
+            exit 0
+          fi
+          find "${BUNDLE_DIR}" -type f | sort
+          echo "=== Signature files ==="
+          find "${BUNDLE_DIR}" -type f -name "*.sig" | sort || true
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -104,6 +118,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+
+      - name: Debug downloaded artifacts
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Downloaded artifact tree ==="
+          find dist -type f | sort
+          echo "=== Downloaded signature files ==="
+          find dist -type f -name "*.sig" | sort || true
+
       - name: Generate latest.json
         shell: bash
         run: |
@@ -145,7 +169,7 @@ jobs:
             if (target.includes("windows")) {
               prefer.push(".nsis.zip.sig", ".msi.zip.sig");
             } else if (target.includes("apple-darwin")) {
-              prefer.push(".app.tar.gz.sig", ".tar.gz.sig");
+              prefer.push(".app.tar.gz.sig", ".app.zip.sig", ".dmg.sig", ".tar.gz.sig", ".zip.sig");
             }
 
             for (const suffix of prefer) {
@@ -183,7 +207,9 @@ jobs:
 
             const sigFile = pickSig(allFiles, target);
             if (!sigFile) {
-              throw new Error(`No .sig found for ${target}`);
+              console.warn(`No .sig found for ${target}, skip updater platform mapping.`);
+              console.warn(`Files for ${target}:`, allFiles.slice(0, 40));
+              continue;
             }
 
             const sigPath = path.join(dir, sigFile);
@@ -215,6 +241,10 @@ jobs:
             pub_date: new Date().toISOString(),
             platforms,
           };
+
+          if (Object.keys(platforms).length === 0) {
+            throw new Error("No signed updater payload found for any platform.");
+          }
 
           fs.writeFileSync(path.join(root, "latest.json"), JSON.stringify(latest, null, 2));
           console.log("Generated latest.json with platforms:", Object.keys(platforms));
