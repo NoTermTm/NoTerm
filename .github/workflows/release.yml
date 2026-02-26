@@ -112,6 +112,7 @@ jobs:
           const path = require("path");
 
           const root = path.resolve("dist");
+          const releaseAssetsDir = path.join(root, "release-assets");
           const tag = process.env.GITHUB_REF_NAME;
           const repo = process.env.GITHUB_REPOSITORY;
 
@@ -119,11 +120,21 @@ jobs:
             throw new Error("Missing GITHUB_REF_NAME or GITHUB_REPOSITORY");
           }
 
+          fs.rmSync(releaseAssetsDir, { recursive: true, force: true });
+          fs.mkdirSync(releaseAssetsDir, { recursive: true });
+
           const targetToPlatform = (target) => {
             if (target.startsWith("x86_64-apple-darwin")) return "darwin-x86_64";
             if (target.startsWith("aarch64-apple-darwin")) return "darwin-aarch64";
             if (target.startsWith("x86_64-pc-windows-msvc")) return "windows-x86_64";
             return target;
+          };
+
+          const targetToSuffix = (target) => {
+            if (target.startsWith("x86_64-apple-darwin")) return "x64";
+            if (target.startsWith("aarch64-apple-darwin")) return "aarch64";
+            if (target.startsWith("x86_64-pc-windows-msvc")) return "x64";
+            return target.replace(/[^a-zA-Z0-9_-]/g, "_");
           };
 
           const pickSig = (files, target) => {
@@ -177,10 +188,23 @@ jobs:
 
             const sigPath = path.join(dir, sigFile);
             const sig = fs.readFileSync(sigPath, "utf8").trim();
-            const assetName = sigFile.replace(/\\.sig$/, "");
+            const payloadRel = sigFile.replace(/\\.sig$/, "");
+            const payloadAbs = path.join(dir, payloadRel);
+            if (!fs.existsSync(payloadAbs)) {
+              throw new Error(`Missing payload for signature: ${target} -> ${payloadRel}`);
+            }
+
+            const payloadName = path.basename(payloadRel);
+            const payloadParsed = path.parse(payloadName);
+            const suffix = targetToSuffix(target);
+            const normalizedPayloadName = `${payloadParsed.name}_${suffix}${payloadParsed.ext}`;
+            const normalizedSigName = `${normalizedPayloadName}.sig`;
+
+            fs.copyFileSync(payloadAbs, path.join(releaseAssetsDir, normalizedPayloadName));
+            fs.writeFileSync(path.join(releaseAssetsDir, normalizedSigName), `${sig}\n`);
 
             platforms[platform] = {
-              url: `https://github.com/${repo}/releases/download/${tag}/${assetName}`,
+              url: `https://github.com/${repo}/releases/download/${tag}/${normalizedPayloadName}`,
               signature: sig,
             };
           }
@@ -194,6 +218,7 @@ jobs:
 
           fs.writeFileSync(path.join(root, "latest.json"), JSON.stringify(latest, null, 2));
           console.log("Generated latest.json with platforms:", Object.keys(platforms));
+          console.log("Prepared release assets in:", releaseAssetsDir);
           NODE
 
       - name: Create release and upload assets
@@ -208,10 +233,6 @@ jobs:
           files: |
             dist/latest.json
             dist/**/*.dmg
-            dist/**/*.exe
-            dist/**/*.msi
-            dist/**/*.zip
-            dist/**/*.tar.gz
-            dist/**/*.sig
+            dist/release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
