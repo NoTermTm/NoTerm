@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "verify:updater-release": "node scripts/verify-updater-release.mjs"
   },
   "dependencies": {
     "@iconify-json/material-symbols": "^1.2.29",
