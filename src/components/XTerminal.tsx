@@ -265,7 +265,6 @@ export function XTerminal({
   osType = "unknown",
   onConnect,
   onRequestSplit,
-  onCloseSession,
   isSplit = false,
   onSendScript,
 }: XTerminalProps) {
@@ -351,9 +350,6 @@ export function XTerminal({
   const [forceRunConfirmInput, setForceRunConfirmInput] = useState("");
   const [forceRunConfirmError, setForceRunConfirmError] = useState<string | null>(null);
   const [aiWidth, setAiWidth] = useState(380);
-  const [aiProvider, setAiProvider] = useState<"openai" | "anthropic">(
-    DEFAULT_APP_SETTINGS["ai.provider"],
-  );
   const [aiModel, setAiModel] = useState<string>("");
   const [aiModelOptions, setAiModelOptions] = useState<string[]>([]);
   const [agentMode, setAgentMode] = useState<AgentMode>(
@@ -1041,7 +1037,6 @@ export function XTerminal({
 
   const syncAiSettings = async () => {
     const settings = await readAiSettings();
-    setAiProvider(settings.provider);
     setAgentMode(settings.agentMode || DEFAULT_APP_SETTINGS["ai.agentMode"]);
     setAiModelOptions(settings.models ?? []);
     if (!aiModelTouchedRef.current) {

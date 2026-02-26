@@ -16,7 +16,6 @@ export function SlidePanel({
   title,
   children,
   onAdd,
-  closePanel,
   dockToWindow,
 }: SlidePanelProps) {
   return (
