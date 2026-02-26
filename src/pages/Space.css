@@ -66,11 +66,15 @@
 .space-panel {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
-    border-radius: 12px;
     display: flex;
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
+    border-radius: 6px;
+    -webkit-border-radius: 6px;
+    -moz-border-radius: 6px;
+    -ms-border-radius: 6px;
+    -o-border-radius: 6px;
 }
 
 .space-panel-header {

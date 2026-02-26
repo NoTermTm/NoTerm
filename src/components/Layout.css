@@ -80,8 +80,8 @@
     max-height: 360px;
     display: flex;
     flex-direction: column;
-    background: #ffffff;
-    border: 1px solid rgba(214, 219, 229, 0.9);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-light);
     border-radius: 12px;
     box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
     -webkit-border-radius: 12px;
@@ -109,14 +109,14 @@
     padding: 0 10px;
     border: none;
     border-radius: 8px;
-    background: rgba(15, 143, 255, 0.08);
+    background: color-mix(in srgb, var(--accent) 14%, var(--bg-primary) 86%);
     color: var(--accent);
     font-size: 12px;
     font-weight: 600;
 }
 
 .message-popover-action:hover {
-    background: rgba(15, 143, 255, 0.12);
+    background: color-mix(in srgb, var(--accent) 22%, var(--bg-primary) 78%);
 }
 
 .message-popover-actions {
@@ -139,22 +139,22 @@
 .message-item {
     padding: 10px 12px;
     border-radius: 12px;
-    border: 1px solid rgba(212, 219, 232, 0.9);
-    background: #ffffff;
+    border: 1px solid var(--border-light);
+    background: var(--bg-secondary);
     box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
 }
 
 .message-item--info {
-    border-color: rgba(89, 168, 255, 0.4);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--bg-primary) 60%);
 }
 
 .message-item--success {
-    border-color: rgba(34, 197, 94, 0.45);
+    border-color: color-mix(in srgb, var(--success) 40%, var(--bg-primary) 60%);
 }
 
 .message-item--error {
-    border-color: rgba(248, 113, 113, 0.6);
-    background: rgba(254, 242, 242, 0.9);
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--bg-primary) 55%);
+    background: color-mix(in srgb, var(--danger) 10%, var(--bg-secondary) 90%);
 }
 
 .message-item-header {
@@ -188,7 +188,7 @@
 .message-empty {
     padding: 16px;
     border-radius: 10px;
-    border: 1px dashed rgba(214, 219, 229, 0.9);
+    border: 1px dashed var(--border-light);
     background: var(--bg-secondary);
     color: var(--text-tertiary);
     font-size: 12px;
@@ -281,7 +281,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(245, 246, 248, 0.92);
+    background: color-mix(in srgb, var(--bg-primary) 92%, transparent 8%);
     backdrop-filter: blur(8px);
     border-radius: var(--window-radius);
     overflow: hidden;
@@ -300,9 +300,9 @@
     width: 336px;
     padding: 26px 24px 22px;
     border-radius: 16px;
-    background: #ffffff;
+    background: var(--bg-primary);
     box-shadow: 0 24px 50px rgba(15, 23, 42, 0.2);
-    border: 1px solid rgba(214, 219, 229, 0.9);
+    border: 1px solid var(--border-light);
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -313,7 +313,7 @@
     width: 60px;
     height: 60px;
     border-radius: 12px;
-    background: rgba(15, 143, 255, 0.12);
+    background: color-mix(in srgb, var(--accent) 16%, var(--bg-primary) 84%);
     color: var(--accent);
     display: inline-flex;
     align-items: center;
@@ -344,8 +344,8 @@
 }
 
 .lock-input:focus {
-    border-color: rgba(15, 143, 255, 0.6);
-    box-shadow: 0 0 0 3px rgba(15, 143, 255, 0.15);
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--bg-primary) 40%);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent 82%);
 }
 
 .lock-error {
@@ -380,17 +380,17 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(16, 18, 27, 0.35);
+    background: color-mix(in srgb, var(--text-primary) 18%, transparent 82%);
     backdrop-filter: blur(6px);
 }
 
 .lock-reset-card {
     width: 360px;
     border-radius: 16px;
-    background: #ffffff;
+    background: var(--bg-primary);
     padding: 20px 22px 18px;
     box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
-    border: 1px solid rgba(214, 219, 229, 0.9);
+    border: 1px solid var(--border-light);
     display: flex;
     flex-direction: column;
     gap: 12px;

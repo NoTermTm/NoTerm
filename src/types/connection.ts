@@ -4,6 +4,7 @@ export type ConnectionKind = "ssh" | "rdp";
 
 export interface SshConnectionConfig extends SshConnection {
   kind: "ssh";
+  osType?: "windows" | "macos" | "linux" | "unknown";
 }
 
 export interface RdpConnectionConfig {

@@ -104,7 +104,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
-
       - name: Generate latest.json
         shell: bash
         run: |
@@ -204,6 +203,7 @@ jobs:
           name: "NoTerm ${{ github.ref_name }}"
           draft: false
           prerelease: false
+          overwrite_files: true
           fail_on_unmatched_files: false
           files: |
             dist/latest.json

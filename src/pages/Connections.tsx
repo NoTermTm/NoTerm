@@ -56,6 +56,8 @@ const CONNECTION_COLOR_OPTIONS = [
   "#b58cff",
 ];
 
+type OsType = "windows" | "macos" | "linux" | "unknown";
+
 const normalizeTags = (tags?: string[]) =>
   Array.from(
     new Set(
@@ -68,6 +70,20 @@ const normalizeTags = (tags?: string[]) =>
 
 const normalizeColor = (color?: string) =>
   color && color.trim() ? color.trim() : DEFAULT_CONNECTION_COLOR;
+
+const normalizeOsType = (value?: string): OsType | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "windows" ||
+    normalized === "macos" ||
+    normalized === "linux" ||
+    normalized === "unknown"
+  ) {
+    return normalized as OsType;
+  }
+  return undefined;
+};
 
 const SETTINGS_TAB_ID = "__settings__";
 
@@ -98,6 +114,76 @@ const parseColorToRgb = (color: string): [number, number, number] | null => {
     return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
   }
   return null;
+};
+
+const inferOsTypeFromText = (value: string): OsType | null => {
+  const text = value.trim().toLowerCase();
+  if (!text) return null;
+  if (
+    text.includes("darwin") ||
+    text.includes("macos") ||
+    text.includes("mac os") ||
+    text.includes("os x")
+  ) {
+    return "macos";
+  }
+  if (text.includes("linux")) return "linux";
+  if (
+    text.includes("windows") ||
+    text.includes("mingw") ||
+    text.includes("msys") ||
+    text.includes("cygwin") ||
+    text.includes("win32")
+  ) {
+    return "windows";
+  }
+  return null;
+};
+
+const detectRemoteOsType = async (sessionId: string): Promise<OsType> => {
+  const uname = await sshApi
+    .executeCommand(sessionId, "uname -s")
+    .catch(() => "");
+  const unameType = inferOsTypeFromText(uname);
+  if (unameType) return unameType;
+
+  const swVers = await sshApi
+    .executeCommand(sessionId, "sw_vers -productName")
+    .catch(() => "");
+  const swType = inferOsTypeFromText(swVers);
+  if (swType) return swType;
+
+  const winVer = await sshApi
+    .executeCommand(sessionId, "cmd.exe /c ver")
+    .catch(() => "");
+  const winType = inferOsTypeFromText(winVer);
+  if (winType) return winType;
+
+  const psOs = await sshApi
+    .executeCommand(sessionId, 'powershell -NoProfile -Command "$env:OS"')
+    .catch(() => "");
+  const psType = inferOsTypeFromText(psOs);
+  if (psType) return psType;
+
+  return "unknown";
+};
+
+const getConnectionIcon = (conn: ConnectionConfig): string => {
+  if (conn.kind === "rdp") {
+    return "material-symbols:desktop-windows-rounded";
+  }
+  // 对于 SSH 连接，如果明确了系统类型，则展示对应的图标；如果系统类型未知，则展示通用的终端图标
+  if (conn.osType === "windows") {
+    return "simple-icons:windows";
+  }
+  if (conn.osType === "macos") {
+    return "simple-icons:macos";
+  }
+  // 默认展示为 Linux 图标，因为很多时候无法准确识别系统，且 Linux 占比较大
+  if (conn.osType === "linux") {
+    return "simple-icons:linux";
+  }
+  return "material-symbols:dns";
 };
 
 
@@ -163,6 +249,7 @@ const normalizeSshConnection = (
   auth_type: conn.auth_type ?? { type: "Password", password: "" },
   auth_profile_id: conn.auth_profile_id,
   encoding: conn.encoding ?? "utf-8",
+  osType: normalizeOsType(conn.osType),
 });
 
 const normalizeRdpConnection = (
@@ -610,6 +697,8 @@ export function ConnectionsPage({
     string | null
   >(null);
   const [connectPickerOpen, setConnectPickerOpen] = useState(false);
+  const [connectPickerQuery, setConnectPickerQuery] = useState("");
+  const connectPickerInputRef = useRef<HTMLInputElement | null>(null);
   const [testStatus, setTestStatus] = useState<
     "idle" | "testing" | "success" | "error"
   >("idle");
@@ -672,6 +761,12 @@ export function ConnectionsPage({
       window.removeEventListener("open-connection-picker", onOpen);
     };
   }, []);
+
+  useEffect(() => {
+    if (!connectPickerOpen) return;
+    setConnectPickerQuery("");
+    requestAnimationFrame(() => connectPickerInputRef.current?.focus());
+  }, [connectPickerOpen]);
 
   useEffect(() => {
     if (!actionMenu) return;
@@ -761,6 +856,42 @@ export function ConnectionsPage({
     await s.set("connections", persisted);
     await s.save();
     setConnections(conns);
+  };
+
+  const updateConnectionOsType = async (
+    connectionId: string,
+    osType: OsType,
+  ) => {
+    if (osType === "unknown") return;
+    let changed = false;
+    const nextConnections = connections.map((conn) => {
+      if (conn.kind !== "ssh" || conn.id !== connectionId) return conn;
+      if (conn.osType === osType) return conn;
+      changed = true;
+      return { ...conn, osType };
+    });
+    if (!changed) return;
+    await saveConnections(nextConnections);
+    setSelectedConnection((prev) =>
+      prev?.id === connectionId ? { ...prev, osType } : prev,
+    );
+    setActiveSessions((prev) => {
+      let updated = false;
+      const next = new Map(prev);
+      for (const [sessionId, session] of next.entries()) {
+        if (session.connectionId !== connectionId) continue;
+        if (session.connection.osType === osType) continue;
+        updated = true;
+        next.set(sessionId, {
+          ...session,
+          connection: {
+            ...session.connection,
+            osType,
+          },
+        });
+      }
+      return updated ? next : prev;
+    });
   };
 
   const saveAuthProfiles = async (next: AuthProfile[]) => {
@@ -2179,6 +2310,16 @@ export function ConnectionsPage({
           id: sessionId,
         });
         await sshApi.openShell(backendSessionId);
+        if (!session.connection.osType || session.connection.osType === "unknown") {
+          void (async () => {
+            try {
+              const osType = await detectRemoteOsType(backendSessionId);
+              await updateConnectionOsType(session.connection.id, osType);
+            } catch {
+              // Ignore detection errors; terminal is already connected.
+            }
+          })();
+        }
       };
 
       return (
@@ -2187,6 +2328,7 @@ export function ConnectionsPage({
           host={session.connection.host}
           port={session.connection.port}
           isLocal={session.kind === "local"}
+          osType={session.connection.osType ?? "unknown"}
           onConnect={handleTerminalConnect}
           onRequestSplit={onRequestSplit}
           onCloseSession={onCloseSession}
@@ -2388,6 +2530,25 @@ export function ConnectionsPage({
     return matchesQuery && matchesTag && matchesColor;
   });
 
+  const connectPickerResults = useMemo(() => {
+    const query = connectPickerQuery.trim().toLowerCase();
+    if (!query) return connections;
+    const tokens = query.split(/\s+/).filter(Boolean);
+    return connections.filter((conn) => {
+      const tags = (conn.tags ?? []).join(" ");
+      const haystack = [
+        conn.name,
+        conn.host,
+        conn.username,
+        conn.kind,
+        tags,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return tokens.every((token) => haystack.includes(token));
+    });
+  }, [connections, connectPickerQuery]);
+
   return (
     <>
       <div
@@ -2498,11 +2659,7 @@ export function ConnectionsPage({
                         className="connection-icon-tile"
                       >
                         <AppIcon
-                          icon={
-                            conn.kind === "rdp"
-                              ? "material-symbols:desktop-windows-rounded"
-                              : "material-symbols:dns"
-                          }
+                          icon={getConnectionIcon(conn)}
                           size={18}
                         />
                       </span>
@@ -2603,7 +2760,7 @@ export function ConnectionsPage({
                       }}
                     >
                       <AppIcon
-                        icon="material-symbols:play-arrow-rounded"
+                        icon="proicons:play"
                         size={16}
                       />
                       {t("connections.action.connect")}
@@ -2633,7 +2790,7 @@ export function ConnectionsPage({
                         setIsEditModalOpen(true);
                       }}
                     >
-                      <AppIcon icon="material-symbols:edit-rounded" size={16} />
+                      <AppIcon icon="proicons:pencil" size={16} />
                       {t("common.edit")}
                     </button>
                     <button
@@ -2645,7 +2802,7 @@ export function ConnectionsPage({
                       }}
                     >
                       <AppIcon
-                        icon="material-symbols:delete-rounded"
+                        icon="proicons:delete"
                         size={16}
                       />
                       {t("common.delete")}
@@ -2756,27 +2913,60 @@ export function ConnectionsPage({
         width={520}
       >
         <div className="connect-picker">
-          {connections.length === 0 && (
-            <div className="connect-picker-empty">
-              {t("connections.picker.empty")}
-            </div>
-          )}
-          {connections.map((conn) => (
-            <button
-              key={conn.id}
-              type="button"
-              className="connect-picker-item"
-              onClick={() => {
-                void handleConnect(conn);
+          <div className="connect-picker-search">
+            <AppIcon icon="material-symbols:search-rounded" size={16} />
+            <input
+              ref={connectPickerInputRef}
+              value={connectPickerQuery}
+              onChange={(event) => setConnectPickerQuery(event.target.value)}
+              placeholder={t("connections.picker.search.placeholder")}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                if (connectPickerResults.length === 0) return;
+                event.preventDefault();
+                void handleConnect(connectPickerResults[0]);
                 setConnectPickerOpen(false);
               }}
-            >
-              <span className="connect-picker-name">{conn.name}</span>
-              <span className="connect-picker-meta">
-                {conn.username}@{conn.host}
-              </span>
-            </button>
-          ))}
+            />
+            {connectPickerQuery && (
+              <button
+                type="button"
+                className="connect-picker-clear"
+                onClick={() => setConnectPickerQuery("")}
+                aria-label={t("common.clear")}
+              >
+                <AppIcon icon="material-symbols:close-rounded" size={14} />
+              </button>
+            )}
+          </div>
+          <div className="connect-picker-list">
+            {connections.length === 0 && (
+              <div className="connect-picker-empty">
+                {t("connections.picker.empty")}
+              </div>
+            )}
+            {connections.length > 0 && connectPickerResults.length === 0 && (
+              <div className="connect-picker-empty">
+                {t("connections.picker.noResults")}
+              </div>
+            )}
+            {connectPickerResults.map((conn) => (
+              <button
+                key={conn.id}
+                type="button"
+                className="connect-picker-item"
+                onClick={() => {
+                  void handleConnect(conn);
+                  setConnectPickerOpen(false);
+                }}
+              >
+                <span className="connect-picker-name">{conn.name}</span>
+                <span className="connect-picker-meta">
+                  {conn.username}@{conn.host}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
       </Modal>
     </>

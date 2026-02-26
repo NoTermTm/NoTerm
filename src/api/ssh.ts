@@ -7,6 +7,14 @@ export interface EndpointCheck {
   latency_ms: number;
 }
 
+export interface ControlledCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  timedOut: boolean;
+}
+
 export const sshApi = {
   connect: async (connection: SshConnection): Promise<string> => {
     return await invoke('ssh_connect', { connection });
@@ -50,6 +58,22 @@ export const sshApi = {
 
   executeCommand: async (sessionId: string, command: string): Promise<string> => {
     return await invoke('ssh_execute_command', { sessionId, command });
+  },
+
+  executeControlledCommand: async (
+    sessionId: string,
+    command: string,
+    timeoutSec: number,
+  ): Promise<ControlledCommandResult> => {
+    return await invoke('ssh_execute_command_controlled', { sessionId, command, timeoutSec });
+  },
+
+  localExecuteControlledCommand: async (
+    sessionId: string,
+    command: string,
+    timeoutSec: number,
+  ): Promise<ControlledCommandResult> => {
+    return await invoke('local_execute_command_controlled', { sessionId, command, timeoutSec });
   },
 
   isConnected: async (sessionId: string): Promise<boolean> => {

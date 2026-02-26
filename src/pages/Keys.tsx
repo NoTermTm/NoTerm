@@ -469,12 +469,12 @@ export function KeysPage() {
                 </div>
                 <div className="keys-item-meta">
                   <span className="keys-item-meta-chip">
-                    <AppIcon icon="material-symbols:person-rounded" size={16} />
+                    <AppIcon icon="proicons:person-2" size={16} />
                     {p.username}
                   </span>
                   {p.auth_type.type === "PrivateKey" && (
                     <span className="keys-item-meta-chip" title={p.auth_type.key_path}>
-                      <AppIcon icon="material-symbols:description-rounded" size={16} />
+                      <AppIcon icon="proicons:text-description" size={16} />
                       <span className="keys-item-path">{p.auth_type.key_path}</span>
                     </span>
                   )}
@@ -482,11 +482,11 @@ export function KeysPage() {
               </div>
               <div className="keys-item-actions">
                 <button className="btn btn-secondary btn-sm" onClick={() => onEdit(p)}>
-                  <AppIcon icon="material-symbols:edit-rounded" size={16} />
+                  <AppIcon icon="proicons:pencil" size={16} />
                   {t("common.edit")}
                 </button>
                 <button className="btn btn-danger btn-sm" onClick={() => void onDelete(p.id)}>
-                  <AppIcon icon="material-symbols:delete-rounded" size={16} />
+                  <AppIcon icon="proicons:delete" size={16} />
                   {t("common.delete")}
                 </button>
               </div>
