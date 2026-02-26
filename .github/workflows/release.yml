@@ -165,20 +165,26 @@ jobs:
             const sigs = files.filter((f) => f.endsWith(".sig"));
             if (sigs.length === 0) return null;
 
-            const prefer = [];
             if (target.includes("windows")) {
-              prefer.push(".nsis.zip.sig", ".msi.zip.sig");
-            } else if (target.includes("apple-darwin")) {
-              // Updater artifacts on macOS are app archives, not dmg installers.
-              prefer.push(".app.tar.gz.sig", ".app.zip.sig", ".tar.gz.sig", ".zip.sig");
+              const windowsSig = sigs.find(
+                (f) =>
+                  f.endsWith(".nsis.zip.sig") ||
+                  f.endsWith(".msi.zip.sig") ||
+                  f.endsWith(".exe.sig"),
+              );
+              return windowsSig ?? null;
             }
-
-            for (const suffix of prefer) {
-              const found = sigs.find((f) => f.endsWith(suffix));
-              if (found) return found;
+            if (target.includes("apple-darwin")) {
+              const macSig = sigs.find(
+                (f) =>
+                  f.endsWith(".app.tar.gz.sig") ||
+                  f.endsWith(".app.zip.sig") ||
+                  f.endsWith(".tar.gz.sig") ||
+                  f.endsWith(".zip.sig"),
+              );
+              return macSig ?? null;
             }
-
-            return sigs[0];
+            return null;
           };
 
           const platforms = {};
@@ -215,7 +221,10 @@ jobs:
 
             const sigPath = path.join(dir, sigFile);
             const sig = fs.readFileSync(sigPath, "utf8").trim();
-            const payloadRel = sigFile.replace(/\\.sig$/, "");
+            const payloadRel = sigFile.replace(/\.sig$/, "");
+            if (payloadRel.endsWith(".sig")) {
+              throw new Error(`Invalid payload inferred from signature: ${sigFile}`);
+            }
             const payloadAbs = path.join(dir, payloadRel);
             if (!fs.existsSync(payloadAbs)) {
               throw new Error(`Missing payload for signature: ${target} -> ${payloadRel}`);
