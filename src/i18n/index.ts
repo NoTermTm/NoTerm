@@ -236,6 +236,10 @@ const MESSAGES: Messages = {
   "settings.ai.model.refresh.success": { "zh-CN": "已获取 {count} 个模型", "en-US": "{count} models loaded" },
   "settings.ai.model.refresh.empty": { "zh-CN": "未获取到模型", "en-US": "No models returned" },
   "settings.ai.model.refresh.fail": { "zh-CN": "模型列表获取失败", "en-US": "Failed to load models" },
+  "settings.ai.model.chatOnly": {
+    "zh-CN": "仅支持 Chat 模型，当前模型类型不可用",
+    "en-US": "Only chat models are supported here",
+  },
   "settings.ai.test": { "zh-CN": "连通性测试", "en-US": "Connectivity test" },
   "settings.ai.test.desc": { "zh-CN": "验证 AI 服务是否可用", "en-US": "Verify the AI service" },
   "settings.ai.test.action": { "zh-CN": "测试连接", "en-US": "Test connection" },

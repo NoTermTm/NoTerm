@@ -558,14 +558,14 @@
 .settings-model-search-wrap {
     flex: 1 1 auto;
     min-width: 240px;
-    height: 46px;
+    height: 40px;
     border: 1px solid var(--border-light);
-    border-radius: 12px;
+    border-radius: 10px;
     background: var(--bg-primary);
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 0 14px;
+    padding: 0 12px;
 }
 
 .settings-model-search-icon {
@@ -587,10 +587,10 @@
 }
 
 .settings-model-refresh-btn {
-    height: 46px;
+    height: 40px;
     white-space: nowrap;
-    padding: 0 16px;
-    border-radius: 12px;
+    padding: 0 14px;
+    border-radius: 10px;
 }
 
 .settings-model-grid {
@@ -627,7 +627,7 @@
 }
 
 .settings-model-panel-title {
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 700;
     color: var(--text-primary);
 }
@@ -759,7 +759,7 @@
 }
 
 .settings-model-row-name {
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 700;
     color: var(--text-primary);
     overflow: hidden;
@@ -806,11 +806,11 @@
 .settings-model-add-wrap {
     flex: 1;
     min-width: 0;
-    height: 46px;
+    height: 40px;
     border: 1px solid var(--border-light);
     background: var(--bg-primary);
-    border-radius: 12px;
-    padding: 0 14px;
+    border-radius: 10px;
+    padding: 0 12px;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -835,10 +835,10 @@
 }
 
 .settings-model-add-btn {
-    height: 46px;
-    padding: 0 20px;
+    height: 40px;
+    padding: 0 16px;
     flex: 0 0 auto;
-    border-radius: 12px;
+    border-radius: 10px;
     border: 1px solid color-mix(in srgb, var(--success) 45%, var(--border-light));
     background: color-mix(in srgb, var(--success) 18%, var(--bg-primary));
     color: color-mix(in srgb, var(--success) 62%, #20583e);

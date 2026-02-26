@@ -76,6 +76,30 @@ const normalizeBaseUrl = (value: string) => {
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
 };
 
+const NON_CHAT_MODEL_KEYWORDS = [
+  "embedding",
+  "text-embedding",
+  "bge-",
+  "/bge",
+  "rerank",
+  "moderation",
+  "omni-moderation",
+  "whisper",
+  "tts",
+  "transcribe",
+  "speech",
+  "text-to-image",
+  "image-generation",
+  "dall-e",
+  "sdxl",
+  "stable-diffusion",
+];
+
+const isChatCapableModel = (model: string) => {
+  const lower = model.toLowerCase();
+  return !NON_CHAT_MODEL_KEYWORDS.some((keyword) => lower.includes(keyword));
+};
+
 const detectModelCapability = (model: string) => {
   const lower = model.toLowerCase();
   if (lower.includes("embedding") || lower.includes("bge")) return "Embedding";
@@ -829,15 +853,16 @@ export function SettingsPage() {
             .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
         : [];
       const unique: string[] = Array.from(new Set(list)).sort();
+      const chatModels = unique.filter(isChatCapableModel);
 
-      await writeAiModels(provider, unique);
-      setAiModels((prev) => ({ ...prev, [provider]: unique }));
+      await writeAiModels(provider, chatModels);
+      setAiModels((prev) => ({ ...prev, [provider]: chatModels }));
       setAiModelStatus((prev) => ({ ...prev, [provider]: "success" }));
       setAiModelMessage((prev) => ({
         ...prev,
         [provider]:
-          unique.length > 0
-            ? t("settings.ai.model.refresh.success", { count: unique.length })
+          chatModels.length > 0
+            ? t("settings.ai.model.refresh.success", { count: chatModels.length })
             : t("settings.ai.model.refresh.empty"),
       }));
     } catch (error) {
@@ -851,7 +876,9 @@ export function SettingsPage() {
   };
 
   const updateAiModelsSelection = (next: string[]) => {
-    const unique = Array.from(new Set(next.map((item) => item.trim()).filter(Boolean)));
+    const unique = Array.from(
+      new Set(next.map((item) => item.trim()).filter((item) => item && isChatCapableModel(item))),
+    );
     updateSetting("ai.models", unique);
     if (!unique.includes(settings["ai.model"])) {
       updateSetting("ai.model", unique[0] ?? "");
@@ -869,6 +896,14 @@ export function SettingsPage() {
   const handleAddCustomModel = () => {
     const value = aiModelCustomInput.trim();
     if (!value) return;
+    if (!isChatCapableModel(value)) {
+      setAiModelStatus((prev) => ({ ...prev, [settings["ai.provider"]]: "error" }));
+      setAiModelMessage((prev) => ({
+        ...prev,
+        [settings["ai.provider"]]: t("settings.ai.model.chatOnly"),
+      }));
+      return;
+    }
     updateAiModelsSelection([...selectedModels, value]);
     setAiModelCustomInput("");
   };
@@ -1190,12 +1225,12 @@ export function SettingsPage() {
   const isChecking = updateStatus === "checking";
   const showDownloadAction = Boolean(updateInfo) && updateStatus !== "installed";
   const currentProvider = settings["ai.provider"];
-  const currentModelList = aiModels[currentProvider] ?? [];
+  const currentModelList = (aiModels[currentProvider] ?? []).filter(isChatCapableModel);
   const selectedModels =
     settings["ai.models"] && settings["ai.models"].length > 0
-      ? settings["ai.models"]
+      ? settings["ai.models"].filter(isChatCapableModel)
       : settings["ai.model"]
-        ? [settings["ai.model"]]
+        ? (isChatCapableModel(settings["ai.model"]) ? [settings["ai.model"]] : [])
         : [];
   const mergedModels = Array.from(new Set([...currentModelList, ...selectedModels]));
   const searchKeyword = aiModelSearch.trim().toLowerCase();
