@@ -57,7 +57,7 @@ export function Layout() {
       tone?: "info" | "success" | "error";
     }>
   >([]);
-  const showCustomTitleBar = isMacPlatform();
+  const isMac = isMacPlatform();
   const [securitySettings, setSecuritySettings] = useState({
     hash: DEFAULT_APP_SETTINGS["security.masterKeyHash"],
     salt: DEFAULT_APP_SETTINGS["security.masterKeySalt"],
@@ -974,16 +974,14 @@ export function Layout() {
 
   return (
     <div className="app-container">
-      {showCustomTitleBar && (
-        <TitleBar
-          tabs={tabs}
-          activeTabId={activeTabId}
-          onTabClick={handleTabClick}
-          onTabClose={handleTabClose}
-          onNewTab={handleNewTab}
-          useNativeWindowControls={showCustomTitleBar}
-        />
-      )}
+      <TitleBar
+        tabs={tabs}
+        activeTabId={activeTabId}
+        onTabClick={handleTabClick}
+        onTabClose={handleTabClose}
+        onNewTab={handleNewTab}
+        useNativeWindowControls={!isMac}
+      />
       <div className="layout">
         <div className="sidebar">
           {navItems.map((item) => (
