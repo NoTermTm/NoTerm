@@ -2,6 +2,11 @@
   "app": {
     "windows": [
       {
+        "title": "NoTerm",
+        "width": 1400,
+        "height": 850,
+        "minWidth": 1200,
+        "minHeight": 600,
         "decorations": true,
         "transparent": false
       }

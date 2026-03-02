@@ -18,6 +18,7 @@ interface TitleBarProps {
   onTabClose?: (id: string) => void;
   onNewTab?: () => void;
   useNativeWindowControls?: boolean;
+  hideCustomWindowControls?: boolean;
 }
 
 const parseColorToRgb = (color: string): [number, number, number] | null => {
@@ -75,6 +76,7 @@ export function TitleBar({
   onTabClose,
   onNewTab,
   useNativeWindowControls = false,
+  hideCustomWindowControls = false,
 }: TitleBarProps) {
   const appWindow = getCurrentWindow();
   const { t } = useI18n();
@@ -147,7 +149,7 @@ export function TitleBar({
       data-tauri-drag-region
     >
       <div className="title-bar-left">
-        {!useNativeWindowControls && (
+        {!hideCustomWindowControls && (
           <div className="traffic-lights">
             <button
               className="traffic-light close"

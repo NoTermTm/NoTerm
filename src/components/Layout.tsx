@@ -980,7 +980,8 @@ export function Layout() {
         onTabClick={handleTabClick}
         onTabClose={handleTabClose}
         onNewTab={handleNewTab}
-        useNativeWindowControls={!isMac}
+        useNativeWindowControls={isMac}
+        hideCustomWindowControls
       />
       <div className="layout">
         <div className="sidebar">
