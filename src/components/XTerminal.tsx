@@ -968,8 +968,10 @@ export function XTerminal({
     try {
       return await navigator.clipboard.readText();
     } catch {
-      return "";
+      // ignore
     }
+
+    return "";
   };
 
   const handleCopyEndpoint = async () => {
@@ -3513,7 +3515,8 @@ export function XTerminal({
       // Copy/paste integration:
       // - Cmd+C copies selection; otherwise it remains Ctrl+C (interrupt).
       // - Ctrl+Shift+C copies selection (Windows/Linux convention).
-      // - Cmd+V / Ctrl+Shift+V pastes.
+      // - Cmd+V uses native paste event handling to avoid browser clipboard permission UI.
+      // - Ctrl+Shift+V uses app clipboard read (Windows/Linux convention).
       term.attachCustomKeyEventHandler((ev) => {
         if (!term) return true;
         if (ev.type !== "keydown") return true;
@@ -3549,6 +3552,12 @@ export function XTerminal({
         }
 
         if (isPaste) {
+          // On macOS, let the browser/xterm native paste event flow.
+          // This avoids Chromium permission UI showing an extra "paste" button.
+          if (ev.metaKey && !ev.ctrlKey && !ev.shiftKey) {
+            return true;
+          }
+
           ev.preventDefault();
           ev.stopPropagation();
           void clipboardRead().then((text) => {

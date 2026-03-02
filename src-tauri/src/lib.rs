@@ -235,7 +235,8 @@ fn clipboard_read_text() -> Result<String, String> {
             .output()
             .map_err(|e| format!("Failed to read clipboard via pbpaste: {}", e))?;
         if output.status.success() {
-            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+            return String::from_utf8(output.stdout)
+                .map_err(|e| format!("Clipboard is not valid UTF-8: {}", e));
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("pbpaste failed: {}", stderr.trim()));
