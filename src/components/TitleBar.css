@@ -16,6 +16,10 @@
     border-top-right-radius: var(--window-radius);
 }
 
+.title-bar--native-controls {
+    padding-left: 84px;
+}
+
 .title-bar-left {
     display: flex;
     align-items: center;
@@ -43,15 +47,23 @@
     line-height: 0;
 }
 
-.traffic-light .app-icon {
+.traffic-light-icon {
     opacity: 0;
     transition: opacity 0.15s ease;
     display: block;
-    font-weight: bold;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
 }
 
-.title-bar:hover .traffic-light .app-icon {
+.traffic-lights:hover .traffic-light-icon {
     opacity: 1;
+}
+
+.traffic-lights:not(:hover) .traffic-light-icon {
+    opacity: 0 !important;
 }
 
 .traffic-light.close {
@@ -62,7 +74,7 @@
     background-color: #ff3b30;
 }
 
-.traffic-light.close .app-icon {
+.traffic-light.close .traffic-light-icon {
     color: #8b0000;
 }
 
@@ -74,7 +86,7 @@
     background-color: #ffb400;
 }
 
-.traffic-light.minimize .app-icon {
+.traffic-light.minimize .traffic-light-icon {
     color: #996500;
 }
 
@@ -86,7 +98,7 @@
     background-color: #1fb437;
 }
 
-.traffic-light.maximize .app-icon {
+.traffic-light.maximize .traffic-light-icon {
     color: #006400;
 }
 

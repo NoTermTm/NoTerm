@@ -17,6 +17,7 @@ interface TitleBarProps {
   onTabClick?: (id: string) => void;
   onTabClose?: (id: string) => void;
   onNewTab?: () => void;
+  useNativeWindowControls?: boolean;
 }
 
 const parseColorToRgb = (color: string): [number, number, number] | null => {
@@ -73,6 +74,7 @@ export function TitleBar({
   onTabClick,
   onTabClose,
   onNewTab,
+  useNativeWindowControls = false,
 }: TitleBarProps) {
   const appWindow = getCurrentWindow();
   const { t } = useI18n();
@@ -123,7 +125,14 @@ export function TitleBar({
     appWindow.minimize();
   };
 
-  const handleMaximize = () => {
+  const handleMaximize = async () => {
+    try {
+      const isFullscreen = await appWindow.isFullscreen();
+      await appWindow.setFullscreen(!isFullscreen);
+      return;
+    } catch {
+      // fallback to maximize when fullscreen API is unavailable
+    }
     appWindow.toggleMaximize();
   };
 
@@ -132,31 +141,61 @@ export function TitleBar({
   };
 
   return (
-    <div className="title-bar" onPointerDown={handlePointerDown}>
+    <div
+      className={`title-bar ${useNativeWindowControls ? "title-bar--native-controls" : ""}`}
+      onPointerDown={handlePointerDown}
+      data-tauri-drag-region
+    >
       <div className="title-bar-left">
-        <div className="traffic-lights">
-          <button
-            className="traffic-light close"
-            onClick={handleClose}
-            aria-label="Close"
-          >
-            <AppIcon icon="material-symbols:close-rounded" size={10} />
-          </button>
-          <button
-            className="traffic-light minimize"
-            onClick={handleMinimize}
-            aria-label="Minimize"
-          >
-            <AppIcon icon="material-symbols:check-indeterminate-small-rounded" size={10} />
-          </button>
-          <button
-            className="traffic-light maximize"
-            onClick={handleMaximize}
-            aria-label="Maximize"
-          >
-            <AppIcon icon="material-symbols:collapse-content-rounded" size={10} />
-          </button>
-        </div>
+        {!useNativeWindowControls && (
+          <div className="traffic-lights">
+            <button
+              className="traffic-light close"
+              onClick={handleClose}
+              aria-label="Close"
+            >
+              <svg
+                className="traffic-light-icon"
+                width="7"
+                height="7"
+                viewBox="0 0 7 7"
+                aria-hidden="true"
+              >
+                <path d="M1 1 L6 6 M6 1 L1 6" />
+              </svg>
+            </button>
+            <button
+              className="traffic-light minimize"
+              onClick={handleMinimize}
+              aria-label="Minimize"
+            >
+              <svg
+                className="traffic-light-icon"
+                width="7"
+                height="7"
+                viewBox="0 0 7 7"
+                aria-hidden="true"
+              >
+                <path d="M1 3.5 L6 3.5" />
+              </svg>
+            </button>
+            <button
+              className="traffic-light maximize"
+              onClick={handleMaximize}
+              aria-label="Maximize"
+            >
+              <svg
+                className="traffic-light-icon"
+                width="7"
+                height="7"
+                viewBox="0 0 7 7"
+                aria-hidden="true"
+              >
+                <path d="M3.5 1 L3.5 6 M1 3.5 L6 3.5" />
+              </svg>
+            </button>
+          </div>
+        )}
         {tabs.length === 0 && (
           <div className="title-bar-title">SSH Manager</div>
         )}
