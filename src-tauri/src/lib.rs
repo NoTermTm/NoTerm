@@ -12,6 +12,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 use tauri::Manager;
+use tauri::Emitter;
 use tokio::process::Command as TokioCommand;
 
 struct AppState {
@@ -32,6 +33,16 @@ struct GeneratedKeypair {
     public_key: String,
     algorithm: String,
     comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SftpTransferProgress {
+    session_id: String,
+    transfer_id: String,
+    direction: String,
+    transferred: u64,
+    total: u64,
+    percent: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -730,13 +741,33 @@ async fn ssh_sftp_list_dir(
 #[tauri::command]
 async fn ssh_sftp_download_file(
     state: State<'_, AppState>,
+    app: AppHandle,
     session_id: String,
     remote_path: String,
     local_path: String,
+    transfer_id: Option<String>,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
+    let transfer_id = transfer_id.unwrap_or_else(|| format!("download:{}", remote_path));
     tokio::task::spawn_blocking(move || {
-        manager.sftp_download_file(&session_id, &remote_path, &local_path)
+        manager.sftp_download_file(&session_id, &remote_path, &local_path, |transferred, total| {
+            let percent = if total > 0 {
+                (transferred as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+            } else {
+                0.0
+            };
+            let _ = app.emit(
+                "sftp-transfer-progress",
+                SftpTransferProgress {
+                    session_id: session_id.clone(),
+                    transfer_id: transfer_id.clone(),
+                    direction: "download".to_string(),
+                    transferred,
+                    total,
+                    percent,
+                },
+            );
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -746,13 +777,33 @@ async fn ssh_sftp_download_file(
 #[tauri::command]
 async fn ssh_sftp_upload_file(
     state: State<'_, AppState>,
+    app: AppHandle,
     session_id: String,
     local_path: String,
     remote_path: String,
+    transfer_id: Option<String>,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
+    let transfer_id = transfer_id.unwrap_or_else(|| format!("upload:{}", local_path));
     tokio::task::spawn_blocking(move || {
-        manager.sftp_upload_file(&session_id, &local_path, &remote_path)
+        manager.sftp_upload_file(&session_id, &local_path, &remote_path, |transferred, total| {
+            let percent = if total > 0 {
+                (transferred as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+            } else {
+                0.0
+            };
+            let _ = app.emit(
+                "sftp-transfer-progress",
+                SftpTransferProgress {
+                    session_id: session_id.clone(),
+                    transfer_id: transfer_id.clone(),
+                    direction: "upload".to_string(),
+                    transferred,
+                    total,
+                    percent,
+                },
+            );
+        })
     })
     .await
     .map_err(|e| e.to_string())?

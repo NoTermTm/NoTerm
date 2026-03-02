@@ -105,11 +105,69 @@
     padding: 0 20px;
 }
 
+.title-bar-tabs-wrap {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.title-bar-tabs-shell {
+    position: relative;
+    /* flex: 1; */
+    min-width: 0;
+    max-width: calc(100% - 30px);
+}
+
 .title-bar-tabs {
     display: flex;
     align-items: center;
     gap: 4px;
-    max-width: 600px;
+    width: fit-content;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    scrollbar-width: none;
+}
+
+.title-bar-tabs::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+}
+
+.title-bar-tabs-arrow {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+    background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+    border: 1px solid var(--border-light);
+    border-radius: 999px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 2;
+}
+
+.title-bar-tabs-arrow.is-visible {
+    opacity: 1;
+}
+
+.title-bar-tabs-arrow--left {
+    left: 4px;
+}
+
+.title-bar-tabs-arrow--right {
+    right: 4px;
 }
 
 .title-bar-right {
@@ -132,11 +190,17 @@
     border: none;
     position: relative;
     max-width: 180px;
+    flex: 0 0 auto;
     -webkit-app-region: no-drag;
     -webkit-border-radius: 4px;
     -moz-border-radius: 4px;
     -ms-border-radius: 4px;
     -o-border-radius: 4px;
+}
+
+.new-tab-btn {
+    flex: 0 0 auto;
+    width: 30px;
 }
 
 .tab:hover {

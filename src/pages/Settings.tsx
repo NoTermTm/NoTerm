@@ -68,6 +68,12 @@ const TERMINAL_BG_ALLOWED: Record<string, string> = {
   gif: "image/gif",
 };
 
+const TERMINAL_BG_SIZE_MAP: Record<AppSettings["terminal.backgroundFit"], string> = {
+  cover: "cover",
+  contain: "contain",
+  stretch: "100% 100%",
+};
+
 type AiModelStatus = "idle" | "loading" | "success" | "error";
 
 const normalizeBaseUrl = (value: string) => {
@@ -173,6 +179,8 @@ export function SettingsPage() {
         ["--settings-term-bg-image"]: `url("${terminalBackgroundUrl}")`,
         ["--settings-term-bg-overlay"]: previewOverlay,
         ["--settings-term-bg-blur"]: `${settings["terminal.backgroundBlur"]}px`,
+        ["--settings-term-bg-size"]:
+          TERMINAL_BG_SIZE_MAP[settings["terminal.backgroundFit"]],
         backgroundColor: previewTheme.background ?? "#0f111a",
       } as CSSProperties)
     : { backgroundColor: previewTheme.background ?? "#0f111a" };
@@ -243,6 +251,9 @@ export function SettingsPage() {
         "terminal.backgroundImage":
           (await store.get<string>("terminal.backgroundImage")) ??
           DEFAULT_APP_SETTINGS["terminal.backgroundImage"],
+        "terminal.backgroundFit":
+          (await store.get<AppSettings["terminal.backgroundFit"]>("terminal.backgroundFit")) ??
+          DEFAULT_APP_SETTINGS["terminal.backgroundFit"],
         "terminal.backgroundOpacity":
           (await store.get<number>("terminal.backgroundOpacity")) ??
           DEFAULT_APP_SETTINGS["terminal.backgroundOpacity"],
@@ -1704,6 +1715,27 @@ export function SettingsPage() {
                       </div>
                     </div>
                   </div>
+                  <div className="settings-row settings-row--single">
+                    <div className="settings-field">
+                      <label className="settings-field-label">{t("settings.terminal.backgroundFit")}</label>
+                      <Select
+                        className="settings-select settings-select--bg-fit"
+                        value={settings["terminal.backgroundFit"]}
+                        onChange={(nextValue) =>
+                          updateSetting(
+                            "terminal.backgroundFit",
+                            nextValue as AppSettings["terminal.backgroundFit"],
+                          )
+                        }
+                        options={[
+                          { value: "cover", label: t("settings.terminal.backgroundFit.cover") },
+                          { value: "contain", label: t("settings.terminal.backgroundFit.contain") },
+                          { value: "stretch", label: t("settings.terminal.backgroundFit.stretch") },
+                        ]}
+                        disabled={!terminalBackgroundImage}
+                      />
+                    </div>
+                  </div>
                   <div className="settings-row settings-row--two">
                     <div className="settings-field">
                       <label className="settings-field-label">{t("settings.terminal.backgroundOpacity")}</label>
@@ -1774,12 +1806,14 @@ export function SettingsPage() {
                     lineHeight: settings["terminal.lineHeight"],
                   }}
                 >
-                  <span style={{ color: previewTheme.green }}>NoTerm</span>{" "}
-                  <span style={{ color: previewTheme.blue }}>root</span>$ ls
-                  {"\n"}-drwxr-xr-x 1 root  <span style={{ color: previewTheme.yellow }}>Document</span>
-                  {"\n"}-drwxr-xr-x 1 root  <span style={{ background: previewTheme.green, color: previewTheme.background, padding: "0 4px", borderRadius: 3 }}>Downloads</span>
-                  {"\n"}-drwxr-xr-x 1 root  <span style={{ background: previewSelection, color: previewTheme.foreground, padding: "0 4px", borderRadius: 3 }}>Pictures</span>
-                  {"\n"}-drwxr-xr-x 1 root
+                  <span className="settings-preview-content-text">
+                    <span style={{ color: previewTheme.green }}>NoTerm</span>{" "}
+                    <span style={{ color: previewTheme.blue }}>root</span>$ ls
+                    {"\n"}-drwxr-xr-x 1 root  <span style={{ color: previewTheme.yellow }}>Document</span>
+                    {"\n"}-drwxr-xr-x 1 root  <span style={{ background: previewTheme.green, color: previewTheme.background, padding: "0 4px", borderRadius: 3 }}>Downloads</span>
+                    {"\n"}-drwxr-xr-x 1 root  <span style={{ background: previewSelection, color: previewTheme.foreground, padding: "0 4px", borderRadius: 3 }}>Pictures</span>
+                    {"\n"}-drwxr-xr-x 1 root
+                  </span>
                 </pre>
               </div>
             </div>

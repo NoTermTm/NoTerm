@@ -14,6 +14,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { openPath } from "@tauri-apps/plugin-opener";
 import { sshApi } from "../api/ssh";
 import type { SftpEntry } from "../types/ssh";
 import "@xterm/xterm/css/xterm.css";
@@ -28,6 +29,7 @@ import {
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
   writeAppSetting,
+  type TerminalBackgroundFit,
   type TerminalThemeName,
 } from "../store/appSettings";
 import { getXtermTheme } from "../terminal/xtermThemes";
@@ -94,6 +96,15 @@ interface TransferTask {
   detail?: string;
   startedAt: number;
   finishedAt?: number;
+}
+
+interface SftpTransferProgressEvent {
+  session_id: string;
+  transfer_id: string;
+  direction: TransferTaskDirection;
+  transferred: number;
+  total: number;
+  percent: number;
 }
 
 type SmartTableState =
@@ -257,6 +268,12 @@ const createAgentActivityId = () => {
   return `agent-activity-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
+const TERMINAL_BG_SIZE_MAP: Record<TerminalBackgroundFit, string> = {
+  cover: "cover",
+  contain: "contain",
+  stretch: "100% 100%",
+};
+
 export function XTerminal({
   sessionId,
   host,
@@ -289,6 +306,9 @@ export function XTerminal({
   );
   const [terminalBgBlur, setTerminalBgBlur] = useState<number>(
     DEFAULT_APP_SETTINGS["terminal.backgroundBlur"],
+  );
+  const [terminalBgFit, setTerminalBgFit] = useState<TerminalBackgroundFit>(
+    DEFAULT_APP_SETTINGS["terminal.backgroundFit"],
   );
   const terminalBgImageRef = useRef<string>(DEFAULT_APP_SETTINGS["terminal.backgroundImage"]);
   const terminalBgObjectUrlRef = useRef<string>("");
@@ -404,8 +424,6 @@ export function XTerminal({
   const aiHistoryLoadedRef = useRef(false);
   const transferStatusLabel = (status: TransferTaskStatus) =>
     t(`terminal.transfer.status.${status}`);
-  const transferDirectionLabel = (direction: TransferTaskDirection) =>
-    t(`terminal.transfer.direction.${direction}`);
   const hasAiInsights = !!smartTable || logSummaries.length > 0;
   const latestAgentPlanForActivity = useMemo(() => {
     for (let i = aiMessages.length - 1; i >= 0; i -= 1) {
@@ -1203,6 +1221,40 @@ export function XTerminal({
       second: "2-digit",
     }).format(new Date(value));
 
+  const formatTransferBytes = (value: number) => {
+    if (!Number.isFinite(value) || value <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let size = value;
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex += 1;
+    }
+    const precision = unitIndex === 0 ? 0 : size >= 10 ? 1 : 2;
+    return `${size.toFixed(precision)} ${units[unitIndex]}`;
+  };
+
+  const getTransferLocalPath = (task: TransferTask) =>
+    task.direction === "download" ? task.targetPath : task.sourcePath;
+
+  const getParentDirectory = (filePath: string) => {
+    const normalized = filePath.replace(/\\/g, "/");
+    const idx = normalized.lastIndexOf("/");
+    if (idx <= 0) return normalized;
+    return normalized.slice(0, idx);
+  };
+
+  const handleOpenTransferDirectory = async (task: TransferTask) => {
+    const localPath = getTransferLocalPath(task);
+    if (!localPath) return;
+    try {
+      await openPath(getParentDirectory(localPath));
+    } catch (error) {
+      const message = formatError(error);
+      setSftpError(t("terminal.transfer.openFolder.fail", { message }));
+    }
+  };
+
   const formatAgentActivityTime = (value: number) =>
     new Date(value).toLocaleTimeString([], {
       hour: "2-digit",
@@ -1224,7 +1276,7 @@ export function XTerminal({
       sourcePath,
       targetPath,
       status: "running",
-      progress: 35,
+      progress: 0,
       startedAt: Date.now(),
     };
     setTransferTasks((prev) => [next, ...prev].slice(0, MAX_TRANSFER_TASKS));
@@ -1804,7 +1856,7 @@ export function XTerminal({
       setUploadProgress(
         t("terminal.sftp.download.progress", { name: entry.name }),
       );
-      await sshApi.downloadFile(sessionId, remotePath, localPath);
+      await sshApi.downloadFile(sessionId, remotePath, localPath, taskId);
       if (taskId) {
         updateTransferTask(taskId, {
           status: "success",
@@ -1845,7 +1897,7 @@ export function XTerminal({
           : currentPath + "/" + fileName;
 
         taskId = createTransferTask("upload", fileName, filePath, remotePath);
-        await sshApi.uploadFile(sessionId, filePath, remotePath);
+        await sshApi.uploadFile(sessionId, filePath, remotePath, taskId);
         if (taskId) {
           updateTransferTask(taskId, {
             status: "success",
@@ -3396,6 +3448,7 @@ export function XTerminal({
     let term: Terminal | null = null;
     let fit: FitAddon | null = null;
     let unlistenOutput: (() => void) | null = null;
+    let unlistenSftpProgress: (() => void) | null = null;
     let unlistenDisconnect: (() => void) | null = null;
     let unlistenTheme: (() => void) | null = null;
     let unlistenFontSize: (() => void) | null = null;
@@ -3406,6 +3459,7 @@ export function XTerminal({
     let unlistenLineHeight: (() => void) | null = null;
     let unlistenAutoCopy: (() => void) | null = null;
     let unlistenBackgroundImage: (() => void) | null = null;
+    let unlistenBackgroundFit: (() => void) | null = null;
     let unlistenBackgroundOpacity: (() => void) | null = null;
     let unlistenBackgroundBlur: (() => void) | null = null;
     let disposable: { dispose: () => void } | null = null;
@@ -3456,6 +3510,9 @@ export function XTerminal({
       const backgroundBlur =
         (await store.get<number>("terminal.backgroundBlur")) ??
         DEFAULT_APP_SETTINGS["terminal.backgroundBlur"];
+      const backgroundFit =
+        (await store.get<TerminalBackgroundFit>("terminal.backgroundFit")) ??
+        DEFAULT_APP_SETTINGS["terminal.backgroundFit"];
 
       if (disposed || !terminalRef.current) return;
 
@@ -3484,6 +3541,7 @@ export function XTerminal({
       setTerminalBgImage(resolvedBackgroundImage);
       setTerminalBgOpacity(backgroundOpacity);
       setTerminalBgBlur(backgroundBlur);
+      setTerminalBgFit(backgroundFit);
       setXtermBaseBg(baseBg);
       setXtermBg(themeBg);
       autoCopyRef.current = autoCopy;
@@ -3496,6 +3554,7 @@ export function XTerminal({
         fontSize,
         fontFamily,
         theme: { ...xtermTheme, background: themeBg },
+        allowTransparency: true,
         allowProposedApi: true,
         scrollback: 10000,
       });
@@ -3627,6 +3686,29 @@ export function XTerminal({
         },
       );
       unlistenOutput = unlisten;
+
+      const unlistenTransferProgress = await listen<SftpTransferProgressEvent>(
+        "sftp-transfer-progress",
+        (event) => {
+          if (event.payload.session_id !== sessionId) return;
+          const transferId = event.payload.transfer_id;
+          if (!transferId) return;
+          const percent = Number.isFinite(event.payload.percent)
+            ? Math.max(0, Math.min(100, Math.round(event.payload.percent)))
+            : 0;
+          const transferred = Math.max(0, event.payload.transferred ?? 0);
+          const total = Math.max(0, event.payload.total ?? 0);
+          const detail =
+            total > 0
+              ? `${percent}% · ${formatTransferBytes(transferred)} / ${formatTransferBytes(total)}`
+              : `${formatTransferBytes(transferred)}`;
+          updateTransferTask(transferId, {
+            progress: percent,
+            detail,
+          });
+        },
+      );
+      unlistenSftpProgress = unlistenTransferProgress;
 
       const unlistenDisconnectEvent = await listen<{
         session_id: string;
@@ -3817,6 +3899,13 @@ export function XTerminal({
           setTerminalBgBlur(v ?? DEFAULT_APP_SETTINGS["terminal.backgroundBlur"]);
         },
       );
+      unlistenBackgroundFit = await store.onKeyChange<TerminalBackgroundFit>(
+        "terminal.backgroundFit",
+        (v) => {
+          if (disposed) return;
+          setTerminalBgFit(v ?? DEFAULT_APP_SETTINGS["terminal.backgroundFit"]);
+        },
+      );
 
       // Initial resize (after fonts are applied)
       setTimeout(() => {
@@ -3843,6 +3932,7 @@ export function XTerminal({
       unlistenFontSize?.();
       unlistenFontFamily?.();
       unlistenOutput?.();
+      unlistenSftpProgress?.();
       unlistenDisconnect?.();
       removeContextMenu?.();
       unlistenFontWeight?.();
@@ -3851,6 +3941,7 @@ export function XTerminal({
       unlistenLineHeight?.();
       unlistenAutoCopy?.();
       unlistenBackgroundImage?.();
+      unlistenBackgroundFit?.();
       unlistenBackgroundOpacity?.();
       unlistenBackgroundBlur?.();
       selectionDisposable?.dispose();
@@ -3951,9 +4042,10 @@ export function XTerminal({
         terminalBgOpacity,
       );
       customStyle["--xterminal-bg-blur"] = `${terminalBgBlur}px`;
+      customStyle["--xterminal-bg-size"] = TERMINAL_BG_SIZE_MAP[terminalBgFit];
     }
     return style;
-  }, [terminalBgBlur, terminalBgImage, terminalBgOpacity, xtermBaseBg, xtermBg]);
+  }, [terminalBgBlur, terminalBgFit, terminalBgImage, terminalBgOpacity, xtermBaseBg, xtermBg]);
 
   return (
     <>
@@ -5083,21 +5175,9 @@ export function XTerminal({
                       </span>
                     </div>
                     <div className="xterminal-transfer-meta">
-                      {t("terminal.transfer.meta", {
-                        direction: transferDirectionLabel(task.direction),
-                        start: formatTransferTime(task.startedAt),
-                        endSuffix: task.finishedAt
-                          ? t("terminal.transfer.finishedAt", {
-                              time: formatTransferTime(task.finishedAt),
-                            })
-                          : "",
+                      {t("terminal.transfer.createdAt", {
+                        time: formatTransferTime(task.startedAt),
                       })}
-                    </div>
-                    <div className="xterminal-transfer-path">
-                      {t("terminal.transfer.source", { path: task.sourcePath })}
-                    </div>
-                    <div className="xterminal-transfer-path">
-                      {t("terminal.transfer.target", { path: task.targetPath })}
                     </div>
                     <div className="xterminal-transfer-progressbar">
                       <span
@@ -5108,6 +5188,16 @@ export function XTerminal({
                     {task.detail && (
                       <div className="xterminal-transfer-detail">{task.detail}</div>
                     )}
+                    <div className="xterminal-transfer-item-actions">
+                      <button
+                        type="button"
+                        className="xterminal-script-link"
+                        onClick={() => void handleOpenTransferDirectory(task)}
+                      >
+                        <AppIcon icon="material-symbols:folder-open-rounded" size={16} />
+                        {t("terminal.transfer.openFolder")}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

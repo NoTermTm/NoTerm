@@ -11,6 +11,8 @@ export type TerminalThemeName =
   | "tokyo"
   | "catppuccin";
 
+export type TerminalBackgroundFit = "cover" | "contain" | "stretch";
+
 export type AppSettings = {
   "i18n.locale": "zh-CN" | "en-US";
   "ui.theme": "bright" | "mint" | "dark";
@@ -31,6 +33,7 @@ export type AppSettings = {
   "terminal.lineHeight": number;
   "terminal.autoCopy": boolean;
   "terminal.backgroundImage": string;
+  "terminal.backgroundFit": TerminalBackgroundFit;
   "terminal.backgroundOpacity": number;
   "terminal.backgroundBlur": number;
   "ai.enabled": boolean;
@@ -67,6 +70,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "terminal.lineHeight": 1.4,
   "terminal.autoCopy": false,
   "terminal.backgroundImage": "",
+  "terminal.backgroundFit": "cover",
   "terminal.backgroundOpacity": 0.6,
   "terminal.backgroundBlur": 6,
   "ai.enabled": false,

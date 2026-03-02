@@ -706,20 +706,35 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    border-left: 1px solid var(--border-light);
 }
 
-.terminal-split-pane:first-child {
-    border-left: none;
+.terminal-split-resizer {
+    flex: 0 0 auto;
+    background: var(--border-light);
+    position: relative;
+    z-index: 2;
 }
 
-.terminal-split--horizontal .terminal-split-pane {
-    border-left: none;
-    border-top: 1px solid var(--border-light);
+.terminal-split-resizer--vertical {
+    width: 3px;
+    cursor: col-resize;
 }
 
-.terminal-split--horizontal .terminal-split-pane:first-child {
-    border-top: none;
+.terminal-split-resizer--horizontal {
+    height: 3px;
+    cursor: row-resize;
+}
+
+.terminal-split-resizer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: transparent;
+    transition: background-color 0.15s ease;
+}
+
+.terminal-split-resizer:hover::after {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .split-picker {
@@ -840,6 +855,11 @@
 .connect-picker-item:hover {
     border-color: var(--accent);
     background: rgba(15, 143, 255, 0.06);
+}
+
+.connect-picker-item.is-active {
+    border-color: var(--accent);
+    background: rgba(15, 143, 255, 0.1);
 }
 
 .connect-picker-name {

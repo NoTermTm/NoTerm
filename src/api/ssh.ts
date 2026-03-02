@@ -88,12 +88,22 @@ export const sshApi = {
     return await invoke('ssh_sftp_list_dir', { sessionId, path });
   },
 
-  downloadFile: async (sessionId: string, remotePath: string, localPath: string): Promise<void> => {
-    return await invoke('ssh_sftp_download_file', { sessionId, remotePath, localPath });
+  downloadFile: async (
+    sessionId: string,
+    remotePath: string,
+    localPath: string,
+    transferId?: string,
+  ): Promise<void> => {
+    return await invoke('ssh_sftp_download_file', { sessionId, remotePath, localPath, transferId });
   },
 
-  uploadFile: async (sessionId: string, localPath: string, remotePath: string): Promise<void> => {
-    return await invoke('ssh_sftp_upload_file', { sessionId, localPath, remotePath });
+  uploadFile: async (
+    sessionId: string,
+    localPath: string,
+    remotePath: string,
+    transferId?: string,
+  ): Promise<void> => {
+    return await invoke('ssh_sftp_upload_file', { sessionId, localPath, remotePath, transferId });
   },
 
   renameSftpEntry: async (sessionId: string, fromPath: string, toPath: string): Promise<void> => {

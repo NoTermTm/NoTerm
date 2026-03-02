@@ -766,7 +766,16 @@ impl SshManager {
         Ok(())
     }
 
-    pub fn sftp_download_file(&self, session_id: &str, remote_path: &str, local_path: &str) -> anyhow::Result<()> {
+    pub fn sftp_download_file<F>(
+        &self,
+        session_id: &str,
+        remote_path: &str,
+        local_path: &str,
+        mut on_progress: F,
+    ) -> anyhow::Result<()>
+    where
+        F: FnMut(u64, u64) + Send,
+    {
         let sftp_session = self.get_or_create_sftp(session_id)?;
         let sess = sftp_session.lock().unwrap();
 
@@ -781,14 +790,45 @@ impl SshManager {
         let mut local_file = std::fs::File::create(local_path)
             .map_err(|e| anyhow::anyhow!("Failed to create local file '{}': {}", local_path, e))?;
 
-        // 复制数据
-        std::io::copy(&mut remote_file, &mut local_file)
-            .map_err(|e| anyhow::anyhow!("Failed to download file: {}", e))?;
+        let total = sftp
+            .stat(Path::new(remote_path))
+            .ok()
+            .and_then(|stat| stat.size)
+            .unwrap_or(0);
+        let mut transferred: u64 = 0;
+        let mut buf = [0u8; 64 * 1024];
+
+        on_progress(0, total);
+        loop {
+            let read = remote_file
+                .read(&mut buf)
+                .map_err(|e| anyhow::anyhow!("Failed to read remote file '{}': {}", remote_path, e))?;
+            if read == 0 {
+                break;
+            }
+            local_file
+                .write_all(&buf[..read])
+                .map_err(|e| anyhow::anyhow!("Failed to write local file '{}': {}", local_path, e))?;
+            transferred = transferred.saturating_add(read as u64);
+            on_progress(transferred, total);
+        }
+        if total > 0 && transferred < total {
+            on_progress(total, total);
+        }
 
         Ok(())
     }
 
-    pub fn sftp_upload_file(&self, session_id: &str, local_path: &str, remote_path: &str) -> anyhow::Result<()> {
+    pub fn sftp_upload_file<F>(
+        &self,
+        session_id: &str,
+        local_path: &str,
+        remote_path: &str,
+        mut on_progress: F,
+    ) -> anyhow::Result<()>
+    where
+        F: FnMut(u64, u64) + Send,
+    {
         let sftp_session = self.get_or_create_sftp(session_id)?;
         let sess = sftp_session.lock().unwrap();
 
@@ -803,9 +843,30 @@ impl SshManager {
         let mut remote_file = sftp.create(Path::new(remote_path))
             .map_err(|e| anyhow::anyhow!("Failed to create remote file '{}': {}", remote_path, e))?;
 
-        // 复制数据
-        std::io::copy(&mut local_file, &mut remote_file)
-            .map_err(|e| anyhow::anyhow!("Failed to upload file: {}", e))?;
+        let total = local_file
+            .metadata()
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let mut transferred: u64 = 0;
+        let mut buf = [0u8; 64 * 1024];
+
+        on_progress(0, total);
+        loop {
+            let read = local_file
+                .read(&mut buf)
+                .map_err(|e| anyhow::anyhow!("Failed to read local file '{}': {}", local_path, e))?;
+            if read == 0 {
+                break;
+            }
+            remote_file
+                .write_all(&buf[..read])
+                .map_err(|e| anyhow::anyhow!("Failed to write remote file '{}': {}", remote_path, e))?;
+            transferred = transferred.saturating_add(read as u64);
+            on_progress(transferred, total);
+        }
+        if total > 0 && transferred < total {
+            on_progress(total, total);
+        }
 
         Ok(())
     }

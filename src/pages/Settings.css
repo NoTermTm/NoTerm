@@ -378,13 +378,18 @@
     background-image:
         linear-gradient(var(--settings-term-bg-overlay), var(--settings-term-bg-overlay)),
         var(--settings-term-bg-image);
-    background-size: cover;
+    background-size: var(--settings-term-bg-size, cover);
     background-position: center;
     background-repeat: no-repeat;
     filter: blur(var(--settings-term-bg-blur));
     transform: scale(1.05);
     z-index: 0;
     pointer-events: none;
+}
+
+.settings-preview-content-text {
+    position: relative;
+    z-index: 1;
 }
 
 .settings-range-row {
@@ -453,6 +458,11 @@
     font-size: 12px;
     padding: 6px 10px;
     width: 220px;
+}
+
+.settings-select--bg-fit {
+    width: 220px;
+    max-width: 100%;
 }
 
 .settings-select:focus {

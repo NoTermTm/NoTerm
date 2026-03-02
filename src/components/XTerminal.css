@@ -10,6 +10,7 @@
     --xterminal-bg-image: none;
     --xterminal-bg-overlay: transparent;
     --xterminal-bg-blur: 0px;
+    --xterminal-bg-size: cover;
 }
 
 .xterminal-body {
@@ -29,7 +30,7 @@
     background-image:
         linear-gradient(var(--xterminal-bg-overlay), var(--xterminal-bg-overlay)),
         var(--xterminal-bg-image);
-    background-size: cover;
+    background-size: var(--xterminal-bg-size, cover);
     background-position: center;
     background-repeat: no-repeat;
     filter: blur(var(--xterminal-bg-blur));
@@ -1002,6 +1003,11 @@
 .xterminal-transfer-detail {
     color: var(--text-secondary);
     font-size: 11px;
+}
+
+.xterminal-transfer-item-actions {
+    display: flex;
+    justify-content: flex-end;
 }
 
 @keyframes xterminal-transfer-running {

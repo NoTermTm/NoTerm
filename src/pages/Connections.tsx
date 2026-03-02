@@ -651,6 +651,7 @@ interface ActiveSession {
 interface SplitLayout {
   direction: "vertical" | "horizontal";
   secondarySessionId: string;
+  ratio: number;
 }
 
 export function ConnectionsPage({
@@ -698,7 +699,9 @@ export function ConnectionsPage({
   >(null);
   const [connectPickerOpen, setConnectPickerOpen] = useState(false);
   const [connectPickerQuery, setConnectPickerQuery] = useState("");
+  const [connectPickerActiveIndex, setConnectPickerActiveIndex] = useState(0);
   const connectPickerInputRef = useRef<HTMLInputElement | null>(null);
+  const connectPickerItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [testStatus, setTestStatus] = useState<
     "idle" | "testing" | "success" | "error"
   >("idle");
@@ -712,6 +715,48 @@ export function ConnectionsPage({
     y: number;
   } | null>(null);
   const [showMasterKeyPrompt, setShowMasterKeyPrompt] = useState(false);
+  const splitContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [splitResizing, setSplitResizing] = useState<{
+    baseSessionId: string;
+    direction: SplitLayout["direction"];
+    startPos: number;
+    startRatio: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!splitResizing) return;
+    const onMove = (event: PointerEvent) => {
+      const container = splitContainerRefs.current.get(splitResizing.baseSessionId);
+      if (!container) return;
+      const containerSize =
+        splitResizing.direction === "vertical"
+          ? container.clientWidth
+          : container.clientHeight;
+      if (!containerSize) return;
+      const currentPos =
+        splitResizing.direction === "vertical" ? event.clientX : event.clientY;
+      const delta = currentPos - splitResizing.startPos;
+      const nextRatio = Math.max(
+        0.2,
+        Math.min(0.8, splitResizing.startRatio + delta / containerSize),
+      );
+      setSplitLayouts((prev) => {
+        const current = prev.get(splitResizing.baseSessionId);
+        if (!current) return prev;
+        if (Math.abs(current.ratio - nextRatio) < 0.001) return prev;
+        const next = new Map(prev);
+        next.set(splitResizing.baseSessionId, { ...current, ratio: nextRatio });
+        return next;
+      });
+    };
+    const onUp = () => setSplitResizing(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [splitResizing]);
 
   useEffect(() => {
     void (async () => {
@@ -765,6 +810,7 @@ export function ConnectionsPage({
   useEffect(() => {
     if (!connectPickerOpen) return;
     setConnectPickerQuery("");
+    setConnectPickerActiveIndex(0);
     requestAnimationFrame(() => connectPickerInputRef.current?.focus());
   }, [connectPickerOpen]);
 
@@ -1209,6 +1255,7 @@ export function ConnectionsPage({
       next.set(splitPickerBaseSessionId, {
         direction: splitPickerDirection,
         secondarySessionId,
+        ratio: 0.5,
       });
       return next;
     });
@@ -2374,8 +2421,18 @@ export function ConnectionsPage({
               key={sessionId}
               className={`terminal-fullscreen terminal-split terminal-split--${split.direction}`}
               style={{ display: show }}
+              ref={(el) => {
+                if (el) {
+                  splitContainerRefs.current.set(sessionId, el);
+                } else {
+                  splitContainerRefs.current.delete(sessionId);
+                }
+              }}
             >
-              <div className="terminal-split-pane">
+              <div
+                className="terminal-split-pane"
+                style={{ flex: `0 0 ${Math.round(split.ratio * 10000) / 100}%` }}
+              >
                 {renderTerminal(
                   sessionId,
                   session,
@@ -2384,7 +2441,24 @@ export function ConnectionsPage({
                   undefined,
                 )}
               </div>
-              <div className="terminal-split-pane">
+              <div
+                className={`terminal-split-resizer terminal-split-resizer--${split.direction}`}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  const startPos =
+                    split.direction === "vertical" ? event.clientX : event.clientY;
+                  setSplitResizing({
+                    baseSessionId: sessionId,
+                    direction: split.direction,
+                    startPos,
+                    startRatio: split.ratio,
+                  });
+                }}
+              />
+              <div
+                className="terminal-split-pane"
+                style={{ flex: `0 0 ${Math.round((1 - split.ratio) * 10000) / 100}%` }}
+              >
                 {renderTerminal(
                   split.secondarySessionId,
                   secondary,
@@ -2548,6 +2622,19 @@ export function ConnectionsPage({
       return tokens.every((token) => haystack.includes(token));
     });
   }, [connections, connectPickerQuery]);
+
+  useEffect(() => {
+    if (!connectPickerOpen) return;
+    if (connectPickerResults.length === 0) {
+      setConnectPickerActiveIndex(-1);
+      return;
+    }
+    setConnectPickerActiveIndex((prev) => {
+      if (prev < 0) return 0;
+      if (prev >= connectPickerResults.length) return connectPickerResults.length - 1;
+      return prev;
+    });
+  }, [connectPickerOpen, connectPickerResults]);
 
   return (
     <>
@@ -2921,10 +3008,36 @@ export function ConnectionsPage({
               onChange={(event) => setConnectPickerQuery(event.target.value)}
               placeholder={t("connections.picker.search.placeholder")}
               onKeyDown={(event) => {
-                if (event.key !== "Enter") return;
                 if (connectPickerResults.length === 0) return;
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setConnectPickerActiveIndex((prev) => {
+                    const next = prev < 0 ? 0 : (prev + 1) % connectPickerResults.length;
+                    connectPickerItemRefs.current[next]?.scrollIntoView({ block: "nearest" });
+                    return next;
+                  });
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setConnectPickerActiveIndex((prev) => {
+                    const next =
+                      prev < 0
+                        ? connectPickerResults.length - 1
+                        : (prev - 1 + connectPickerResults.length) % connectPickerResults.length;
+                    connectPickerItemRefs.current[next]?.scrollIntoView({ block: "nearest" });
+                    return next;
+                  });
+                  return;
+                }
+                if (event.key !== "Enter") return;
                 event.preventDefault();
-                void handleConnect(connectPickerResults[0]);
+                const selectedIndex =
+                  connectPickerActiveIndex >= 0 &&
+                  connectPickerActiveIndex < connectPickerResults.length
+                    ? connectPickerActiveIndex
+                    : 0;
+                void handleConnect(connectPickerResults[selectedIndex]);
                 setConnectPickerOpen(false);
               }}
             />
@@ -2950,11 +3063,17 @@ export function ConnectionsPage({
                 {t("connections.picker.noResults")}
               </div>
             )}
-            {connectPickerResults.map((conn) => (
+            {connectPickerResults.map((conn, index) => (
               <button
                 key={conn.id}
                 type="button"
-                className="connect-picker-item"
+                ref={(el) => {
+                  connectPickerItemRefs.current[index] = el;
+                }}
+                className={`connect-picker-item ${connectPickerActiveIndex === index ? "is-active" : ""}`}
+                onMouseEnter={() => {
+                  setConnectPickerActiveIndex(index);
+                }}
                 onClick={() => {
                   void handleConnect(conn);
                   setConnectPickerOpen(false);

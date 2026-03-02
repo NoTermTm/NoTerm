@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { CSSProperties, PointerEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { AppIcon } from "./AppIcon";
 import { useI18n } from "../i18n";
 import "./TitleBar.css";
@@ -76,6 +76,28 @@ export function TitleBar({
 }: TitleBarProps) {
   const appWindow = getCurrentWindow();
   const { t } = useI18n();
+  const tabsScrollRef = useRef<HTMLDivElement | null>(null);
+  const [showTabScrollLeft, setShowTabScrollLeft] = useState(false);
+  const [showTabScrollRight, setShowTabScrollRight] = useState(false);
+
+  useEffect(() => {
+    const el = tabsScrollRef.current;
+    if (!el) return;
+
+    const updateScrollHint = () => {
+      const maxScrollLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+      setShowTabScrollLeft(el.scrollLeft > 2);
+      setShowTabScrollRight(maxScrollLeft - el.scrollLeft > 2);
+    };
+
+    updateScrollHint();
+    el.addEventListener("scroll", updateScrollHint, { passive: true });
+    window.addEventListener("resize", updateScrollHint);
+    return () => {
+      el.removeEventListener("scroll", updateScrollHint);
+      window.removeEventListener("resize", updateScrollHint);
+    };
+  }, [tabs, activeTabId]);
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     // Only start dragging on primary button.
@@ -142,29 +164,45 @@ export function TitleBar({
 
       {tabs.length > 0 && (
         <div className="title-bar-center">
-          <div className="title-bar-tabs">
-            {tabs.map((tab) => (
-              <div
-                key={tab.id}
-                className={`tab ${activeTabId === tab.id ? "active" : ""} ${tab.color ? "tab--colored" : ""}`}
-                style={buildTabColorStyle(tab.color, activeTabId === tab.id)}
-                onClick={() => onTabClick?.(tab.id)}
+          <div className="title-bar-tabs-wrap">
+            <div className="title-bar-tabs-shell">
+              <span
+                className={`title-bar-tabs-arrow title-bar-tabs-arrow--left ${showTabScrollLeft ? "is-visible" : ""}`}
+                aria-hidden="true"
               >
-                <div className="tab-content">
-                  <div className="tab-title">{tab.title}</div>
-                  {/*{tab.subtitle && <div className="tab-subtitle">{tab.subtitle}</div>}*/}
-                </div>
-                <button
-                  className="tab-close"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onTabClose?.(tab.id);
-                  }}
-                >
-                  <AppIcon icon="material-symbols:close-rounded" size={12} />
-                </button>
+                <AppIcon icon="material-symbols:chevron-left-rounded" size={14} />
+              </span>
+              <div className="title-bar-tabs" ref={tabsScrollRef}>
+                {tabs.map((tab) => (
+                  <div
+                    key={tab.id}
+                    className={`tab ${activeTabId === tab.id ? "active" : ""} ${tab.color ? "tab--colored" : ""}`}
+                    style={buildTabColorStyle(tab.color, activeTabId === tab.id)}
+                    onClick={() => onTabClick?.(tab.id)}
+                  >
+                    <div className="tab-content">
+                      <div className="tab-title">{tab.title}</div>
+                      {/*{tab.subtitle && <div className="tab-subtitle">{tab.subtitle}</div>}*/}
+                    </div>
+                    <button
+                      className="tab-close"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onTabClose?.(tab.id);
+                      }}
+                    >
+                      <AppIcon icon="material-symbols:close-rounded" size={12} />
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
+              <span
+                className={`title-bar-tabs-arrow title-bar-tabs-arrow--right ${showTabScrollRight ? "is-visible" : ""}`}
+                aria-hidden="true"
+              >
+                <AppIcon icon="material-symbols:chevron-right-rounded" size={14} />
+              </span>
+            </div>
             <button
               className="new-tab-btn"
               onClick={onNewTab}
