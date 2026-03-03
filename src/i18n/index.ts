@@ -497,6 +497,9 @@ const MESSAGES: Messages = {
   "forwarding.error.unlockRequired": { "zh-CN": "需要先解锁主密码", "en-US": "Unlock the master key first" },
 
   "titleBar.newSession": { "zh-CN": "新建会话", "en-US": "New session" },
+  "titleBar.minimize": { "zh-CN": "最小化", "en-US": "Minimize" },
+  "titleBar.maximize": { "zh-CN": "最大化", "en-US": "Maximize" },
+  "titleBar.close": { "zh-CN": "关闭", "en-US": "Close" },
 
   "keys.defaultName": { "zh-CN": "新密钥", "en-US": "New key" },
   "keys.title": { "zh-CN": "密钥管理", "en-US": "Key management" },
