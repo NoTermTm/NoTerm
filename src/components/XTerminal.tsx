@@ -343,6 +343,8 @@ export function XTerminal({
   const writingRef = useRef(false);
   const reconnectPromiseRef = useRef<Promise<boolean> | null>(null);
   const writeBlockedRef = useRef(false);
+  const writeFailureCountRef = useRef(0);
+  const reconnectCooldownUntilRef = useRef(0);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
@@ -825,6 +827,13 @@ export function XTerminal({
   const startReconnectFlow = () => {
     if (isLocal) return;
     if (reconnectPromiseRef.current) return;
+    const now = Date.now();
+    if (now < reconnectCooldownUntilRef.current) {
+      pushTerminalLog("warn", "reconnect skipped (cooldown)");
+      return;
+    }
+    reconnectCooldownUntilRef.current = now + 10_000;
+    writeFailureCountRef.current = 0;
     writeBlockedRef.current = true;
     reconnectPromiseRef.current = (async () => {
       let ok = false;
@@ -868,41 +877,53 @@ export function XTerminal({
   const writeToShellWithTimeout = async (data: string) => {
     const startedAt = Date.now();
     pushTerminalLog("info", `input bytes=${data.length}`);
-    let timeoutId: number | undefined;
-    try {
-      await new Promise<void>((resolve, reject) => {
-        timeoutId = window.setTimeout(() => {
-          reject(new Error("write_timeout"));
-        }, 4000);
-        pushTerminalLog("info", "write attempt 1");
-        writeToShell(data)
-          .then(() => resolve())
-          .catch((err) => reject(err));
-      });
-      pushTerminalLog("info", `write ok ${Date.now() - startedAt}ms`);
-      return true;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const detail =
-        message === "write_timeout"
-          ? t("terminal.write.timeout")
-          : t("terminal.write.fail");
-      pushTerminalLog("error", `${detail} (${Date.now() - startedAt}ms) err=${message}`);
-      if (!terminalIssueRef.current) {
-        setTerminalIssue({
-          message: t("terminal.write.issue", { detail }),
-          timestamp: Date.now(),
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      let timeoutId: number | undefined;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          timeoutId = window.setTimeout(() => {
+            reject(new Error("write_timeout"));
+          }, 12_000);
+          pushTerminalLog("info", `write attempt ${attempt}`);
+          writeToShell(data)
+            .then(() => resolve())
+            .catch((err) => reject(err));
         });
-      }
-      if (!isLocal) {
-        startReconnectFlow();
-      }
-      return false;
-    } finally {
-      if (timeoutId) {
-        window.clearTimeout(timeoutId);
+        writeFailureCountRef.current = 0;
+        pushTerminalLog("info", `write ok ${Date.now() - startedAt}ms`);
+        return true;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const detail =
+          message === "write_timeout"
+            ? t("terminal.write.timeout")
+            : t("terminal.write.fail");
+        pushTerminalLog(
+          "error",
+          `${detail} (${Date.now() - startedAt}ms) attempt=${attempt} err=${message}`,
+        );
+        if (attempt < 2) {
+          await new Promise((resolve) => window.setTimeout(resolve, 180));
+          continue;
+        }
+        writeFailureCountRef.current += 1;
+        if (!terminalIssueRef.current) {
+          setTerminalIssue({
+            message: t("terminal.write.issue", { detail }),
+            timestamp: Date.now(),
+          });
+        }
+        if (!isLocal && writeFailureCountRef.current >= 3) {
+          startReconnectFlow();
+        }
+        return false;
+      } finally {
+        if (timeoutId) {
+          window.clearTimeout(timeoutId);
+        }
       }
     }
+    return false;
   };
 
   const flushWriteQueue = async () => {
