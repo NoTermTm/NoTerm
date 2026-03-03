@@ -26,14 +26,19 @@ import { loadTerminalBackgroundUrl, TERMINAL_BG_DIR } from "../utils/terminalBac
 import { readAllAiModels, writeAiModels } from "../store/aiModels";
 import "./Settings.css";
 
-const TERMINAL_FONT_OPTIONS = [
-  { label: "SF Mono", value: '"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace' },
-  { label: "JetBrains Mono", value: '"JetBrains Mono", "SF Mono", Menlo, monospace' },
-  { label: "Fira Code", value: '"Fira Code", "SF Mono", Menlo, monospace' },
-  { label: "Hack", value: 'Hack, "SF Mono", Menlo, monospace' },
-  { label: "Source Code Pro", value: '"Source Code Pro", "SF Mono", Menlo, monospace' },
-  { label: "Ubuntu Mono", value: '"Ubuntu Mono", "SF Mono", Menlo, monospace' },
-  { label: "Menlo", value: 'Menlo, "SF Mono", monospace' },
+const TERMINAL_FONT_CANDIDATES = [
+  { label: "SF Mono", family: "SF Mono", value: '"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace' },
+  { label: "JetBrains Mono", family: "JetBrains Mono", value: '"JetBrains Mono", "SF Mono", Menlo, monospace' },
+  { label: "Fira Code", family: "Fira Code", value: '"Fira Code", "SF Mono", Menlo, monospace' },
+  { label: "Hack", family: "Hack", value: 'Hack, "SF Mono", Menlo, monospace' },
+  { label: "Source Code Pro", family: "Source Code Pro", value: '"Source Code Pro", "SF Mono", Menlo, monospace' },
+  { label: "Ubuntu Mono", family: "Ubuntu Mono", value: '"Ubuntu Mono", "SF Mono", Menlo, monospace' },
+  { label: "Menlo", family: "Menlo", value: 'Menlo, "SF Mono", monospace' },
+  { label: "Consolas", family: "Consolas", value: 'Consolas, "Courier New", monospace' },
+  { label: "Cascadia Mono", family: "Cascadia Mono", value: '"Cascadia Mono", Consolas, "Courier New", monospace' },
+  { label: "Cascadia Code", family: "Cascadia Code", value: '"Cascadia Code", Consolas, "Courier New", monospace' },
+  { label: "Lucida Console", family: "Lucida Console", value: '"Lucida Console", Consolas, monospace' },
+  { label: "Courier New", family: "Courier New", value: '"Courier New", Consolas, monospace' },
 ];
 
 const TERMINAL_FONT_WEIGHT_OPTIONS = [
@@ -166,6 +171,9 @@ export function SettingsPage() {
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const [updateCheckedAt, setUpdateCheckedAt] = useState<string | null>(null);
   const [terminalBgUploading, setTerminalBgUploading] = useState(false);
+  const [terminalFontOptions, setTerminalFontOptions] = useState(
+    TERMINAL_FONT_CANDIDATES.map((opt) => ({ label: opt.label, value: opt.value })),
+  );
   const updateRef = useRef<Awaited<ReturnType<typeof checkForUpdates>> | null>(null);
   const updateStatusRef = useRef(updateStatus);
   const hasMasterKey = Boolean(settings["security.masterKeyHash"]);
@@ -188,6 +196,28 @@ export function SettingsPage() {
   useEffect(() => {
     updateStatusRef.current = updateStatus;
   }, [updateStatus]);
+
+  useEffect(() => {
+    if (typeof document === "undefined" || !("fonts" in document)) return;
+    const hasFont = (family: string) => {
+      try {
+        return document.fonts.check(`12px "${family}"`);
+      } catch {
+        return true;
+      }
+    };
+    const installed = TERMINAL_FONT_CANDIDATES.filter((opt) => hasFont(opt.family));
+    const next = (installed.length > 0 ? installed : TERMINAL_FONT_CANDIDATES).map((opt) => ({
+      label: opt.label,
+      value: opt.value,
+    }));
+    const current = settings["terminal.fontFamily"];
+    if (current && !next.some((opt) => opt.value === current)) {
+      const first = current.split(",")[0]?.trim().replace(/^"|"$/g, "") || "Custom";
+      next.unshift({ label: first, value: current });
+    }
+    setTerminalFontOptions(next);
+  }, [settings["terminal.fontFamily"]]);
 
   useEffect(() => {
     let disposed = false;
@@ -1548,10 +1578,7 @@ export function SettingsPage() {
                         nextValue || DEFAULT_TERMINAL_FONT_FAMILY,
                       )
                     }
-                    options={TERMINAL_FONT_OPTIONS.map((opt) => ({
-                      value: opt.value,
-                      label: opt.label,
-                    }))}
+                    options={terminalFontOptions}
                   />
                 </div>
                 <div className="settings-field">

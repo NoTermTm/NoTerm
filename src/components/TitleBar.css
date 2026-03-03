@@ -185,8 +185,52 @@
 .title-bar-right {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 0;
     -webkit-app-region: no-drag;
+}
+
+.title-bar-win-controls {
+    display: flex;
+    align-items: stretch;
+    height: 40px;
+    margin-right: -16px;
+}
+
+.title-bar-win-btn {
+    width: 46px;
+    height: 40px;
+    border: none;
+    background: transparent;
+    color: #5f6368;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.title-bar-win-btn svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1;
+    stroke-linecap: square;
+}
+
+.title-bar-win-btn:hover {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+.title-bar-win-btn:active {
+    background: rgba(0, 0, 0, 0.1);
+}
+
+.title-bar-win-btn--close:hover {
+    background: #e81123;
+    color: #ffffff;
+}
+
+.title-bar-win-btn--close:active {
+    background: #c50f1f;
+    color: #ffffff;
 }
 
 /* Tab styling */

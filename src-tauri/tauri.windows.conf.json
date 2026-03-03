@@ -3,14 +3,13 @@
     "windows": [
       {
         "title": "NoTerm",
-        "width": 1400,
-        "height": 850,
+        "width": 1200,
+        "height": 630,
         "minWidth": 1200,
         "minHeight": 600,
-        "decorations": true,
+        "decorations": false,
         "transparent": false,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "titleBarStyle": "Overlay"
       }
     ]
   }

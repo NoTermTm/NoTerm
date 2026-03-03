@@ -19,6 +19,7 @@ interface TitleBarProps {
   onNewTab?: () => void;
   useNativeWindowControls?: boolean;
   hideCustomWindowControls?: boolean;
+  showWindowsWindowControls?: boolean;
 }
 
 const parseColorToRgb = (color: string): [number, number, number] | null => {
@@ -77,6 +78,7 @@ export function TitleBar({
   onNewTab,
   useNativeWindowControls = false,
   hideCustomWindowControls = false,
+  showWindowsWindowControls = false,
 }: TitleBarProps) {
   const appWindow = getCurrentWindow();
   const { t } = useI18n();
@@ -255,7 +257,42 @@ export function TitleBar({
         </div>
       )}
 
-      <div className="title-bar-right">{/* 可以在这里添加其他控件 */}</div>
+      <div className="title-bar-right">
+        {showWindowsWindowControls && (
+          <div className="title-bar-win-controls">
+            <button
+              className="title-bar-win-btn"
+              onClick={handleMinimize}
+              aria-label="Minimize"
+              title={t("titleBar.minimize")}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                <path d="M1 5.5H9" />
+              </svg>
+            </button>
+            <button
+              className="title-bar-win-btn"
+              onClick={() => appWindow.toggleMaximize()}
+              aria-label="Maximize"
+              title={t("titleBar.maximize")}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                <path d="M1.5 1.5H8.5V8.5H1.5Z" />
+              </svg>
+            </button>
+            <button
+              className="title-bar-win-btn title-bar-win-btn--close"
+              onClick={handleClose}
+              aria-label="Close"
+              title={t("titleBar.close")}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                <path d="M2 2L8 8M8 2L2 8" />
+              </svg>
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
