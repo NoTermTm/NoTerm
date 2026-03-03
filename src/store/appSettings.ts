@@ -47,8 +47,12 @@ export type AppSettings = {
   "ai.agentMode": "suggest_only" | "confirm_then_execute";
 };
 
-export const DEFAULT_TERMINAL_FONT_FAMILY =
-  '"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace';
+const isWindowsPlatform = () =>
+  typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent || navigator.platform);
+
+export const DEFAULT_TERMINAL_FONT_FAMILY = isWindowsPlatform()
+  ? '"Cascadia Code", Consolas, "Courier New", monospace'
+  : '"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace';
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   "i18n.locale": "zh-CN",

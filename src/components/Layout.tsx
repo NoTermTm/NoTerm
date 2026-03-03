@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { load } from "@tauri-apps/plugin-store";
@@ -973,7 +973,16 @@ export function Layout() {
   };
 
   return (
-    <div className="app-container">
+    <div
+      className="app-container"
+      style={
+        isMac
+          ? undefined
+          : ({
+              "--window-radius": "0px",
+            } as CSSProperties)
+      }
+    >
       <TitleBar
         tabs={tabs}
         activeTabId={activeTabId}
