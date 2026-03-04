@@ -36,8 +36,6 @@ import { getXtermTheme } from "../terminal/xtermThemes";
 import {
   categorizeLogLine,
   detectSmartCommand,
-  parseDockerPsOutput,
-  parseLsOutput,
   sanitizeTerminalChunk,
   shellEscapeArg,
   stripSymlinkSuffix,
@@ -218,7 +216,6 @@ const hasExecutableCommand = (text: string): boolean => {
 const escapeForRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const MAX_TRANSFER_TASKS = 120;
-const MAX_SMART_OUTPUT_CHARS = 160_000;
 const MAX_LOG_SIGNALS = 900;
 const LOG_SUMMARY_WINDOW_MS = 60_000;
 const MAX_LOG_SUMMARIES = 12;
@@ -319,7 +316,7 @@ export function XTerminal({
   const [sftpLoading, setSftpLoading] = useState(false);
   const [sftpError, setSftpError] = useState<string | null>(null);
   const [sftpDragging, setSftpDragging] = useState(false);
-  const [sftpWidth, setSftpWidth] = useState(280);
+  const [sftpWidth, setSftpWidth] = useState(380);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [renameEntry, setRenameEntry] = useState<SftpEntry | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -643,31 +640,6 @@ export function XTerminal({
       consumeTailOutput(cleanChunk);
       return;
     }
-
-    tracking.output = (tracking.output + cleanChunk).slice(-MAX_SMART_OUTPUT_CHARS);
-
-    if (tracking.kind === "ls") {
-      const rows = parseLsOutput(tracking.output);
-      if (!rows.length) return;
-      setSmartTable({
-        kind: "ls",
-        command: tracking.command,
-        rows,
-        updatedAt: Date.now(),
-      });
-      setAiOpen(true);
-      return;
-    }
-
-    const rows = parseDockerPsOutput(tracking.output);
-    if (!rows.length) return;
-    setSmartTable({
-      kind: "docker-ps",
-      command: tracking.command,
-      rows,
-      updatedAt: Date.now(),
-    });
-    setAiOpen(true);
   };
 
   const finalizeAgentTerminalExecution = (

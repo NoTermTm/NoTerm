@@ -63,6 +63,22 @@
     margin-left: 16px;
 }
 
+.settings-item-control--row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.settings-accent-picker {
+    width: 34px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+}
+
 .settings-item-control--stack {
     display: flex;
     flex-direction: column;
@@ -473,6 +489,7 @@
 .settings-input {
     min-width: 200px;
     padding: 8px 12px;
+    background-color: var(--bg-tertiary);
     border: 1px solid var(--border-color);
     border-radius: 4px;
     color: var(--text-primary);

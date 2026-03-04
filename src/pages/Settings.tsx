@@ -230,6 +230,9 @@ export function SettingsPage() {
         "ui.theme":
           (await store.get<AppSettings["ui.theme"]>("ui.theme")) ??
           DEFAULT_APP_SETTINGS["ui.theme"],
+        "ui.accent":
+          (await store.get<AppSettings["ui.accent"]>("ui.accent")) ??
+          DEFAULT_APP_SETTINGS["ui.accent"],
         "connection.autoConnect":
           (await store.get<boolean>("connection.autoConnect")) ??
           DEFAULT_APP_SETTINGS["connection.autoConnect"],
@@ -1326,6 +1329,27 @@ export function SettingsPage() {
                 label: t(option.labelKey),
               }))}
             />
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">{t("settings.theme.accent")}</div>
+            <div className="settings-item-description">{t("settings.theme.accent.desc")}</div>
+          </div>
+          <div className="settings-item-control settings-item-control--row">
+            <input
+              className="settings-accent-picker"
+              type="color"
+              value={/^#([0-9a-f]{6})$/i.test(settings["ui.accent"]) ? settings["ui.accent"] : "#5aa7ff"}
+              onChange={(event) => updateSetting("ui.accent", event.target.value)}
+            />
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => updateSetting("ui.accent", "")}
+            >
+              {t("common.reset")}
+            </button>
           </div>
         </div>
       </div>

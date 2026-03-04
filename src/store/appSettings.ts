@@ -16,6 +16,7 @@ export type TerminalBackgroundFit = "cover" | "contain" | "stretch";
 export type AppSettings = {
   "i18n.locale": "zh-CN" | "en-US";
   "ui.theme": "bright" | "mint" | "dark";
+  "ui.accent": string;
   "connection.autoConnect": boolean;
   "connection.savePassword": boolean;
   "connection.keepAlive": boolean;
@@ -57,6 +58,7 @@ export const DEFAULT_TERMINAL_FONT_FAMILY = isWindowsPlatform()
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   "i18n.locale": "zh-CN",
   "ui.theme": "bright",
+  "ui.accent": "",
   "connection.autoConnect": false,
   "connection.savePassword": true,
   "connection.keepAlive": true,

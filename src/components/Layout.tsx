@@ -347,6 +347,17 @@ export function Layout() {
   }, [activeTabId, isLocked]);
 
   useEffect(() => {
+    if (isLocked) return;
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("app-window-activated", {
+          detail: { activeTabId },
+        }),
+      );
+    }, 0);
+  }, [activeTabId, isLocked]);
+
+  useEffect(() => {
     const onActivity = () => {
       if (isLocked) return;
       lastActiveAtRef.current = Date.now();
@@ -896,20 +907,55 @@ export function Layout() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let unlistenAccent: (() => void) | undefined;
+    const isHexColor = (value: string) => /^#([0-9a-f]{6})$/i.test(value);
+    const darkenHex = (hex: string, ratio: number) => {
+      const clean = hex.replace("#", "");
+      const toPart = (offset: number) =>
+        Math.max(
+          0,
+          Math.min(
+            255,
+            Math.round(parseInt(clean.slice(offset, offset + 2), 16) * (1 - ratio)),
+          ),
+        )
+          .toString(16)
+          .padStart(2, "0");
+      return `#${toPart(0)}${toPart(2)}${toPart(4)}`;
+    };
     const applyTheme = (value?: AppSettings["ui.theme"] | null) => {
       const next = (value ?? DEFAULT_APP_SETTINGS["ui.theme"]) as AppSettings["ui.theme"];
       document.documentElement.dataset.theme = next;
     };
+    const applyAccent = (value?: string | null) => {
+      const root = document.documentElement;
+      const accent = (value ?? "").trim();
+      if (!accent || !isHexColor(accent)) {
+        root.style.removeProperty("--accent");
+        root.style.removeProperty("--accent-primary");
+        root.style.removeProperty("--accent-hover");
+        return;
+      }
+      root.style.setProperty("--accent", accent);
+      root.style.setProperty("--accent-primary", accent);
+      root.style.setProperty("--accent-hover", darkenHex(accent, 0.14));
+    };
     void (async () => {
       const store = await getAppSettingsStore();
       const current = await store.get<AppSettings["ui.theme"]>("ui.theme");
+      const currentAccent = await store.get<AppSettings["ui.accent"]>("ui.accent");
       applyTheme(current);
+      applyAccent(currentAccent);
       unlisten = await store.onKeyChange<AppSettings["ui.theme"]>("ui.theme", (value) => {
         applyTheme(value);
+      });
+      unlistenAccent = await store.onKeyChange<AppSettings["ui.accent"]>("ui.accent", (value) => {
+        applyAccent(value);
       });
     })();
     return () => {
       if (unlisten) unlisten();
+      if (unlistenAccent) unlistenAccent();
     };
   }, []);
 

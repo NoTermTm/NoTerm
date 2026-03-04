@@ -67,6 +67,8 @@ const MESSAGES: Messages = {
   "settings.theme.bright": { "zh-CN": "明亮", "en-US": "Bright" },
   "settings.theme.mint": { "zh-CN": "浅绿", "en-US": "Mint" },
   "settings.theme.dark": { "zh-CN": "暗黑", "en-US": "Dark" },
+  "settings.theme.accent": { "zh-CN": "强调色", "en-US": "Accent color" },
+  "settings.theme.accent.desc": { "zh-CN": "自定义按钮与高亮主色", "en-US": "Customize primary highlight color" },
 
   "settings.section.connection": { "zh-CN": "连接设置", "en-US": "Connections" },
   "settings.connection.autoReconnect": { "zh-CN": "自动重连", "en-US": "Auto reconnect" },
@@ -293,6 +295,7 @@ const MESSAGES: Messages = {
   "common.cancel": { "zh-CN": "取消", "en-US": "Cancel" },
   "common.close": { "zh-CN": "关闭", "en-US": "Close" },
   "common.clear": { "zh-CN": "清空", "en-US": "Clear" },
+  "common.reset": { "zh-CN": "重置", "en-US": "Reset" },
   "common.edit": { "zh-CN": "编辑", "en-US": "Edit" },
   "common.delete": { "zh-CN": "删除", "en-US": "Delete" },
 
