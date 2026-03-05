@@ -33,6 +33,8 @@ export type AppSettings = {
   "terminal.cursorBlink": boolean;
   "terminal.lineHeight": number;
   "terminal.autoCopy": boolean;
+  "terminal.inputAnimation": boolean;
+  "terminal.reconnectWriteFailures": number;
   "terminal.backgroundImage": string;
   "terminal.backgroundFit": TerminalBackgroundFit;
   "terminal.backgroundOpacity": number;
@@ -75,6 +77,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "terminal.cursorBlink": true,
   "terminal.lineHeight": 1.4,
   "terminal.autoCopy": false,
+  "terminal.inputAnimation": true,
+  "terminal.reconnectWriteFailures": 3,
   "terminal.backgroundImage": "",
   "terminal.backgroundFit": "cover",
   "terminal.backgroundOpacity": 0.6,

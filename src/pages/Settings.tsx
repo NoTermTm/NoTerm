@@ -281,6 +281,12 @@ export function SettingsPage() {
         "terminal.autoCopy":
           (await store.get<boolean>("terminal.autoCopy")) ??
           DEFAULT_APP_SETTINGS["terminal.autoCopy"],
+        "terminal.inputAnimation":
+          (await store.get<boolean>("terminal.inputAnimation")) ??
+          DEFAULT_APP_SETTINGS["terminal.inputAnimation"],
+        "terminal.reconnectWriteFailures":
+          (await store.get<number>("terminal.reconnectWriteFailures")) ??
+          DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"],
         "terminal.backgroundImage":
           (await store.get<string>("terminal.backgroundImage")) ??
           DEFAULT_APP_SETTINGS["terminal.backgroundImage"],
@@ -1698,19 +1704,75 @@ export function SettingsPage() {
               </div>
               <div className="settings-advanced">
                 <div className="settings-advanced-title">{t("settings.terminal.advanced")}</div>
-                <div className="settings-row settings-row--two">
-                  <div className="settings-field">
-                    <label className="settings-field-label">{t("settings.terminal.autoCopy")}</label>
-                    <div
-                      className={`toggle-switch ${settings["terminal.autoCopy"] ? "active" : ""}`}
-                      onClick={() => updateSetting("terminal.autoCopy", !settings["terminal.autoCopy"])}
-                    >
-                      <div className="toggle-switch-handle" />
+                <div className="settings-advanced-body">
+                  <div className="settings-row settings-row--two">
+                    <div className="settings-field">
+                      <label className="settings-field-label">{t("settings.terminal.autoCopy")}</label>
+                      <div
+                        className={`toggle-switch ${settings["terminal.autoCopy"] ? "active" : ""}`}
+                        onClick={() => updateSetting("terminal.autoCopy", !settings["terminal.autoCopy"])}
+                      >
+                        <div className="toggle-switch-handle" />
+                      </div>
+                    </div>
+                    <div className="settings-field">
+                      <div className="settings-field-description">
+                        {t("settings.terminal.autoCopy.desc")}
+                      </div>
                     </div>
                   </div>
-                  <div className="settings-field">
-                    <div className="settings-field-description">
-                      {t("settings.terminal.autoCopy.desc")}
+                  <div className="settings-row settings-row--two">
+                    <div className="settings-field">
+                      <label className="settings-field-label">{t("settings.terminal.inputAnimation")}</label>
+                      <div
+                        className={`toggle-switch ${settings["terminal.inputAnimation"] ? "active" : ""}`}
+                        onClick={() =>
+                          updateSetting("terminal.inputAnimation", !settings["terminal.inputAnimation"])
+                        }
+                      >
+                        <div className="toggle-switch-handle" />
+                      </div>
+                    </div>
+                    <div className="settings-field">
+                      <div className="settings-field-description">
+                        {t("settings.terminal.inputAnimation.desc")}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="settings-row settings-row--two">
+                    <div className="settings-field">
+                      <label className="settings-field-label">
+                        {t("settings.terminal.reconnectWriteFailures")}
+                      </label>
+                      <Select
+                        className="settings-select"
+                        value={String(settings["terminal.reconnectWriteFailures"])}
+                        onChange={(nextValue) =>
+                          updateSetting(
+                            "terminal.reconnectWriteFailures",
+                            Math.max(
+                              1,
+                              Math.min(
+                                10,
+                                parseInt(nextValue, 10) ||
+                                  DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"],
+                              ),
+                            ),
+                          )
+                        }
+                        options={[
+                          { value: "1", label: "1" },
+                          { value: "2", label: "2" },
+                          { value: "3", label: "3" },
+                          { value: "4", label: "4" },
+                          { value: "5", label: "5" },
+                        ]}
+                      />
+                    </div>
+                    <div className="settings-field">
+                      <div className="settings-field-description">
+                        {t("settings.terminal.reconnectWriteFailures.desc")}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1724,7 +1786,7 @@ export function SettingsPage() {
                     {t("settings.terminal.backgroundGroup.desc")}
                   </div>
                 </div>
-                <div className="settings-group-body">
+                <div className="settings-group-body settings-group-body--background">
                   <div className="settings-row settings-row--single">
                     <div className="settings-field">
                       <label className="settings-field-label">{t("settings.terminal.backgroundImage")}</label>

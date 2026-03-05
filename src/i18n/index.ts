@@ -184,6 +184,19 @@ const MESSAGES: Messages = {
     "zh-CN": "选中文本后自动复制到剪贴板",
     "en-US": "Copy selected text to clipboard automatically",
   },
+  "settings.terminal.inputAnimation": { "zh-CN": "输入动效", "en-US": "Input animation" },
+  "settings.terminal.inputAnimation.desc": {
+    "zh-CN": "输入时显示轻微高亮动画",
+    "en-US": "Show subtle highlight animation while typing",
+  },
+  "settings.terminal.reconnectWriteFailures": {
+    "zh-CN": "写入失败重连阈值",
+    "en-US": "Reconnect failure threshold",
+  },
+  "settings.terminal.reconnectWriteFailures.desc": {
+    "zh-CN": "连续写入失败达到该次数后触发自动重连",
+    "en-US": "Auto reconnect after this many consecutive write failures",
+  },
   "settings.terminal.preview": { "zh-CN": "字体设置预览", "en-US": "Preview" },
   "settings.terminal.cursor.block": { "zh-CN": "块状", "en-US": "Block" },
   "settings.terminal.cursor.underline": { "zh-CN": "下划线", "en-US": "Underline" },

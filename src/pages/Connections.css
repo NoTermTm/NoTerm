@@ -467,11 +467,7 @@
     border: 1px solid var(--border-light);
     border-radius: 14px;
     padding: 16px;
-    background: linear-gradient(
-        180deg,
-        color-mix(in srgb, var(--bg-primary) 88%, #ffffff 12%) 0%,
-        color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary) 8%) 100%
-    );
+    background: var(--bg-secondary);
     box-shadow: 0 8px 22px rgba(15, 20, 42, 0.05);
 }
 

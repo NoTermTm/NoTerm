@@ -120,50 +120,50 @@
 }
 
 :root[data-theme="dark"] {
-    --bg-primary: #1b1f27;
-    --bg-secondary: #232936;
-    --bg-tertiary: #2a3141;
-    --bg-hover: #313a4d;
-    --bg-active: #364158;
-    --border-color: #3a455d;
-    --border-light: #313b52;
+    --bg-primary: #1e1f22;
+    --bg-secondary: #25272b;
+    --bg-tertiary: #2d3036;
+    --bg-hover: #363a43;
+    --bg-active: #3d424c;
+    --border-color: #454a55;
+    --border-light: #3a3f49;
     --text-primary: #f1f4fa;
     --text-secondary: #c5ccda;
     --text-tertiary: #9ea8bb;
     --accent: #5aa7ff;
     --accent-primary: #5aa7ff;
     --accent-hover: #3d8ae6;
-    --ai-surface: #1a2130;
-    --ai-surface-soft: #20293b;
-    --ai-surface-muted: #243046;
-    --ai-border: #36445f;
+    --ai-surface: #23262d;
+    --ai-surface-soft: #2a2e37;
+    --ai-surface-muted: #313641;
+    --ai-border: #434a57;
     --ai-shadow: 0 14px 28px rgba(6, 10, 20, 0.55), 0 4px 12px rgba(6, 10, 20, 0.35);
     --ai-user-gradient: linear-gradient(
         135deg,
         color-mix(in srgb, var(--accent) 65%, #000000 35%) 0%,
         color-mix(in srgb, var(--accent) 85%, #000000 15%) 100%
     );
-    --ai-assistant-gradient: linear-gradient(135deg, #141b29 0%, #0f1522 100%);
+    --ai-assistant-gradient: linear-gradient(135deg, #2a2e37 0%, #23262d 100%);
     --ai-insight-card-border: color-mix(in srgb, var(--accent) 28%, var(--ai-border) 72%);
     --ai-insight-card-bg:
         radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--brand-sun) 14%, transparent) 0%, transparent 60%),
-        linear-gradient(150deg, color-mix(in srgb, var(--accent) 10%, var(--ai-surface-soft) 90%), var(--ai-surface));
+        linear-gradient(150deg, color-mix(in srgb, var(--accent) 5%, var(--ai-surface-soft) 95%), var(--ai-surface));
     --ai-insight-card-shadow:
         0 14px 26px rgba(4, 7, 14, 0.52),
         inset 0 1px 0 rgba(255, 255, 255, 0.04);
     --ai-insight-log-border: color-mix(in srgb, var(--brand-indigo) 24%, var(--ai-border) 76%);
     --ai-insight-log-bg:
         radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--brand-indigo) 18%, transparent) 0%, transparent 60%),
-        linear-gradient(160deg, color-mix(in srgb, var(--brand-indigo) 10%, var(--ai-surface-soft) 90%), var(--ai-surface));
-    --ai-insight-subtitle-bg: color-mix(in srgb, var(--accent) 10%, var(--bg-primary) 90%);
-    --ai-insight-subtitle-border: color-mix(in srgb, var(--accent) 20%, var(--ai-border) 80%);
-    --ai-insight-table-bg: color-mix(in srgb, var(--accent) 8%, var(--bg-primary) 92%);
-    --ai-insight-table-head-bg: color-mix(in srgb, var(--accent) 12%, var(--bg-primary) 88%);
-    --ai-insight-row-hover-bg: color-mix(in srgb, var(--accent) 14%, var(--bg-primary) 86%);
+        linear-gradient(160deg, color-mix(in srgb, var(--brand-indigo) 6%, var(--ai-surface-soft) 94%), var(--ai-surface));
+    --ai-insight-subtitle-bg: color-mix(in srgb, var(--accent) 6%, var(--bg-primary) 94%);
+    --ai-insight-subtitle-border: color-mix(in srgb, var(--accent) 14%, var(--ai-border) 86%);
+    --ai-insight-table-bg: color-mix(in srgb, var(--accent) 4%, var(--bg-primary) 96%);
+    --ai-insight-table-head-bg: color-mix(in srgb, var(--accent) 7%, var(--bg-primary) 93%);
+    --ai-insight-row-hover-bg: color-mix(in srgb, var(--accent) 8%, var(--bg-primary) 92%);
     --ai-insight-row-focus-outline: color-mix(in srgb, var(--accent) 46%, var(--bg-primary) 54%);
-    --ai-insight-row-focus-bg: color-mix(in srgb, var(--accent) 18%, var(--bg-primary) 82%);
-    --ai-insight-log-item-border: color-mix(in srgb, var(--accent) 22%, var(--ai-border) 78%);
-    --ai-insight-log-item-bg: color-mix(in srgb, var(--accent) 10%, var(--bg-primary) 90%);
+    --ai-insight-row-focus-bg: color-mix(in srgb, var(--accent) 12%, var(--bg-primary) 88%);
+    --ai-insight-log-item-border: color-mix(in srgb, var(--accent) 14%, var(--ai-border) 86%);
+    --ai-insight-log-item-bg: color-mix(in srgb, var(--accent) 6%, var(--bg-primary) 94%);
 }
 
 html,

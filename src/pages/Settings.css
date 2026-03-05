@@ -91,9 +91,9 @@
 }
 
 .settings-page .btn {
-    padding: 8px 14px;
+    padding: 8px 16px;
     font-size: 13px;
-    border-radius: 8px;
+    border-radius: 4px;
     min-height: 32px;
 }
 
@@ -256,6 +256,10 @@
     gap: 12px;
 }
 
+.settings-group-body--background {
+    gap: 16px;
+}
+
 .settings-advanced {
     border: 1px dashed var(--border-light);
     border-radius: 10px;
@@ -268,6 +272,12 @@
     font-weight: 600;
     color: var(--text-tertiary);
     margin-bottom: 10px;
+}
+
+.settings-advanced-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
 }
 
 .settings-row {

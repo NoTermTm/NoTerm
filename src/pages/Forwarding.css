@@ -135,3 +135,9 @@
     gap: 10px;
     margin-top: 6px;
 }
+
+.forwarding-form-actions .btn {
+    padding: 8px 16px;
+    font-size: 13px;
+    border-radius: 4px;
+}

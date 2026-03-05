@@ -247,6 +247,12 @@
     justify-content: flex-end;
 }
 
+.space-modal-actions .btn {
+    padding: 8px 16px;
+    font-size: 13px;
+    border-radius: 4px;
+}
+
 .space-panel--editor .space-panel-body {
     gap: 12px;
 }

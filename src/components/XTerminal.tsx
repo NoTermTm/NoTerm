@@ -224,6 +224,8 @@ const AGENT_RESULT_SNIPPET_CHARS = 2000;
 const AGENT_TERMINAL_CAPTURE_CHARS = 220_000;
 const AGENT_MAX_ACTIVITY_ITEMS = 40;
 const AI_SCROLL_BOTTOM_THRESHOLD = 72;
+const TERMINAL_FONT_SIZE_MIN = 9;
+const TERMINAL_FONT_SIZE_MAX = 28;
 const AGENT_INTERNAL_PRINTF_PATTERN =
   /printf\s+["']\\n__CODEX_AGENT_DONE_\d+_[a-z0-9]+__(?:_RECOVER)?:%s\\n["']\s+["']\$\?["']/gi;
 const AGENT_INTERNAL_MARKER_PATTERN =
@@ -293,6 +295,8 @@ export function XTerminal({
   const [connError, setConnError] = useState<string | null>(null);
   const [endpointIp, setEndpointIp] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const endpointLatencyRef = useRef<number | null>(null);
+  const observedLatencyRef = useRef<number | null>(null);
   const [endpointCopied, setEndpointCopied] = useState(false);
   const endpointCopyTimerRef = useRef<number | null>(null);
   const [xtermBg, setXtermBg] = useState<string | undefined>(undefined);
@@ -338,15 +342,24 @@ export function XTerminal({
   const sftpDraggingRef = useRef(false);
   const writeQueueRef = useRef<string[]>([]);
   const writingRef = useRef(false);
+  const typingBufferRef = useRef("");
+  const typingFlushTimerRef = useRef<number | null>(null);
+  const animatedTypingQueueRef = useRef<string[]>([]);
+  const animatedTypingTimerRef = useRef<number | null>(null);
   const reconnectPromiseRef = useRef<Promise<boolean> | null>(null);
+  const reconnectingRef = useRef(false);
   const writeBlockedRef = useRef(false);
   const writeFailureCountRef = useRef(0);
+  const reconnectWriteFailuresRef = useRef<number>(
+    DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"],
+  );
   const reconnectCooldownUntilRef = useRef(0);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptPanelOpen, setScriptPanelOpen] = useState(false);
   const [transferPanelOpen, setTransferPanelOpen] = useState(false);
+  const inputAnimationRef = useRef<boolean>(DEFAULT_APP_SETTINGS["terminal.inputAnimation"]);
   const [transferTasks, setTransferTasks] = useState<TransferTask[]>([]);
   const [aiOpen, setAiOpen] = useState(false);
   const [scriptTarget, setScriptTarget] = useState<"current" | "all">("current");
@@ -807,6 +820,9 @@ export function XTerminal({
     reconnectCooldownUntilRef.current = now + 10_000;
     writeFailureCountRef.current = 0;
     writeBlockedRef.current = true;
+    reconnectingRef.current = true;
+    setConnStatus("connecting");
+    setConnError(null);
     reconnectPromiseRef.current = (async () => {
       let ok = false;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -830,6 +846,7 @@ export function XTerminal({
       return ok;
     })().finally(() => {
       writeBlockedRef.current = false;
+      reconnectingRef.current = false;
       reconnectPromiseRef.current = null;
     });
     reconnectPromiseRef.current
@@ -847,6 +864,15 @@ export function XTerminal({
   };
 
   const writeToShellWithTimeout = async (data: string) => {
+    const updateDisplayLatency = () => {
+      const endpoint = endpointLatencyRef.current;
+      const observed = observedLatencyRef.current;
+      if (endpoint === null && observed === null) {
+        setLatencyMs(null);
+        return;
+      }
+      setLatencyMs(Math.max(endpoint ?? 0, observed ?? 0));
+    };
     const startedAt = Date.now();
     pushTerminalLog("info", `input bytes=${data.length}`);
     for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -862,6 +888,12 @@ export function XTerminal({
             .catch((err) => reject(err));
         });
         writeFailureCountRef.current = 0;
+        const elapsed = Date.now() - startedAt;
+        observedLatencyRef.current =
+          observedLatencyRef.current === null
+            ? elapsed
+            : Math.round(observedLatencyRef.current * 0.7 + elapsed * 0.3);
+        updateDisplayLatency();
         pushTerminalLog("info", `write ok ${Date.now() - startedAt}ms`);
         return true;
       } catch (err) {
@@ -879,13 +911,18 @@ export function XTerminal({
           continue;
         }
         writeFailureCountRef.current += 1;
-        if (!terminalIssueRef.current) {
+        observedLatencyRef.current = Math.max(observedLatencyRef.current ?? 0, 1200);
+        updateDisplayLatency();
+        if (!terminalIssueRef.current && isLocal) {
           setTerminalIssue({
             message: t("terminal.write.issue", { detail }),
             timestamp: Date.now(),
           });
         }
-        if (!isLocal && writeFailureCountRef.current >= 3) {
+        if (
+          !isLocal &&
+          writeFailureCountRef.current >= reconnectWriteFailuresRef.current
+        ) {
           startReconnectFlow();
         }
         return false;
@@ -920,6 +957,33 @@ export function XTerminal({
   const enqueueTerminalWrite = (data: string) => {
     writeQueueRef.current.push(data);
     void flushWriteQueue();
+  };
+
+  const enqueueTypingWrite = (data: string) => {
+    typingBufferRef.current += data;
+    if (typingFlushTimerRef.current !== null) return;
+    typingFlushTimerRef.current = window.setTimeout(() => {
+      typingFlushTimerRef.current = null;
+      const chunk = typingBufferRef.current;
+      typingBufferRef.current = "";
+      if (!chunk) return;
+      enqueueTerminalWrite(chunk);
+    }, 12);
+  };
+
+  const enqueueAnimatedTypingWrite = (data: string) => {
+    animatedTypingQueueRef.current.push(...Array.from(data));
+    if (animatedTypingTimerRef.current !== null) return;
+    const pump = () => {
+      const next = animatedTypingQueueRef.current.shift();
+      if (next === undefined) {
+        animatedTypingTimerRef.current = null;
+        return;
+      }
+      enqueueTerminalWrite(next);
+      animatedTypingTimerRef.current = window.setTimeout(pump, 14);
+    };
+    pump();
   };
 
   const resizePty = (cols: number, rows: number) => {
@@ -1374,17 +1438,9 @@ export function XTerminal({
 
       const connected = await sshApi.isConnected(sessionId).catch(() => false);
       if (connected) {
-        try {
-          await sshApi.openShell(sessionId);
-          if (!mountedRef.current) return;
-          setConnStatus("connected");
-          return;
-        } catch (error) {
-          pushTerminalLog(
-            "warn",
-            `open shell after unlock failed: ${formatError(error)}`,
-          );
-        }
+        if (!mountedRef.current) return;
+        setConnStatus("connected");
+        return;
       }
 
       await connectNow();
@@ -3314,7 +3370,9 @@ export function XTerminal({
 
   useEffect(() => {
     const onReconnectAllTerminals = () => {
-      writeQueueRef.current = [];
+      if (connStatus === "connected" && !terminalIssueRef.current) {
+        return;
+      }
       setTerminalIssue(null);
       void recoverSessionAfterUnlock();
     };
@@ -3323,7 +3381,7 @@ export function XTerminal({
     return () => {
       window.removeEventListener("app-reconnect-terminals", onReconnectAllTerminals);
     };
-  }, [sessionId]);
+  }, [connStatus, sessionId]);
 
   useEffect(() => {
     const onPointerDownFocus = () => {
@@ -3451,6 +3509,8 @@ export function XTerminal({
     let unlistenCursorBlink: (() => void) | null = null;
     let unlistenLineHeight: (() => void) | null = null;
     let unlistenAutoCopy: (() => void) | null = null;
+    let unlistenInputAnimation: (() => void) | null = null;
+    let unlistenReconnectWriteFailures: (() => void) | null = null;
     let unlistenBackgroundImage: (() => void) | null = null;
     let unlistenBackgroundFit: (() => void) | null = null;
     let unlistenBackgroundOpacity: (() => void) | null = null;
@@ -3494,6 +3554,12 @@ export function XTerminal({
       const autoCopy =
         (await store.get<boolean>("terminal.autoCopy")) ??
         DEFAULT_APP_SETTINGS["terminal.autoCopy"];
+      const inputAnimation =
+        (await store.get<boolean>("terminal.inputAnimation")) ??
+        DEFAULT_APP_SETTINGS["terminal.inputAnimation"];
+      const reconnectWriteFailures =
+        (await store.get<number>("terminal.reconnectWriteFailures")) ??
+        DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"];
       const backgroundImage =
         (await store.get<string>("terminal.backgroundImage")) ??
         DEFAULT_APP_SETTINGS["terminal.backgroundImage"];
@@ -3538,6 +3604,11 @@ export function XTerminal({
       setXtermBaseBg(baseBg);
       setXtermBg(themeBg);
       autoCopyRef.current = autoCopy;
+      inputAnimationRef.current = inputAnimation;
+      reconnectWriteFailuresRef.current = Math.max(
+        1,
+        Math.min(10, reconnectWriteFailures),
+      );
 
       term = new Terminal({
         cursorBlink,
@@ -3564,6 +3635,24 @@ export function XTerminal({
       terminalInstance.current = term;
       fitAddon.current = fit;
 
+      const adjustTerminalFontSize = (delta: number) => {
+        if (!term) return;
+        const current =
+          typeof term.options.fontSize === "number"
+            ? term.options.fontSize
+            : DEFAULT_APP_SETTINGS["terminal.fontSize"];
+        const next = Math.max(
+          TERMINAL_FONT_SIZE_MIN,
+          Math.min(TERMINAL_FONT_SIZE_MAX, Math.round(current + delta)),
+        );
+        if (next === current) return;
+        term.options.fontSize = next;
+        requestAnimationFrame(() => {
+          fitAndResize();
+        });
+        void writeAppSetting("terminal.fontSize", next);
+      };
+
       // Copy/paste integration:
       // - Cmd+C copies selection; otherwise it remains Ctrl+C (interrupt).
       // - Ctrl+Shift+C copies selection (Windows/Linux convention).
@@ -3575,12 +3664,33 @@ export function XTerminal({
 
         const key = ev.key.toLowerCase();
         const isMac = /mac|iphone|ipad|ipod/.test(navigator.platform.toLowerCase());
+        const isCmdOrCtrl = ev.metaKey || ev.ctrlKey;
         const isCopy =
           (ev.ctrlKey && ev.shiftKey && key === "c") ||
           (ev.metaKey && !ev.shiftKey && key === "c");
         const isPaste =
           (ev.ctrlKey && ev.shiftKey && key === "v") ||
           (ev.metaKey && !ev.shiftKey && key === "v");
+        const isZoomIn =
+          isCmdOrCtrl &&
+          !ev.altKey &&
+          !(
+            (ev.ctrlKey && ev.metaKey) ||
+            (ev.ctrlKey && ev.shiftKey && key === "c") ||
+            (ev.ctrlKey && ev.shiftKey && key === "v")
+          ) &&
+          (key === "+" ||
+            key === "=" ||
+            ev.code === "NumpadAdd");
+        const isZoomOut =
+          isCmdOrCtrl &&
+          !ev.altKey &&
+          !(
+            (ev.ctrlKey && ev.metaKey) ||
+            (ev.ctrlKey && ev.shiftKey && key === "c") ||
+            (ev.ctrlKey && ev.shiftKey && key === "v")
+          ) &&
+          (key === "-" || key === "_" || ev.code === "NumpadSubtract");
 
         if (
           isMac &&
@@ -3600,6 +3710,20 @@ export function XTerminal({
           ev.preventDefault();
           ev.stopPropagation();
           void clipboardWrite(term.getSelection());
+          return false;
+        }
+
+        if (isZoomIn) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          adjustTerminalFontSize(1);
+          return false;
+        }
+
+        if (isZoomOut) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          adjustTerminalFontSize(-1);
           return false;
         }
 
@@ -3719,11 +3843,12 @@ export function XTerminal({
           });
         }
         pushTerminalLog("warn", `disconnected: ${event.payload.reason}`);
-        setConnStatus("error");
-        setConnError(t("terminal.session.disconnected"));
         if (!isLocal) {
           startReconnectFlow();
+          return;
         }
+        setConnStatus("error");
+        setConnError(t("terminal.session.disconnected"));
       });
       unlistenDisconnect = unlistenDisconnectEvent;
 
@@ -3731,7 +3856,16 @@ export function XTerminal({
       disposable = term.onData((data) => {
         lastInputAtRef.current = Date.now();
         consumeTerminalInput(data);
-        enqueueTerminalWrite(data);
+        if (
+          inputAnimationRef.current &&
+          data.length === 1 &&
+          data >= " " &&
+          data !== "\u007f"
+        ) {
+          enqueueAnimatedTypingWrite(data);
+          return;
+        }
+        enqueueTypingWrite(data);
       });
 
       // Handle terminal resize
@@ -3830,6 +3964,22 @@ export function XTerminal({
           if (!autoCopyRef.current) {
             lastSelectionRef.current = "";
           }
+        },
+      );
+      unlistenInputAnimation = await store.onKeyChange<boolean>(
+        "terminal.inputAnimation",
+        (v) => {
+          if (disposed) return;
+          const next = v ?? DEFAULT_APP_SETTINGS["terminal.inputAnimation"];
+          inputAnimationRef.current = next;
+        },
+      );
+      unlistenReconnectWriteFailures = await store.onKeyChange<number>(
+        "terminal.reconnectWriteFailures",
+        (v) => {
+          if (disposed) return;
+          const next = v ?? DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"];
+          reconnectWriteFailuresRef.current = Math.max(1, Math.min(10, next));
         },
       );
       unlistenBackgroundImage = await store.onKeyChange<string>(
@@ -3933,6 +4083,8 @@ export function XTerminal({
       unlistenCursorBlink?.();
       unlistenLineHeight?.();
       unlistenAutoCopy?.();
+      unlistenInputAnimation?.();
+      unlistenReconnectWriteFailures?.();
       unlistenBackgroundImage?.();
       unlistenBackgroundFit?.();
       unlistenBackgroundOpacity?.();
@@ -3955,12 +4107,24 @@ export function XTerminal({
         });
       }
       term?.dispose();
+      if (typingFlushTimerRef.current !== null) {
+        window.clearTimeout(typingFlushTimerRef.current);
+        typingFlushTimerRef.current = null;
+      }
+      if (animatedTypingTimerRef.current !== null) {
+        window.clearTimeout(animatedTypingTimerRef.current);
+        animatedTypingTimerRef.current = null;
+      }
+      typingBufferRef.current = "";
+      animatedTypingQueueRef.current = [];
     };
   }, [sessionId]);
 
   useEffect(() => {
     if (isLocal) {
       setEndpointIp(t("terminal.endpoint.local"));
+      endpointLatencyRef.current = null;
+      observedLatencyRef.current = null;
       setLatencyMs(null);
       return;
     }
@@ -3973,10 +4137,23 @@ export function XTerminal({
         const info = await sshApi.checkEndpoint(host, port);
         if (disposed) return;
         setEndpointIp(info.ip);
-        setLatencyMs(info.latency_ms);
+        endpointLatencyRef.current = info.latency_ms;
+        if (observedLatencyRef.current !== null) {
+          observedLatencyRef.current = Math.round(observedLatencyRef.current * 0.85);
+          if (observedLatencyRef.current < 20) {
+            observedLatencyRef.current = null;
+          }
+        }
+        setLatencyMs(
+          Math.max(
+            endpointLatencyRef.current ?? 0,
+            observedLatencyRef.current ?? 0,
+          ),
+        );
       } catch {
         if (disposed) return;
-        setLatencyMs(null);
+        endpointLatencyRef.current = null;
+        setLatencyMs(observedLatencyRef.current);
       } finally {
         if (disposed) return;
         timer = window.setTimeout(run, 5000);
