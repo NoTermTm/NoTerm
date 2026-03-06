@@ -350,10 +350,11 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    background: #ffffff;
-    border: 1px solid rgba(214, 219, 229, 0.9);
+    background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
+    border: 1px solid var(--border-color);
     border-radius: 12px;
-    box-shadow: 0 12px 24px rgba(23, 32, 49, 0.12);
+    box-shadow: 0 12px 24px rgba(8, 12, 24, 0.28);
+    backdrop-filter: blur(8px);
     z-index: 1200;
 }
 
@@ -383,12 +384,12 @@
 }
 
 .connection-menu-item--danger {
-    color: #c2413a;
+    color: var(--danger);
 }
 
 .connection-menu-item--danger:hover {
-    background-color: rgba(194, 65, 58, 0.12);
-    color: #b43832;
+    background-color: color-mix(in srgb, var(--danger) 16%, transparent);
+    color: var(--danger);
 }
 
 .connection-detail {

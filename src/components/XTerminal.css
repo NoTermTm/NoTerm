@@ -44,6 +44,91 @@
     z-index: 1;
 }
 
+.xterminal-find {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    width: min(32vw, 760px);
+    min-width: 420px;
+    max-width: 760px;
+    z-index: 8;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-primary) 90%, transparent);
+    box-shadow: 0 8px 18px rgba(15, 18, 36, 0.2);
+    backdrop-filter: blur(6px);
+}
+
+.xterminal-find-main {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.xterminal-find input {
+    min-width: 0;
+    width: 100%;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.xterminal-find-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.xterminal-find-btn,
+.xterminal-find-flag {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 7px;
+    height: 24px;
+    min-width: 24px;
+    padding: 0 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.xterminal-find-btn:hover,
+.xterminal-find-flag:hover {
+    background: var(--bg-hover);
+}
+
+.xterminal-find-flag.is-active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.xterminal-find-status {
+    min-width: 0;
+    max-width: 64px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.xterminal-find-status.is-error {
+    color: var(--danger);
+}
+
 .xterminal-topbar {
     height: 36px;
     flex: 0 0 auto;

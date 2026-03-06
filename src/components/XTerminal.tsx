@@ -418,6 +418,14 @@ export function XTerminal({
     message: string;
     timestamp: number;
   } | null>(null);
+  const [terminalFindOpen, setTerminalFindOpen] = useState(false);
+  const [terminalFindQuery, setTerminalFindQuery] = useState("");
+  const [terminalFindCaseSensitive, setTerminalFindCaseSensitive] =
+    useState(false);
+  const [terminalFindStatus, setTerminalFindStatus] = useState<
+    "idle" | "found" | "not_found"
+  >("idle");
+  const terminalFindInputRef = useRef<HTMLInputElement | null>(null);
   const terminalIssueRef = useRef<{
     message: string;
     timestamp: number;
@@ -824,6 +832,99 @@ export function XTerminal({
       (item) => `${item.time} [${item.level}] ${item.message}`,
     );
     await clipboardWrite([header, ...lines].join("\n"));
+  };
+
+  const findInTerminal = (
+    direction: "next" | "prev",
+    queryOverride?: string,
+  ): boolean => {
+    const term = terminalInstance.current;
+    if (!term) return false;
+    const rawQuery = queryOverride ?? terminalFindQuery;
+    const query = rawQuery.trim();
+    if (!query) {
+      setTerminalFindStatus("idle");
+      return false;
+    }
+
+    const buffer = term.buffer.active;
+    const total = buffer.length;
+    if (total <= 0) {
+      setTerminalFindStatus("not_found");
+      return false;
+    }
+
+    const caseSensitive = terminalFindCaseSensitive;
+    const needle = caseSensitive ? query : query.toLowerCase();
+    const selection = term.getSelectionPosition();
+    const isNext = direction === "next";
+    const startRow = selection
+      ? isNext
+        ? selection.end.y
+        : selection.start.y
+      : buffer.viewportY;
+    const startCol = selection
+      ? isNext
+        ? selection.end.x
+        : selection.start.x
+      : 0;
+
+    const getLineText = (row: number) => {
+      const raw = buffer.getLine(row)?.translateToString(true) ?? "";
+      return caseSensitive ? raw : raw.toLowerCase();
+    };
+
+    if (isNext) {
+      for (let step = 0; step < total; step += 1) {
+        const row = (startRow + step) % total;
+        const hay = getLineText(row);
+        const from =
+          step === 0 ? Math.max(0, startCol + (selection ? 1 : 0)) : 0;
+        const col = hay.indexOf(needle, from);
+        if (col >= 0) {
+          term.select(col, row, query.length);
+          term.scrollToLine(Math.max(0, row - 2));
+          setTerminalFindStatus("found");
+          return true;
+        }
+      }
+    } else {
+      for (let step = 0; step < total; step += 1) {
+        const row = (startRow - step + total) % total;
+        const hay = getLineText(row);
+        const from =
+          step === 0 ? Math.max(0, startCol - (selection ? 1 : 0)) : hay.length;
+        const col = hay.lastIndexOf(needle, from);
+        if (col >= 0) {
+          term.select(col, row, query.length);
+          term.scrollToLine(Math.max(0, row - 2));
+          setTerminalFindStatus("found");
+          return true;
+        }
+      }
+    }
+
+    setTerminalFindStatus("not_found");
+    return false;
+  };
+
+  const openTerminalFind = () => {
+    setTerminalFindOpen(true);
+    const selected = terminalInstance.current?.getSelection()?.trim() ?? "";
+    if (selected && !selected.includes("\n")) {
+      setTerminalFindQuery(selected);
+      setTerminalFindStatus("idle");
+    }
+    requestAnimationFrame(() => {
+      terminalFindInputRef.current?.focus();
+      terminalFindInputRef.current?.select();
+    });
+  };
+
+  const closeTerminalFind = () => {
+    setTerminalFindOpen(false);
+    setTerminalFindStatus("idle");
+    terminalInstance.current?.focus();
   };
 
   const startReconnectFlow = () => {
@@ -3454,6 +3555,36 @@ export function XTerminal({
   }, [sessionId]);
 
   useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isFindShortcut =
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "f";
+      if (!isFindShortcut) return;
+      if (!paneRef.current) return;
+      if (paneRef.current.offsetParent === null) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".xterminal-find")) return;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      openTerminalFind();
+    };
+
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+    };
+  }, []);
+
+  useEffect(() => {
     const onReconnectAllTerminals = () => {
       if (connStatus === "connected" && !terminalIssueRef.current) {
         return;
@@ -3776,6 +3907,14 @@ export function XTerminal({
             (ev.ctrlKey && ev.shiftKey && key === "v")
           ) &&
           (key === "-" || key === "_" || ev.code === "NumpadSubtract");
+        const isFindShortcut =
+          isCmdOrCtrl && !ev.altKey && !ev.shiftKey && key === "f";
+
+        if (isFindShortcut) {
+          ev.preventDefault();
+          openTerminalFind();
+          return false;
+        }
 
         if (
           isMac &&
@@ -4488,6 +4627,92 @@ export function XTerminal({
         <div className="xterminal-pane" ref={paneRef}>
           <div className="xterminal-pad">
             <div className="xterminal-mount" ref={terminalRef} />
+            {terminalFindOpen && (
+              <div className="xterminal-find" role="search" aria-label="Terminal search">
+                <div className="xterminal-find-main">
+                  <AppIcon icon="material-symbols:search-rounded" size={14} />
+                  <input
+                    ref={terminalFindInputRef}
+                    type="text"
+                    value={terminalFindQuery}
+                    onChange={(event) => {
+                      setTerminalFindQuery(event.target.value);
+                      setTerminalFindStatus("idle");
+                    }}
+                    placeholder={locale === "zh-CN" ? "搜索终端内容" : "Search terminal output"}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void findInTerminal(event.shiftKey ? "prev" : "next");
+                        return;
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        closeTerminalFind();
+                      }
+                    }}
+                  />
+                </div>
+                <div className="xterminal-find-actions">
+                  <button
+                    type="button"
+                    className={`xterminal-find-flag ${
+                      terminalFindCaseSensitive ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setTerminalFindCaseSensitive((prev) => !prev);
+                      setTerminalFindStatus("idle");
+                    }}
+                    title={locale === "zh-CN" ? "区分大小写" : "Case sensitive"}
+                  >
+                    Aa
+                  </button>
+                  <button
+                    type="button"
+                    className="xterminal-find-btn"
+                    onClick={() => {
+                      void findInTerminal("prev");
+                    }}
+                    title={locale === "zh-CN" ? "上一个" : "Previous"}
+                  >
+                    <AppIcon icon="material-symbols:keyboard-arrow-up-rounded" size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="xterminal-find-btn"
+                    onClick={() => {
+                      void findInTerminal("next");
+                    }}
+                    title={locale === "zh-CN" ? "下一个" : "Next"}
+                  >
+                    <AppIcon icon="material-symbols:keyboard-arrow-down-rounded" size={16} />
+                  </button>
+                  <span
+                    className={`xterminal-find-status ${
+                      terminalFindStatus === "not_found" ? "is-error" : ""
+                    }`}
+                  >
+                    {terminalFindStatus === "not_found"
+                      ? locale === "zh-CN"
+                        ? "未找到"
+                        : "No match"
+                      : terminalFindStatus === "found"
+                      ? locale === "zh-CN"
+                        ? "已匹配"
+                        : "Matched"
+                      : ""}
+                  </span>
+                  <button
+                    type="button"
+                    className="xterminal-find-btn"
+                    onClick={closeTerminalFind}
+                    title={locale === "zh-CN" ? "关闭" : "Close"}
+                  >
+                    <AppIcon icon="material-symbols:close-rounded" size={16} />
+                  </button>
+                </div>
+              </div>
+            )}
             {shouldShowQuickOverlay && (
               <section className="xterminal-quick-overlay">
                 <div className="xterminal-quick-overlay-head">
