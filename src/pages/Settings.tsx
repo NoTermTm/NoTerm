@@ -12,9 +12,20 @@ import { mkdir, readFile, readTextFile, remove, writeFile, writeTextFile } from 
 import { BaseDirectory } from "@tauri-apps/api/path";
 import { TERMINAL_THEME_OPTIONS, getXtermTheme } from "../terminal/xtermThemes";
 import { sendAiChat, type AiMessage, type AiProvider } from "../api/ai";
+import {
+  cloudSyncDownload,
+  cloudSyncTestConnection,
+  cloudSyncUpload,
+  readSettingsSnapshot,
+  type CloudSyncConfig,
+} from "../api/cloudSync";
 import { generateSalt, hashMasterKey } from "../utils/security";
 import { getModifierKeyName } from "../utils/platform";
-import { clearMasterKeySession, setMasterKeySession } from "../utils/securitySession";
+import {
+  clearMasterKeySession,
+  getMasterKeySession,
+  setMasterKeySession,
+} from "../utils/securitySession";
 import { getVersion } from "@tauri-apps/api/app";
 import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
 import { useI18n } from "../i18n";
@@ -158,6 +169,14 @@ export function SettingsPage() {
   const [_, setExportMessage] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [_importMessage, setImportMessage] = useState<string | null>(null);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<
+    "idle" | "working" | "success" | "error"
+  >("idle");
+  const [cloudSyncMessage, setCloudSyncMessage] = useState<string>("");
+  const [cloudSyncAction, setCloudSyncAction] = useState<
+    "test" | "upload" | "download" | null
+  >(null);
+  const [cloudSyncModalOpen, setCloudSyncModalOpen] = useState(false);
   const [appVersion, setAppVersion] = useState<string>("--");
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "up-to-date" | "downloading" | "installed" | "error"
@@ -326,6 +345,54 @@ export function SettingsPage() {
         "ai.agentMode":
           (await store.get<AppSettings["ai.agentMode"]>("ai.agentMode")) ??
           DEFAULT_APP_SETTINGS["ai.agentMode"],
+        "sync.enabled":
+          (await store.get<boolean>("sync.enabled")) ??
+          DEFAULT_APP_SETTINGS["sync.enabled"],
+        "sync.provider":
+          (await store.get<AppSettings["sync.provider"]>("sync.provider")) ??
+          DEFAULT_APP_SETTINGS["sync.provider"],
+        "sync.lastSyncedAt":
+          (await store.get<string>("sync.lastSyncedAt")) ??
+          DEFAULT_APP_SETTINGS["sync.lastSyncedAt"],
+        "sync.autoBackupEnabled":
+          (await store.get<boolean>("sync.autoBackupEnabled")) ??
+          DEFAULT_APP_SETTINGS["sync.autoBackupEnabled"],
+        "sync.autoBackupIntervalMinutes":
+          (await store.get<number>("sync.autoBackupIntervalMinutes")) ??
+          DEFAULT_APP_SETTINGS["sync.autoBackupIntervalMinutes"],
+        "sync.webdav.endpoint":
+          (await store.get<string>("sync.webdav.endpoint")) ??
+          DEFAULT_APP_SETTINGS["sync.webdav.endpoint"],
+        "sync.webdav.username":
+          (await store.get<string>("sync.webdav.username")) ??
+          DEFAULT_APP_SETTINGS["sync.webdav.username"],
+        "sync.webdav.password":
+          (await store.get<string>("sync.webdav.password")) ??
+          DEFAULT_APP_SETTINGS["sync.webdav.password"],
+        "sync.webdav.basePath":
+          (await store.get<string>("sync.webdav.basePath")) ??
+          DEFAULT_APP_SETTINGS["sync.webdav.basePath"],
+        "sync.s3.endpoint":
+          (await store.get<string>("sync.s3.endpoint")) ??
+          DEFAULT_APP_SETTINGS["sync.s3.endpoint"],
+        "sync.s3.region":
+          (await store.get<string>("sync.s3.region")) ??
+          DEFAULT_APP_SETTINGS["sync.s3.region"],
+        "sync.s3.bucket":
+          (await store.get<string>("sync.s3.bucket")) ??
+          DEFAULT_APP_SETTINGS["sync.s3.bucket"],
+        "sync.s3.prefix":
+          (await store.get<string>("sync.s3.prefix")) ??
+          DEFAULT_APP_SETTINGS["sync.s3.prefix"],
+        "sync.s3.accessKeyId":
+          (await store.get<string>("sync.s3.accessKeyId")) ??
+          DEFAULT_APP_SETTINGS["sync.s3.accessKeyId"],
+        "sync.s3.secretAccessKey":
+          (await store.get<string>("sync.s3.secretAccessKey")) ??
+          DEFAULT_APP_SETTINGS["sync.s3.secretAccessKey"],
+        "sync.s3.forcePathStyle":
+          (await store.get<boolean>("sync.s3.forcePathStyle")) ??
+          DEFAULT_APP_SETTINGS["sync.s3.forcePathStyle"],
       };
       if (!disposed) setSettings(next);
     };
@@ -517,6 +584,126 @@ export function SettingsPage() {
     setImportStatus("idle");
     setImportMessage(null);
   }, []);
+
+  const buildCloudSyncConfig = (): CloudSyncConfig => ({
+    provider: settings["sync.provider"],
+    webdav: {
+      endpoint: settings["sync.webdav.endpoint"],
+      username: settings["sync.webdav.username"],
+      password: settings["sync.webdav.password"],
+      basePath: settings["sync.webdav.basePath"] || "/noterm-sync",
+    },
+    s3: {
+      endpoint: settings["sync.s3.endpoint"],
+      region: settings["sync.s3.region"],
+      bucket: settings["sync.s3.bucket"],
+      prefix: settings["sync.s3.prefix"],
+      accessKeyId: settings["sync.s3.accessKeyId"],
+      secretAccessKey: settings["sync.s3.secretAccessKey"],
+      forcePathStyle: settings["sync.s3.forcePathStyle"],
+    },
+  });
+
+  const getUnlockedMasterKey = () => {
+    const masterKey = getMasterKeySession();
+    const encSalt = settings["security.masterKeyEncSalt"];
+    if (!masterKey || !encSalt) {
+      throw new Error(t("settings.sync.error.masterKeyRequired"));
+    }
+    return { masterKey, encSalt };
+  };
+
+  const applyLatestSettingsSnapshot = async () => {
+    const snapshot = await readSettingsSnapshot();
+    setSettings(snapshot);
+  };
+
+  const setCloudSyncResult = (
+    status: "success" | "error",
+    message: string,
+    toast = true,
+  ) => {
+    setCloudSyncStatus(status);
+    setCloudSyncMessage(message);
+    if (toast && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("app-message", {
+          detail: {
+            title:
+              status === "success"
+                ? t("settings.sync.toast.title")
+                : t("settings.sync.toast.errorTitle"),
+            detail: message,
+            tone: status === "success" ? "success" : "error",
+            toast: status === "success",
+            autoOpen: status === "error",
+          },
+        }),
+      );
+    }
+  };
+
+  const handleCloudSyncTest = async () => {
+    setCloudSyncAction("test");
+    setCloudSyncStatus("working");
+    setCloudSyncMessage(t("settings.sync.status.testing"));
+    try {
+      await cloudSyncTestConnection(buildCloudSyncConfig());
+      setCloudSyncResult("success", t("settings.sync.status.testPassed"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCloudSyncResult("error", message || t("settings.sync.status.testFailed"));
+    } finally {
+      setCloudSyncAction(null);
+    }
+  };
+
+  const handleCloudSyncUpload = async () => {
+    setCloudSyncAction("upload");
+    setCloudSyncStatus("working");
+    setCloudSyncMessage(t("settings.sync.status.uploading"));
+    try {
+      const { masterKey, encSalt } = getUnlockedMasterKey();
+      const syncedAt = await cloudSyncUpload({
+        config: buildCloudSyncConfig(),
+        masterKey,
+        encSalt,
+      });
+      updateSetting("sync.lastSyncedAt", syncedAt);
+      setCloudSyncResult("success", t("settings.sync.status.uploadDone"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCloudSyncResult("error", message || t("settings.sync.status.uploadFailed"));
+    } finally {
+      setCloudSyncAction(null);
+    }
+  };
+
+  const handleCloudSyncDownload = async () => {
+    setCloudSyncAction("download");
+    setCloudSyncStatus("working");
+    setCloudSyncMessage(t("settings.sync.status.downloading"));
+    try {
+      const { masterKey, encSalt } = getUnlockedMasterKey();
+      const result = await cloudSyncDownload({
+        config: buildCloudSyncConfig(),
+        masterKey,
+        encSalt,
+      });
+      updateSetting("sync.lastSyncedAt", result.updatedAt || new Date().toISOString());
+      await applyLatestSettingsSnapshot();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("master-key-updated"));
+        window.dispatchEvent(new CustomEvent("auth-profiles-updated"));
+      }
+      setCloudSyncResult("success", t("settings.sync.status.downloadDone"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCloudSyncResult("error", message || t("settings.sync.status.downloadFailed"));
+    } finally {
+      setCloudSyncAction(null);
+    }
+  };
 
   const handleImportConfig = async () => {
     setImportStatus("loading");
@@ -1516,66 +1703,6 @@ export function SettingsPage() {
       </div>
 
       <div className="settings-section">
-        <h2>{t("settings.section.update")}</h2>
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <div className="settings-item-label">{t("settings.update.current")}</div>
-            <div className="settings-item-description">{t("settings.update.autoCheck")}</div>
-          </div>
-          <div className="settings-item-control">
-            <span className="settings-update-version">v{appVersion}</span>
-          </div>
-        </div>
-        <div className="settings-item settings-item--start">
-          <div className="settings-item-info">
-            <div className="settings-item-label">{t("settings.update.status")}</div>
-            <div className="settings-item-description">{updateDescription}</div>
-            {updateInfo?.notes && (
-              <div className="settings-update-notes">{updateInfo.notes}</div>
-            )}
-          </div>
-          <div className="settings-item-control settings-item-control--stack">
-            <div className="settings-update-actions">
-              <button
-                className="btn btn-secondary btn-sm"
-                type="button"
-                onClick={() => void handleCheckUpdate()}
-                disabled={isChecking || isDownloading}
-              >
-                {isChecking ? t("settings.update.checking") : t("settings.update.check")}
-              </button>
-              {showDownloadAction && (
-                <button
-                  className="btn btn-primary btn-sm"
-                  type="button"
-                  onClick={() => void handleDownloadUpdate()}
-                  disabled={isDownloading}
-                >
-                  {isDownloading ? t("settings.update.downloading") : t("settings.update.download")}
-                </button>
-              )}
-            </div>
-            {updateMessage && (
-              <span className={`settings-test-status ${updateToneClass}`}>
-                {updateMessage}
-              </span>
-            )}
-            {updateStatus === "downloading" && updateProgress !== null && (
-              <div className="settings-update-progress" aria-label={t("settings.update.progress")}>
-                <div
-                  className="settings-update-progress-bar"
-                  style={{ width: `${updateProgress}%` }}
-                />
-              </div>
-            )}
-            {updateCheckedLabel && (
-              <span className="settings-update-meta">{updateCheckedLabel}</span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="settings-section">
         <h2>{t("settings.section.terminal")}</h2>
         <div className="settings-card">
           <div className="settings-card-body">
@@ -2368,6 +2495,33 @@ export function SettingsPage() {
         <h2>{t("settings.section.data")}</h2>
         <div className="settings-item">
           <div className="settings-item-info">
+            <div className="settings-item-label">
+              {t("settings.sync.title")}
+            </div>
+            <div className="settings-item-description">
+              {t("settings.sync.desc")}
+            </div>
+          </div>
+          <div className="settings-item-control settings-item-control--stack">
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              onClick={() => setCloudSyncModalOpen(true)}
+            >
+              {t("settings.sync.configure")}
+            </button>
+            {settings["sync.lastSyncedAt"] && (
+              <span className="settings-inline-meta">
+                {t("settings.sync.lastSyncedAt", {
+                  time: new Date(settings["sync.lastSyncedAt"]).toLocaleString(),
+                })}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="settings-item">
+          <div className="settings-item-info">
             <div className="settings-item-label">{t("settings.data.export")}</div>
             <div className="settings-item-description">
               {t("settings.data.export.desc")}
@@ -2404,6 +2558,324 @@ export function SettingsPage() {
                 ? t("settings.data.import.importing")
                 : t("settings.data.import.action")}
             </button>
+          </div>
+        </div>
+
+        <Modal
+          open={cloudSyncModalOpen}
+          title={t("settings.sync.modal.title")}
+          onClose={() => setCloudSyncModalOpen(false)}
+          width={720}
+        >
+          <div className="settings-row settings-row--single">
+            <div className="settings-field">
+              <label className="settings-field-label" htmlFor="sync-provider">
+                {t("settings.sync.provider")}
+              </label>
+              <Select
+                className="settings-select"
+                value={settings["sync.provider"]}
+                onChange={(nextValue) =>
+                  updateSetting(
+                    "sync.provider",
+                    nextValue as AppSettings["sync.provider"],
+                  )
+                }
+                options={[
+                  { value: "webdav", label: "WebDAV" },
+                  { value: "s3", label: "S3" },
+                ]}
+              />
+            </div>
+            <div className="settings-row settings-row--two">
+              <div className="settings-field">
+                <label className="settings-field-label">
+                  {t("settings.sync.autoBackup")}
+                </label>
+                <label className="settings-inline-actions">
+                  <button
+                    type="button"
+                    className={`toggle-switch ${settings["sync.autoBackupEnabled"] ? "active" : ""}`}
+                    role="switch"
+                    aria-checked={settings["sync.autoBackupEnabled"]}
+                    onClick={() =>
+                      updateSetting(
+                        "sync.autoBackupEnabled",
+                        !settings["sync.autoBackupEnabled"],
+                      )
+                    }
+                  >
+                    <div className="toggle-switch-handle" />
+                  </button>
+                  <span className="settings-inline-meta">
+                    {settings["sync.autoBackupEnabled"]
+                      ? t("settings.sync.autoBackup.enabled")
+                      : t("settings.sync.autoBackup.disabled")}
+                  </span>
+                </label>
+              </div>
+              <div className="settings-field">
+                <label className="settings-field-label">
+                  {t("settings.sync.autoBackupInterval")}
+                </label>
+                <Select
+                  className="settings-select"
+                  value={String(settings["sync.autoBackupIntervalMinutes"])}
+                  onChange={(nextValue) =>
+                    updateSetting(
+                      "sync.autoBackupIntervalMinutes",
+                      Math.max(1, Number(nextValue) || 30),
+                    )
+                  }
+                  options={[
+                    { value: "5", label: t("settings.sync.autoBackup.everyMinutes", { count: 5 }) },
+                    { value: "10", label: t("settings.sync.autoBackup.everyMinutes", { count: 10 }) },
+                    { value: "15", label: t("settings.sync.autoBackup.everyMinutes", { count: 15 }) },
+                    { value: "30", label: t("settings.sync.autoBackup.everyMinutes", { count: 30 }) },
+                    { value: "60", label: t("settings.sync.autoBackup.everyMinutes", { count: 60 }) },
+                    { value: "120", label: t("settings.sync.autoBackup.everyMinutes", { count: 120 }) },
+                  ]}
+                  disabled={!settings["sync.autoBackupEnabled"]}
+                />
+              </div>
+            </div>
+
+            {settings["sync.provider"] === "webdav" ? (
+              <div className="settings-row settings-row--two">
+                <div className="settings-field">
+                  <label className="settings-field-label">
+                    {t("settings.sync.webdav.endpoint")}
+                  </label>
+                  <input
+                    className="settings-input"
+                    placeholder={t("settings.sync.webdav.endpoint.placeholder")}
+                    value={settings["sync.webdav.endpoint"]}
+                    onChange={(event) =>
+                      updateSetting("sync.webdav.endpoint", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="settings-field">
+                  <label className="settings-field-label">{t("settings.sync.webdav.path")}</label>
+                  <input
+                    className="settings-input"
+                    placeholder={t("settings.sync.webdav.path.placeholder")}
+                    value={settings["sync.webdav.basePath"]}
+                    onChange={(event) =>
+                      updateSetting("sync.webdav.basePath", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="settings-field">
+                  <label className="settings-field-label">{t("settings.sync.username")}</label>
+                  <input
+                    className="settings-input"
+                    value={settings["sync.webdav.username"]}
+                    onChange={(event) =>
+                      updateSetting("sync.webdav.username", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="settings-field">
+                  <label className="settings-field-label">{t("settings.sync.password")}</label>
+                  <input
+                    className="settings-input"
+                    type="password"
+                    value={settings["sync.webdav.password"]}
+                    onChange={(event) =>
+                      updateSetting("sync.webdav.password", event.target.value)
+                    }
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="settings-row settings-row--two">
+                <div className="settings-field">
+                  <label className="settings-field-label">{t("settings.sync.s3.endpoint")}</label>
+                  <input
+                    className="settings-input"
+                    placeholder={t("settings.sync.webdav.endpoint.placeholder")}
+                    value={settings["sync.s3.endpoint"]}
+                    onChange={(event) =>
+                      updateSetting("sync.s3.endpoint", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="settings-field">
+                  <label className="settings-field-label">{t("settings.sync.s3.region")}</label>
+                  <input
+                    className="settings-input"
+                    value={settings["sync.s3.region"]}
+                    onChange={(event) =>
+                      updateSetting("sync.s3.region", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="settings-field">
+                  <label className="settings-field-label">{t("settings.sync.s3.bucket")}</label>
+                  <input
+                    className="settings-input"
+                    value={settings["sync.s3.bucket"]}
+                    onChange={(event) =>
+                      updateSetting("sync.s3.bucket", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="settings-field">
+                  <label className="settings-field-label">{t("settings.sync.s3.prefix")}</label>
+                  <input
+                    className="settings-input"
+                    value={settings["sync.s3.prefix"]}
+                    onChange={(event) =>
+                      updateSetting("sync.s3.prefix", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="settings-field">
+                  <label className="settings-field-label">
+                    {t("settings.sync.s3.accessKeyId")}
+                  </label>
+                  <input
+                    className="settings-input"
+                    value={settings["sync.s3.accessKeyId"]}
+                    onChange={(event) =>
+                      updateSetting("sync.s3.accessKeyId", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="settings-field">
+                  <label className="settings-field-label">
+                    {t("settings.sync.s3.secretAccessKey")}
+                  </label>
+                  <input
+                    className="settings-input"
+                    type="password"
+                    value={settings["sync.s3.secretAccessKey"]}
+                    onChange={(event) =>
+                      updateSetting("sync.s3.secretAccessKey", event.target.value)
+                    }
+                  />
+                </div>
+                <label className="settings-inline-actions">
+                  <input
+                    type="checkbox"
+                    checked={settings["sync.s3.forcePathStyle"]}
+                    onChange={(event) =>
+                      updateSetting("sync.s3.forcePathStyle", event.target.checked)
+                    }
+                  />
+                  <span className="settings-inline-meta">
+                    {t("settings.sync.s3.pathStyle")}
+                  </span>
+                </label>
+              </div>
+            )}
+
+            <div className="settings-inline-actions settings-sync-actions">
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => void handleCloudSyncTest()}
+                disabled={cloudSyncAction !== null}
+              >
+                {cloudSyncAction === "test"
+                  ? t("settings.sync.testing")
+                  : t("settings.sync.action.test")}
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => void handleCloudSyncUpload()}
+                disabled={cloudSyncAction !== null}
+              >
+                {cloudSyncAction === "upload"
+                  ? t("settings.sync.uploading")
+                  : t("settings.sync.action.upload")}
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => void handleCloudSyncDownload()}
+                disabled={cloudSyncAction !== null}
+              >
+                {cloudSyncAction === "download"
+                  ? t("settings.sync.downloading")
+                  : t("settings.sync.action.download")}
+              </button>
+            </div>
+            {cloudSyncMessage && (
+              <span
+                className={`settings-test-status ${
+                  cloudSyncStatus === "success"
+                    ? "settings-test-status--success"
+                    : cloudSyncStatus === "error"
+                      ? "settings-test-status--error"
+                      : ""
+                }`}
+              >
+                {cloudSyncMessage}
+              </span>
+            )}
+          </div>
+        </Modal>
+      </div>
+
+      <div className="settings-section">
+        <h2>{t("settings.section.update")}</h2>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">{t("settings.update.current")}</div>
+            <div className="settings-item-description">{t("settings.update.autoCheck")}</div>
+          </div>
+          <div className="settings-item-control">
+            <span className="settings-update-version">v{appVersion}</span>
+          </div>
+        </div>
+        <div className="settings-item settings-item--start">
+          <div className="settings-item-info">
+            <div className="settings-item-label">{t("settings.update.status")}</div>
+            <div className="settings-item-description">{updateDescription}</div>
+            {updateInfo?.notes && (
+              <div className="settings-update-notes">{updateInfo.notes}</div>
+            )}
+          </div>
+          <div className="settings-item-control settings-item-control--stack">
+            <div className="settings-update-actions">
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                onClick={() => void handleCheckUpdate()}
+                disabled={isChecking || isDownloading}
+              >
+                {isChecking ? t("settings.update.checking") : t("settings.update.check")}
+              </button>
+              {showDownloadAction && (
+                <button
+                  className="btn btn-primary btn-sm"
+                  type="button"
+                  onClick={() => void handleDownloadUpdate()}
+                  disabled={isDownloading}
+                >
+                  {isDownloading ? t("settings.update.downloading") : t("settings.update.download")}
+                </button>
+              )}
+            </div>
+            {updateMessage && (
+              <span className={`settings-test-status ${updateToneClass}`}>
+                {updateMessage}
+              </span>
+            )}
+            {updateStatus === "downloading" && updateProgress !== null && (
+              <div className="settings-update-progress" aria-label={t("settings.update.progress")}>
+                <div
+                  className="settings-update-progress-bar"
+                  style={{ width: `${updateProgress}%` }}
+                />
+              </div>
+            )}
+            {updateCheckedLabel && (
+              <span className="settings-update-meta">{updateCheckedLabel}</span>
+            )}
           </div>
         </div>
       </div>

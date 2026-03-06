@@ -29,6 +29,13 @@
     "fs:allow-exists",
     "updater:default",
     {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://*" },
+        { "url": "http://*" }
+      ]
+    },
+    {
       "identifier": "fs:scope",
       "allow": [
         { "path": "$HOME/**" },

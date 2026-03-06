@@ -48,6 +48,22 @@ export type AppSettings = {
   "ai.model": string;
   "ai.models": string[];
   "ai.agentMode": "suggest_only" | "confirm_then_execute";
+  "sync.enabled": boolean;
+  "sync.provider": "webdav" | "s3";
+  "sync.lastSyncedAt": string;
+  "sync.autoBackupEnabled": boolean;
+  "sync.autoBackupIntervalMinutes": number;
+  "sync.webdav.endpoint": string;
+  "sync.webdav.username": string;
+  "sync.webdav.password": string;
+  "sync.webdav.basePath": string;
+  "sync.s3.endpoint": string;
+  "sync.s3.region": string;
+  "sync.s3.bucket": string;
+  "sync.s3.prefix": string;
+  "sync.s3.accessKeyId": string;
+  "sync.s3.secretAccessKey": string;
+  "sync.s3.forcePathStyle": boolean;
 };
 
 const isWindowsPlatform = () =>
@@ -92,6 +108,22 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "ai.model": "claude-sonnet-4-5-20250929",
   "ai.models": [],
   "ai.agentMode": "suggest_only",
+  "sync.enabled": false,
+  "sync.provider": "webdav",
+  "sync.lastSyncedAt": "",
+  "sync.autoBackupEnabled": false,
+  "sync.autoBackupIntervalMinutes": 30,
+  "sync.webdav.endpoint": "",
+  "sync.webdav.username": "",
+  "sync.webdav.password": "",
+  "sync.webdav.basePath": "/noterm-sync",
+  "sync.s3.endpoint": "",
+  "sync.s3.region": "us-east-1",
+  "sync.s3.bucket": "",
+  "sync.s3.prefix": "noterm-sync",
+  "sync.s3.accessKeyId": "",
+  "sync.s3.secretAccessKey": "",
+  "sync.s3.forcePathStyle": true,
 };
 
 const STORE_PATH = "settings.json";

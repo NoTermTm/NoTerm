@@ -19,6 +19,7 @@ import {
   type AppSettings,
 } from "../store/appSettings";
 import { writeScriptsData } from "../store/scripts";
+import { cloudSyncUpload, type CloudSyncConfig } from "../api/cloudSync";
 import { verifyMasterKey } from "../utils/security";
 import {
   clearMasterKeySession,
@@ -510,6 +511,140 @@ export function Layout() {
     }, 1200);
     return () => window.clearTimeout(timer);
   }, [securityLoaded, isLocked]);
+
+  useEffect(() => {
+    if (!securityLoaded || isLocked) return;
+
+    let disposed = false;
+    let timer: number | null = null;
+    let running = false;
+
+    const readSyncConfig = async () => {
+      const store = await getAppSettingsStore();
+      const autoBackupEnabled =
+        (await store.get<boolean>("sync.autoBackupEnabled")) ??
+        DEFAULT_APP_SETTINGS["sync.autoBackupEnabled"];
+      const intervalMinutes =
+        (await store.get<number>("sync.autoBackupIntervalMinutes")) ??
+        DEFAULT_APP_SETTINGS["sync.autoBackupIntervalMinutes"];
+      const provider =
+        (await store.get<AppSettings["sync.provider"]>("sync.provider")) ??
+        DEFAULT_APP_SETTINGS["sync.provider"];
+      const encSalt =
+        (await store.get<string>("security.masterKeyEncSalt")) ??
+        DEFAULT_APP_SETTINGS["security.masterKeyEncSalt"];
+
+      const config: CloudSyncConfig = {
+        provider,
+        webdav: {
+          endpoint:
+            (await store.get<string>("sync.webdav.endpoint")) ??
+            DEFAULT_APP_SETTINGS["sync.webdav.endpoint"],
+          username:
+            (await store.get<string>("sync.webdav.username")) ??
+            DEFAULT_APP_SETTINGS["sync.webdav.username"],
+          password:
+            (await store.get<string>("sync.webdav.password")) ??
+            DEFAULT_APP_SETTINGS["sync.webdav.password"],
+          basePath:
+            (await store.get<string>("sync.webdav.basePath")) ??
+            DEFAULT_APP_SETTINGS["sync.webdav.basePath"],
+        },
+        s3: {
+          endpoint:
+            (await store.get<string>("sync.s3.endpoint")) ??
+            DEFAULT_APP_SETTINGS["sync.s3.endpoint"],
+          region:
+            (await store.get<string>("sync.s3.region")) ??
+            DEFAULT_APP_SETTINGS["sync.s3.region"],
+          bucket:
+            (await store.get<string>("sync.s3.bucket")) ??
+            DEFAULT_APP_SETTINGS["sync.s3.bucket"],
+          prefix:
+            (await store.get<string>("sync.s3.prefix")) ??
+            DEFAULT_APP_SETTINGS["sync.s3.prefix"],
+          accessKeyId:
+            (await store.get<string>("sync.s3.accessKeyId")) ??
+            DEFAULT_APP_SETTINGS["sync.s3.accessKeyId"],
+          secretAccessKey:
+            (await store.get<string>("sync.s3.secretAccessKey")) ??
+            DEFAULT_APP_SETTINGS["sync.s3.secretAccessKey"],
+          forcePathStyle:
+            (await store.get<boolean>("sync.s3.forcePathStyle")) ??
+            DEFAULT_APP_SETTINGS["sync.s3.forcePathStyle"],
+        },
+      };
+
+      return {
+        autoBackupEnabled,
+        intervalMinutes: Math.max(1, Number(intervalMinutes) || 30),
+        encSalt,
+        config,
+      };
+    };
+
+    const schedule = (ms: number) => {
+      if (disposed) return;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void tick();
+      }, ms);
+    };
+
+    const tick = async () => {
+      if (disposed || running || isLocked) return;
+      running = true;
+      try {
+        const masterKey = getMasterKeySession();
+        const sync = await readSyncConfig();
+        const intervalMs = sync.intervalMinutes * 60_000;
+        if (!sync.autoBackupEnabled || !masterKey || !sync.encSalt) {
+          schedule(intervalMs);
+          return;
+        }
+
+        const syncedAt = await cloudSyncUpload({
+          config: sync.config,
+          masterKey,
+          encSalt: sync.encSalt,
+        });
+        await writeAppSetting("sync.lastSyncedAt", syncedAt);
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("settings.sync.title"),
+              detail: t("settings.sync.autoBackup.done"),
+              tone: "success",
+              toast: false,
+            },
+          }),
+        );
+        schedule(intervalMs);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("settings.sync.toast.errorTitle"),
+              detail: message || t("settings.sync.autoBackup.failed"),
+              tone: "error",
+              toast: false,
+              autoOpen: true,
+            },
+          }),
+        );
+        schedule(60_000);
+      } finally {
+        running = false;
+      }
+    };
+
+    schedule(10_000);
+    return () => {
+      disposed = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [securityLoaded, isLocked, t]);
 
   useEffect(() => {
     if (!messagePanel) return;
