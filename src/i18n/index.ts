@@ -357,12 +357,24 @@ const MESSAGES: Messages = {
   "space.tree.expand": { "zh-CN": "展开", "en-US": "Expand" },
   "space.tree.collapse": { "zh-CN": "收起", "en-US": "Collapse" },
   "space.panel.title": { "zh-CN": "脚本与文件夹", "en-US": "Scripts & folders" },
+  "space.list.name": { "zh-CN": "名称", "en-US": "Name" },
+  "space.list.location": { "zh-CN": "位置", "en-US": "Location" },
+  "space.list.updated": { "zh-CN": "更新时间", "en-US": "Updated" },
   "space.empty": { "zh-CN": "暂无内容", "en-US": "No content" },
   "space.editor.title": { "zh-CN": "脚本设置", "en-US": "Script settings" },
   "space.editor.folder": { "zh-CN": "所属目录", "en-US": "Folder" },
   "space.editor.name": { "zh-CN": "脚本名称", "en-US": "Script name" },
   "space.editor.namePlaceholder": { "zh-CN": "例如 deploy-prod", "en-US": "e.g. deploy-prod" },
   "space.editor.content": { "zh-CN": "脚本内容（bash）", "en-US": "Script content (bash)" },
+  "space.script.delete.confirm": { "zh-CN": "确定删除脚本 “{name}” 吗？", "en-US": "Delete script \"{name}\"?" },
+  "space.folder.delete.confirm": {
+    "zh-CN": "确定删除目录 “{name}” 吗？将删除 {folderCount} 个目录与 {scriptCount} 个脚本。",
+    "en-US": "Delete folder \"{name}\"? This will remove {folderCount} folders and {scriptCount} scripts."
+  },
+  "space.folder.delete.warning": {
+    "zh-CN": "警告：当前脚本目录删除后，下方脚本将会丢失且无法恢复。",
+    "en-US": "Warning: deleting this folder will permanently remove scripts under it."
+  },
   "space.folder.modal.editTitle": { "zh-CN": "编辑文件夹", "en-US": "Edit folder" },
   "space.folder.modal.newTitle": { "zh-CN": "新建文件夹", "en-US": "New folder" },
   "space.folder.modal.nameLabel": { "zh-CN": "文件夹名称", "en-US": "Folder name" },

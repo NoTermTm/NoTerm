@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import CodeMirror from "@uiw/react-codemirror";
+import { StreamLanguage } from "@codemirror/language";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { AppIcon } from "../components/AppIcon";
 import { Modal } from "../components/Modal";
-import type { ScriptFolder, ScriptItem } from "../store/scripts";
-import { readScriptsData, writeScriptsData } from "../store/scripts";
 import type { Tab } from "../components/TitleBar";
 import { useI18n } from "../i18n";
+import { readScriptsData, writeScriptsData } from "../store/scripts";
+import type { ScriptFolder, ScriptItem } from "../store/scripts";
 import "./Space.css";
 
 type WorkspaceView = {
@@ -25,12 +28,26 @@ type ScriptFormState = {
   folderId: string | null;
 };
 
+type ExplorerEntry =
+  | { kind: "folder"; folder: ScriptFolder }
+  | { kind: "script"; script: ScriptItem };
+
 function nowTs() {
   return Date.now();
 }
 
 function sortByName<T extends { name: string }>(items: T[]) {
   return [...items].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function formatUpdatedAt(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(timestamp);
 }
 
 interface SpacePageProps {
@@ -41,15 +58,7 @@ interface SpacePageProps {
   onCloseTab: (id: string) => void;
 }
 
-const SCRIPT_TAB_PREFIX = "__space_script__:";
-
-export function SpacePage({
-  tabs,
-  setTabs,
-  activeTabId,
-  onOpenScriptTab,
-  onCloseTab,
-}: SpacePageProps) {
+export function SpacePage(_props: SpacePageProps) {
   const { t } = useI18n();
   const [folders, setFolders] = useState<ScriptFolder[]>([]);
   const [scripts, setScripts] = useState<ScriptItem[]>([]);
@@ -58,24 +67,16 @@ export function SpacePage({
     selectedScriptId: null,
   });
   const [folderModalOpen, setFolderModalOpen] = useState(false);
-  const [scriptEditors, setScriptEditors] = useState<Record<string, ScriptFormState>>({});
+  const [activeScriptForm, setActiveScriptForm] = useState<ScriptFormState | null>(null);
+  const [pendingDeleteScript, setPendingDeleteScript] = useState<ScriptItem | null>(null);
+  const [pendingDeleteFolder, setPendingDeleteFolder] = useState<ScriptFolder | null>(null);
   const [draggingScriptId, setDraggingScriptId] = useState<string | null>(null);
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
-  const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(
-    () => new Set(),
-  );
   const [folderForm, setFolderForm] = useState<FolderFormState>({
     id: null,
     name: "",
     parentId: null,
   });
-  const activeScriptTabId = activeTabId?.startsWith(SCRIPT_TAB_PREFIX)
-    ? activeTabId
-    : null;
-  const activeScriptForm = activeScriptTabId
-    ? scriptEditors[activeScriptTabId]
-    : null;
-
   useEffect(() => {
     let disposed = false;
     const load = async () => {
@@ -90,44 +91,6 @@ export function SpacePage({
     };
   }, []);
 
-  useEffect(() => {
-    if (!activeScriptTabId) return;
-    if (scriptEditors[activeScriptTabId]) return;
-    const rawId = activeScriptTabId.slice(SCRIPT_TAB_PREFIX.length);
-    const script =
-      rawId.startsWith("new-") ? null : scripts.find((item) => item.id === rawId) ?? null;
-    const nextForm: ScriptFormState = script
-      ? {
-          id: script.id,
-          name: script.name,
-          content: script.content,
-          folderId: script.folderId,
-        }
-      : {
-          id: null,
-          name: "",
-          content: "",
-          folderId: view.selectedFolderId,
-        };
-    setScriptEditors((prev) => ({ ...prev, [activeScriptTabId]: nextForm }));
-  }, [activeScriptTabId, scriptEditors, scripts, view.selectedFolderId]);
-
-  useEffect(() => {
-    const tabIds = new Set(tabs.map((tab) => tab.id));
-    setScriptEditors((prev) => {
-      let changed = false;
-      const next: Record<string, ScriptFormState> = {};
-      for (const [id, editor] of Object.entries(prev)) {
-        if (tabIds.has(id)) {
-          next[id] = editor;
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [tabs]);
-
   const persist = async (nextFolders: ScriptFolder[], nextScripts: ScriptItem[]) => {
     setFolders(nextFolders);
     setScripts(nextScripts);
@@ -136,7 +99,7 @@ export function SpacePage({
 
   const folderMap = useMemo(() => {
     const map = new Map<string, ScriptFolder>();
-    folders.forEach((f) => map.set(f.id, f));
+    folders.forEach((folder) => map.set(folder.id, folder));
     return map;
   }, [folders]);
 
@@ -178,6 +141,20 @@ export function SpacePage({
     return chain;
   }, [folderMap, view.selectedFolderId]);
 
+  const currentFolders = folderChildren.get(view.selectedFolderId) ?? [];
+  const currentScripts = scriptsByFolder.get(view.selectedFolderId) ?? [];
+  const currentEntries = useMemo<ExplorerEntry[]>(
+    () => [
+      ...currentFolders.map((folder) => ({ kind: "folder" as const, folder })),
+      ...currentScripts.map((script) => ({ kind: "script" as const, script })),
+    ],
+    [currentFolders, currentScripts],
+  );
+  const scriptEditorExtensions = useMemo(
+    () => [StreamLanguage.define(shell)],
+    [],
+  );
+
   const getFolderPath = (folderId: string | null) => {
     if (!folderId) return t("space.root");
     const chain: string[] = [];
@@ -189,6 +166,10 @@ export function SpacePage({
       currentId = folder.parentId;
     }
     return chain.length > 0 ? `/${chain.join("/")}` : t("space.root");
+  };
+
+  const openFolder = (folderId: string | null) => {
+    setView({ selectedFolderId: folderId, selectedScriptId: null });
   };
 
   const openCreateFolder = () => {
@@ -206,50 +187,33 @@ export function SpacePage({
       window.alert(t("space.alert.selectFolder"));
       return;
     }
-    const tabId = onOpenScriptTab(null);
-    setScriptEditors((prev) => {
-      if (prev[tabId]) return prev;
-      return {
-        ...prev,
-        [tabId]: {
-          id: null,
-          name: "",
-          content: "",
-          folderId: view.selectedFolderId,
-        },
-      };
+    setActiveScriptForm({
+      id: null,
+      name: "",
+      content: "",
+      folderId: view.selectedFolderId,
     });
   };
 
-  const openCreateScriptForFolder = (folderId: string) => {
-    const tabId = onOpenScriptTab(null);
-    setScriptEditors((prev) => {
-      if (prev[tabId]) return prev;
-      return {
-        ...prev,
-        [tabId]: {
-          id: null,
-          name: "",
-          content: "",
-          folderId,
-        },
-      };
+  const openCreateScriptForFolder = (folderId: string | null) => {
+    if (!folderId) {
+      openCreateScript();
+      return;
+    }
+    setActiveScriptForm({
+      id: null,
+      name: "",
+      content: "",
+      folderId,
     });
   };
 
   const openEditScript = (script: ScriptItem) => {
-    const tabId = onOpenScriptTab(script);
-    setScriptEditors((prev) => {
-      if (prev[tabId]) return prev;
-      return {
-        ...prev,
-        [tabId]: {
-          id: script.id,
-          name: script.name,
-          content: script.content,
-          folderId: script.folderId,
-        },
-      };
+    setActiveScriptForm({
+      id: script.id,
+      name: script.name,
+      content: script.content,
+      folderId: script.folderId,
     });
   };
 
@@ -278,21 +242,58 @@ export function SpacePage({
     setFolderModalOpen(false);
   };
 
+  const collectFolderTreeIds = (rootId: string) => {
+    const idSet = new Set<string>([rootId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const folder of folders) {
+        if (!idSet.has(folder.id) && folder.parentId && idSet.has(folder.parentId)) {
+          idSet.add(folder.id);
+          changed = true;
+        }
+      }
+    }
+    return idSet;
+  };
+
+  const getFolderDeleteImpact = (folder: ScriptFolder) => {
+    const folderIds = collectFolderTreeIds(folder.id);
+    const folderCount = folderIds.size;
+    const scriptCount = scripts.filter(
+      (script) => script.folderId && folderIds.has(script.folderId),
+    ).length;
+    return { folderCount, scriptCount, folderIds };
+  };
+
   const handleDeleteFolder = async (folder: ScriptFolder) => {
-    const descendants = folders.filter((f) => f.parentId === folder.id);
-    if (descendants.length > 0) return;
-    const containedScripts = scripts.filter((s) => s.folderId === folder.id);
-    if (containedScripts.length > 0) return;
-    const remainingFolders = folders.filter((f) => f.id !== folder.id);
-    const remainingScripts = scripts.filter((s) => s.folderId !== folder.id);
+    const impact = getFolderDeleteImpact(folder);
+    const remainingFolders = folders.filter((item) => !impact.folderIds.has(item.id));
+    const remainingScripts = scripts.filter(
+      (script) => !(script.folderId && impact.folderIds.has(script.folderId)),
+    );
     await persist(remainingFolders, remainingScripts);
-    if (view.selectedFolderId === folder.id) {
+    if (view.selectedFolderId && impact.folderIds.has(view.selectedFolderId)) {
       setView({ selectedFolderId: folder.parentId, selectedScriptId: null });
+    }
+    if (activeScriptForm?.folderId && impact.folderIds.has(activeScriptForm.folderId)) {
+      setActiveScriptForm(null);
     }
   };
 
+  const requestDeleteFolder = (folder: ScriptFolder) => {
+    setPendingDeleteFolder(folder);
+  };
+
+  const confirmDeleteFolder = async () => {
+    if (!pendingDeleteFolder) return;
+    const target = pendingDeleteFolder;
+    setPendingDeleteFolder(null);
+    await handleDeleteFolder(target);
+  };
+
   const handleSaveScript = async () => {
-    if (!activeScriptTabId || !activeScriptForm) return;
+    if (!activeScriptForm) return;
     const name = activeScriptForm.name.trim();
     if (!name) return;
     if (!activeScriptForm.folderId) return;
@@ -311,11 +312,8 @@ export function SpacePage({
           : script,
       );
       await persist(folders, nextScripts);
-      setTabs((prev) =>
-        prev.map((tab) =>
-          tab.id === activeScriptTabId ? { ...tab, title: name } : tab,
-        ),
-      );
+      setView((prev) => ({ ...prev, selectedScriptId: activeScriptForm.id }));
+      setActiveScriptForm(null);
     } else {
       const nextScript: ScriptItem = {
         id: crypto.randomUUID(),
@@ -326,184 +324,43 @@ export function SpacePage({
         updatedAt: ts,
       };
       await persist(folders, [...scripts, nextScript]);
-      setTabs((prev) =>
-        prev.map((tab) =>
-          tab.id === activeScriptTabId ? { ...tab, title: name } : tab,
-        ),
-      );
-      setScriptEditors((prev) => ({
-        ...prev,
-        [activeScriptTabId]: {
-          ...activeScriptForm,
-          id: nextScript.id,
-          name,
-        },
-      }));
+      setView({ selectedFolderId: nextScript.folderId, selectedScriptId: nextScript.id });
+      setActiveScriptForm(null);
     }
   };
 
   const handleDeleteScript = async (script: ScriptItem) => {
-    const nextScripts = scripts.filter((s) => s.id !== script.id);
+    const nextScripts = scripts.filter((item) => item.id !== script.id);
     await persist(folders, nextScripts);
     if (view.selectedScriptId === script.id) {
       setView((prev) => ({ ...prev, selectedScriptId: null }));
     }
-    if (activeScriptForm?.id === script.id && activeScriptTabId) {
-      onCloseTab(activeScriptTabId);
+    if (activeScriptForm?.id === script.id) {
+      setActiveScriptForm(null);
     }
-    setScriptEditors((prev) => {
-      const next: Record<string, ScriptFormState> = {};
-      for (const [id, editor] of Object.entries(prev)) {
-        if (editor.id !== script.id) next[id] = editor;
-      }
-      return next;
-    });
+  };
+
+  const requestDeleteScript = (script: ScriptItem) => {
+    setPendingDeleteScript(script);
+  };
+
+  const confirmDeleteScript = async () => {
+    if (!pendingDeleteScript) return;
+    const target = pendingDeleteScript;
+    setPendingDeleteScript(null);
+    await handleDeleteScript(target);
   };
 
   const moveScriptToFolder = async (scriptId: string, folderId: string | null) => {
-    const target = scripts.find((s) => s.id === scriptId);
+    const target = scripts.find((script) => script.id === scriptId);
     if (!target) return;
     if (target.folderId === folderId) return;
     const nextScripts = scripts.map((script) =>
-      script.id === scriptId
-        ? { ...script, folderId, updatedAt: nowTs() }
-        : script,
+      script.id === scriptId ? { ...script, folderId, updatedAt: nowTs() } : script,
     );
     await persist(folders, nextScripts);
-  };
-
-  const renderFolderNode = (folder: ScriptFolder, depth: number) => {
-    const childFolders = folderChildren.get(folder.id) ?? [];
-    const childScripts = scriptsByFolder.get(folder.id) ?? [];
-    const indent = 8 + depth * 16;
-    const isCollapsed = collapsedFolderIds.has(folder.id);
-    const hasChildren = childFolders.length > 0 || childScripts.length > 0;
-
-    return (
-      <div key={folder.id} className="space-tree-node">
-        <div
-          className={`space-row space-row--folder ${dragOverFolderId === folder.id ? "space-row--drop" : ""}`}
-          onDragOver={(event) => {
-            event.preventDefault();
-            setDragOverFolderId(folder.id);
-          }}
-          onDragLeave={() => setDragOverFolderId(null)}
-          onDrop={() => {
-            if (!draggingScriptId) return;
-            void moveScriptToFolder(draggingScriptId, folder.id);
-            setDragOverFolderId(null);
-            setDraggingScriptId(null);
-          }}
-        >
-          <div
-            className="space-row-main"
-            style={{ paddingLeft: indent }}
-            role="button"
-            tabIndex={0}
-            onClick={() => setView({ selectedFolderId: folder.id, selectedScriptId: null })}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                setView({ selectedFolderId: folder.id, selectedScriptId: null });
-              }
-            }}
-          >
-            <button
-              type="button"
-              className={`space-tree-toggle ${hasChildren ? "" : "space-tree-toggle--disabled"}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (!hasChildren) return;
-                setCollapsedFolderIds((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(folder.id)) {
-                    next.delete(folder.id);
-                  } else {
-                    next.add(folder.id);
-                  }
-                  return next;
-                });
-              }}
-              aria-label={isCollapsed ? t("space.tree.expand") : t("space.tree.collapse")}
-            >
-              <AppIcon
-                icon={
-                  isCollapsed
-                    ? "material-symbols:chevron-right-rounded"
-                    : "material-symbols:expand-more-rounded"
-                }
-                size={14}
-              />
-            </button>
-            <AppIcon icon="material-symbols:folder-rounded" size={16} />
-            {folder.name}
-          </div>
-          <div className="space-row-actions">
-            <button
-              type="button"
-              onClick={() => openCreateScriptForFolder(folder.id)}
-              title={t("space.action.newScript")}
-            >
-              <AppIcon icon="material-symbols:note-add-rounded" size={14} />
-            </button>
-            <button type="button" onClick={() => openEditFolder(folder)}>
-              <AppIcon icon="material-symbols:edit-rounded" size={14} />
-            </button>
-            <button type="button" onClick={() => void handleDeleteFolder(folder)}>
-              <AppIcon icon="material-symbols:delete-rounded" size={14} />
-            </button>
-          </div>
-        </div>
-
-        {!isCollapsed && (
-          <div className="space-tree-children">
-            {childFolders.map((child) => renderFolderNode(child, depth + 1))}
-
-            {childScripts.map((script) => (
-              <div
-                key={script.id}
-                className={`space-row space-row--script ${draggingScriptId === script.id ? "space-row--dragging" : ""}`}
-                draggable
-                onDragStart={(event) => {
-                  event.dataTransfer.setData("text/plain", script.id);
-                  setDraggingScriptId(script.id);
-                }}
-                onDragEnd={() => {
-                  setDraggingScriptId(null);
-                  setDragOverFolderId(null);
-                }}
-              >
-                <div
-                  className="space-row-main"
-                  style={{ paddingLeft: indent + 32 }}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setView((prev) => ({ ...prev, selectedScriptId: script.id }))}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setView((prev) => ({ ...prev, selectedScriptId: script.id }));
-                    }
-                  }}
-                >
-                  <span className="space-tree-branch" aria-hidden="true" />
-                  <AppIcon icon="material-symbols:terminal-rounded" size={16} />
-                  {script.name}
-                </div>
-                <span className="space-row-meta">{getFolderPath(script.folderId)}</span>
-                <div className="space-row-actions">
-                  <button type="button" onClick={() => openEditScript(script)}>
-                    <AppIcon icon="material-symbols:edit-rounded" size={14} />
-                  </button>
-                  <button type="button" onClick={() => void handleDeleteScript(script)}>
-                    <AppIcon icon="material-symbols:delete-rounded" size={14} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+    setView((prev) =>
+      prev.selectedScriptId === scriptId ? { ...prev, selectedScriptId: scriptId } : prev,
     );
   };
 
@@ -519,173 +376,166 @@ export function SpacePage({
             <AppIcon icon="material-symbols:create-new-folder-rounded" size={16} />
             {t("space.action.newFolder")}
           </button>
-          <button className="btn btn-primary" type="button" onClick={openCreateScript}>
+          <button className="btn btn-primary" type="button" onClick={() => openCreateScriptForFolder(view.selectedFolderId)}>
             <AppIcon icon="material-symbols:note-add-rounded" size={16} />
             {t("space.action.newScript")}
           </button>
         </div>
       </div>
 
-      <div className="space-toolbar">
-        <button
-          type="button"
-          className="space-breadcrumb"
-          onClick={() => setView({ selectedFolderId: null, selectedScriptId: null })}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={() => {
-            if (!draggingScriptId) return;
-            void moveScriptToFolder(draggingScriptId, null);
-            setDragOverFolderId(null);
-            setDraggingScriptId(null);
-          }}
-        >
-          {t("space.root")}
-        </button>
-        {breadcrumb.map((folder) => (
-          <button
-            key={folder.id}
-            type="button"
-            className="space-breadcrumb"
-            onClick={() => setView({ selectedFolderId: folder.id, selectedScriptId: null })}
-          >
-            / {folder.name}
-          </button>
-        ))}
-      </div>
-
-      <div className={`space-content ${activeScriptForm ? "space-content--with-editor" : ""}`}>
+      <div className="space-content space-content--main">
         <div className="space-panel">
-          <div className="space-panel-header">
-            <span>{t("space.panel.title")}</span>
+          <div className="space-toolbar">
+            <button
+              type="button"
+              className="space-nav-button"
+              onClick={() => openFolder(view.selectedFolderId ? folderMap.get(view.selectedFolderId)?.parentId ?? null : null)}
+              disabled={view.selectedFolderId === null}
+            >
+              <AppIcon icon="material-symbols:arrow-back-rounded" size={16} />
+            </button>
+            <div className="space-breadcrumbs">
+              <button type="button" className="space-breadcrumb" onClick={() => openFolder(null)}>
+                {t("space.root")}
+              </button>
+              {breadcrumb.map((folder) => (
+                <button
+                  key={folder.id}
+                  type="button"
+                  className="space-breadcrumb"
+                  onClick={() => openFolder(folder.id)}
+                >
+                  / {folder.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-list-header">
+            <span>{t("space.list.name")}</span>
+            <span>{t("space.list.location")}</span>
+            <span>{t("space.list.updated")}</span>
           </div>
           <div
-            className="space-panel-body"
+            className="space-panel-body space-list-body"
             onDragOver={(event) => event.preventDefault()}
             onDrop={() => {
               if (!draggingScriptId) return;
-              void moveScriptToFolder(draggingScriptId, null);
+              void moveScriptToFolder(draggingScriptId, view.selectedFolderId);
               setDragOverFolderId(null);
               setDraggingScriptId(null);
             }}
           >
-            {folders.length === 0 && scripts.length === 0 && (
-              <div className="space-empty">{t("space.empty")}</div>
-            )}
+            {currentEntries.length === 0 ? <div className="space-empty">{t("space.empty")}</div> : null}
 
-            {(folderChildren.get(null) ?? []).map((folder) => (
-              <div key={folder.id} className="space-tree">
-                {renderFolderNode(folder, 0)}
-              </div>
-            ))}
-
-            {(scriptsByFolder.get(null) ?? []).map((script) => (
-              <div
-                key={script.id}
-                className={`space-row space-row--script ${draggingScriptId === script.id ? "space-row--dragging" : ""}`}
-                draggable
-                onDragStart={(event) => {
-                  event.dataTransfer.setData("text/plain", script.id);
-                  setDraggingScriptId(script.id);
-                }}
-                onDragEnd={() => {
-                  setDraggingScriptId(null);
-                  setDragOverFolderId(null);
-                }}
-                style={{ marginLeft: 8 }}
-              >
-                <div
-                  className="space-row-main"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setView((prev) => ({ ...prev, selectedScriptId: script.id }))}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
+            {currentEntries.map((entry) => {
+              if (entry.kind === "folder") {
+                const folder = entry.folder;
+                return (
+                  <div
+                    key={folder.id}
+                    className={`space-entry ${dragOverFolderId === folder.id ? "space-entry--drop" : ""}`}
+                    onClick={() => openFolder(folder.id)}
+                    onDoubleClick={() => openFolder(folder.id)}
+                    onDragOver={(event) => {
                       event.preventDefault();
-                      setView((prev) => ({ ...prev, selectedScriptId: script.id }));
-                    }
+                      setDragOverFolderId(folder.id);
+                    }}
+                    onDragLeave={() => setDragOverFolderId((prev) => (prev === folder.id ? null : prev))}
+                    onDrop={() => {
+                      if (!draggingScriptId) return;
+                      void moveScriptToFolder(draggingScriptId, folder.id);
+                      setDragOverFolderId(null);
+                      setDraggingScriptId(null);
+                    }}
+                  >
+                    <div className="space-entry-name">
+                      <AppIcon icon="material-symbols:folder-rounded" size={18} />
+                      <span>{folder.name}</span>
+                    </div>
+                    <span className="space-entry-meta">{getFolderPath(folder.parentId)}</span>
+                    <span className="space-entry-meta">{formatUpdatedAt(folder.updatedAt)}</span>
+                    <div className="space-entry-actions">
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openCreateScriptForFolder(folder.id);
+                        }}
+                      >
+                        <AppIcon icon="material-symbols:note-add-rounded" size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openEditFolder(folder);
+                        }}
+                      >
+                        <AppIcon icon="material-symbols:edit-rounded" size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          requestDeleteFolder(folder);
+                        }}
+                      >
+                        <AppIcon icon="material-symbols:delete-rounded" size={14} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              const script = entry.script;
+              return (
+                <div
+                  key={script.id}
+                  className={`space-entry ${draggingScriptId === script.id ? "space-entry--dragging" : ""}`}
+                  draggable
+                  onDragStart={(event) => {
+                    event.dataTransfer.setData("text/plain", script.id);
+                    setDraggingScriptId(script.id);
                   }}
+                  onDragEnd={() => {
+                    setDraggingScriptId(null);
+                    setDragOverFolderId(null);
+                  }}
+                  onClick={() => openEditScript(script)}
                 >
-                  <AppIcon icon="material-symbols:terminal-rounded" size={16} />
-                  {script.name}
+                  <div className="space-entry-name">
+                    <AppIcon icon="material-symbols:terminal-rounded" size={18} />
+                    <span>{script.name}</span>
+                  </div>
+                  <span className="space-entry-meta">{getFolderPath(script.folderId)}</span>
+                  <span className="space-entry-meta">{formatUpdatedAt(script.updatedAt)}</span>
+                  <div className="space-entry-actions">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openEditScript(script);
+                      }}
+                    >
+                      <AppIcon icon="material-symbols:edit-rounded" size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        requestDeleteScript(script);
+                      }}
+                    >
+                      <AppIcon icon="material-symbols:delete-rounded" size={14} />
+                    </button>
+                  </div>
                 </div>
-                <span className="space-row-meta">{getFolderPath(script.folderId)}</span>
-                <div className="space-row-actions">
-                  <button type="button" onClick={() => openEditScript(script)}>
-                    <AppIcon icon="material-symbols:edit-rounded" size={14} />
-                  </button>
-                  <button type="button" onClick={() => void handleDeleteScript(script)}>
-                    <AppIcon icon="material-symbols:delete-rounded" size={14} />
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
-        {activeScriptForm && (
-          <div className="space-panel space-panel--editor">
-            <div className="space-panel-header">
-              <span>{t("space.editor.title")}</span>
-            </div>
-            <div className="space-panel-body space-editor-body">
-              <div className="space-editor-meta">
-                <div className="space-editor-meta-item">
-                  <span className="space-editor-meta-label">{t("space.editor.folder")}</span>
-                  <span>{getFolderPath(activeScriptForm.folderId)}</span>
-                </div>
-              </div>
-              <div className="form-group">
-                <label>{t("space.editor.name")}</label>
-                <input
-                  type="text"
-                  value={activeScriptForm.name}
-                  onChange={(event) =>
-                    setScriptEditors((prev) => ({
-                      ...prev,
-                      [activeScriptTabId as string]: {
-                        ...prev[activeScriptTabId as string],
-                        name: event.target.value,
-                      },
-                    }))
-                  }
-                  placeholder={t("space.editor.namePlaceholder")}
-                />
-              </div>
-              <div className="form-group">
-                <label>{t("space.editor.content")}</label>
-                <textarea
-                  value={activeScriptForm.content}
-                  onChange={(event) =>
-                    setScriptEditors((prev) => ({
-                      ...prev,
-                      [activeScriptTabId as string]: {
-                        ...prev[activeScriptTabId as string],
-                        content: event.target.value,
-                      },
-                    }))
-                  }
-                  placeholder="#!/usr/bin/env bash\nset -e\n"
-                  rows={12}
-                />
-              </div>
-              <div className="space-editor-actions">
-                <button className="btn btn-primary" type="button" onClick={() => void handleSaveScript()}>
-                  {t("common.save")}
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  type="button"
-                  onClick={() => {
-                    if (activeScriptTabId) {
-                      onCloseTab(activeScriptTabId);
-                    }
-                  }}
-                >
-                  {t("common.close")}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+
       </div>
 
       <Modal
@@ -715,6 +565,132 @@ export function SpacePage({
         </div>
       </Modal>
 
+      <Modal
+        open={Boolean(activeScriptForm)}
+        title={t("space.editor.title")}
+        onClose={() => setActiveScriptForm(null)}
+        width={840}
+      >
+        {activeScriptForm ? (
+          <div className="space-modal space-editor-body">
+            <div className="space-editor-meta">
+              <div className="space-editor-meta-item">
+                <span className="space-editor-meta-label">{t("space.editor.folder")}</span>
+                <span>{getFolderPath(activeScriptForm.folderId)}</span>
+              </div>
+            </div>
+            <div className="form-group">
+              <label>{t("space.editor.name")}</label>
+              <input
+                type="text"
+                value={activeScriptForm.name}
+                onChange={(event) =>
+                  setActiveScriptForm((prev) =>
+                    prev ? { ...prev, name: event.target.value } : prev,
+                  )
+                }
+                placeholder={t("space.editor.namePlaceholder")}
+              />
+            </div>
+            <div className="form-group">
+              <label>{t("space.editor.content")}</label>
+              <CodeMirror
+                value={activeScriptForm.content}
+                height="340px"
+                extensions={scriptEditorExtensions}
+                basicSetup={{
+                  lineNumbers: true,
+                  foldGutter: true,
+                  highlightActiveLineGutter: true,
+                  highlightSpecialChars: true,
+                  history: true,
+                  drawSelection: true,
+                }}
+                onChange={(value) =>
+                  setActiveScriptForm((prev) =>
+                    prev ? { ...prev, content: value } : prev,
+                  )
+                }
+                className="space-code-editor"
+              />
+            </div>
+            <div className="space-editor-actions">
+              <button className="btn btn-primary" type="button" onClick={() => void handleSaveScript()}>
+                {t("common.save")}
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => setActiveScriptForm(null)}
+              >
+                {t("common.close")}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(pendingDeleteScript)}
+        title={t("common.delete")}
+        onClose={() => setPendingDeleteScript(null)}
+        width={420}
+      >
+        {pendingDeleteScript ? (
+          <div className="space-modal">
+            <div>{t("space.script.delete.confirm", { name: pendingDeleteScript.name })}</div>
+            <div className="space-modal-actions">
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => setPendingDeleteScript(null)}
+              >
+                {t("common.cancel")}
+              </button>
+              <button className="btn btn-danger" type="button" onClick={() => void confirmDeleteScript()}>
+                {t("common.delete")}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(pendingDeleteFolder)}
+        title={t("common.delete")}
+        onClose={() => setPendingDeleteFolder(null)}
+        width={460}
+      >
+        {pendingDeleteFolder ? (
+          <div className="space-modal">
+            <div>
+              {(() => {
+                const impact = getFolderDeleteImpact(pendingDeleteFolder);
+                return t("space.folder.delete.confirm", {
+                  name: pendingDeleteFolder.name,
+                  folderCount: String(impact.folderCount),
+                  scriptCount: String(impact.scriptCount),
+                });
+              })()}
+            </div>
+            <div className="space-modal-warning">
+              {t("space.folder.delete.warning")}
+            </div>
+            <div className="space-modal-actions">
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => setPendingDeleteFolder(null)}
+              >
+                {t("common.cancel")}
+              </button>
+              <button className="btn btn-danger" type="button" onClick={() => void confirmDeleteFolder()}>
+                {t("common.delete")}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }
