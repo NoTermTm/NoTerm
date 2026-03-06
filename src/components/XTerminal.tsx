@@ -91,6 +91,7 @@ interface TransferTask {
   targetPath: string;
   status: TransferTaskStatus;
   progress: number;
+  speedBps?: number;
   detail?: string;
   startedAt: number;
   finishedAt?: number;
@@ -104,6 +105,18 @@ interface SftpTransferProgressEvent {
   total: number;
   percent: number;
 }
+
+type TransferUiProgressState = {
+  lastAt: number;
+  timer: number | null;
+  latest:
+    | {
+        progress: number;
+        speedBps: number;
+        detail: string;
+      }
+    | null;
+};
 
 type SmartTableState =
   | {
@@ -361,6 +374,10 @@ export function XTerminal({
   const [transferPanelOpen, setTransferPanelOpen] = useState(false);
   const inputAnimationRef = useRef<boolean>(DEFAULT_APP_SETTINGS["terminal.inputAnimation"]);
   const [transferTasks, setTransferTasks] = useState<TransferTask[]>([]);
+  const transferRateRef = useRef<
+    Record<string, { transferred: number; ts: number; speedBps: number }>
+  >({});
+  const transferUiProgressRef = useRef<Record<string, TransferUiProgressState>>({});
   const [aiOpen, setAiOpen] = useState(false);
   const [scriptTarget, setScriptTarget] = useState<"current" | "all">("current");
   const [scriptText, setScriptText] = useState("");
@@ -1291,12 +1308,34 @@ export function XTerminal({
     return `${size.toFixed(precision)} ${units[unitIndex]}`;
   };
 
+  const formatTransferSpeed = (value?: number) => {
+    if (!value || !Number.isFinite(value) || value <= 0) return "";
+    return `${formatTransferBytes(value)}/s`;
+  };
+
+  const formatSftpListSize = (bytes?: number) => {
+    if (!Number.isFinite(bytes) || bytes === undefined || bytes <= 0) {
+      return "0 KB";
+    }
+    const kb = bytes / 1024;
+    if (kb > 1024 * 1024) {
+      return `${(kb / (1024 * 1024)).toFixed(2)} GB`;
+    }
+    if (kb > 1024) {
+      return `${(kb / 1024).toFixed(2)} MB`;
+    }
+    return `${kb.toFixed(2)} KB`;
+  };
+
   const getTransferLocalPath = (task: TransferTask) =>
     task.direction === "download" ? task.targetPath : task.sourcePath;
 
   const getParentDirectory = (filePath: string) => {
-    const normalized = filePath.replace(/\\/g, "/");
-    const idx = normalized.lastIndexOf("/");
+    const normalized = filePath.trim();
+    const idx = Math.max(
+      normalized.lastIndexOf("/"),
+      normalized.lastIndexOf("\\"),
+    );
     if (idx <= 0) return normalized;
     return normalized.slice(0, idx);
   };
@@ -1304,11 +1343,17 @@ export function XTerminal({
   const handleOpenTransferDirectory = async (task: TransferTask) => {
     const localPath = getTransferLocalPath(task);
     if (!localPath) return;
+    const localDir = getParentDirectory(localPath);
     try {
-      await openPath(getParentDirectory(localPath));
+      await openPath(localDir);
     } catch (error) {
-      const message = formatError(error);
-      setSftpError(t("terminal.transfer.openFolder.fail", { message }));
+      try {
+        // Fallback: some platforms may fail to open the folder path directly.
+        await openPath(localPath);
+      } catch (fallbackError) {
+        const message = formatError(fallbackError || error);
+        setSftpError(t("terminal.transfer.openFolder.fail", { message }));
+      }
     }
   };
 
@@ -1336,19 +1381,59 @@ export function XTerminal({
       progress: 0,
       startedAt: Date.now(),
     };
+    transferRateRef.current[id] = {
+      transferred: 0,
+      ts: Date.now(),
+      speedBps: 0,
+    };
     setTransferTasks((prev) => [next, ...prev].slice(0, MAX_TRANSFER_TASKS));
     return id;
   };
 
   const updateTransferTask = (id: string, patch: Partial<TransferTask>) => {
+    if (patch.status && patch.status !== "running") {
+      delete transferRateRef.current[id];
+      const uiState = transferUiProgressRef.current[id];
+      if (uiState?.timer) {
+        window.clearTimeout(uiState.timer);
+      }
+      delete transferUiProgressRef.current[id];
+    }
     setTransferTasks((prev) =>
       prev.map((task) => (task.id === id ? { ...task, ...patch } : task)),
     );
   };
 
   const clearTransferHistory = () => {
-    setTransferTasks((prev) => prev.filter((task) => task.status === "running"));
+    setTransferTasks((prev) => {
+      const running = prev.filter((task) => task.status === "running");
+      const keep = new Set(running.map((task) => task.id));
+      for (const [id, state] of Object.entries(transferUiProgressRef.current)) {
+        if (!keep.has(id) && state.timer) {
+          window.clearTimeout(state.timer);
+        }
+      }
+      transferRateRef.current = Object.fromEntries(
+        Object.entries(transferRateRef.current).filter(([id]) => keep.has(id)),
+      );
+      transferUiProgressRef.current = Object.fromEntries(
+        Object.entries(transferUiProgressRef.current).filter(([id]) => keep.has(id)),
+      );
+      return running;
+    });
   };
+
+  useEffect(
+    () => () => {
+      for (const state of Object.values(transferUiProgressRef.current)) {
+        if (state.timer) {
+          window.clearTimeout(state.timer);
+        }
+      }
+      transferUiProgressRef.current = {};
+    },
+    [],
+  );
 
   const runningTransferCount = useMemo(
     () => transferTasks.filter((task) => task.status === "running").length,
@@ -3815,14 +3900,73 @@ export function XTerminal({
             : 0;
           const transferred = Math.max(0, event.payload.transferred ?? 0);
           const total = Math.max(0, event.payload.total ?? 0);
+          const now = Date.now();
+          const prevRate = transferRateRef.current[transferId] ?? {
+            transferred,
+            ts: now,
+            speedBps: 0,
+          };
+          const deltaBytes = Math.max(0, transferred - prevRate.transferred);
+          const deltaMs = Math.max(1, now - prevRate.ts);
+          const instantBps = deltaBytes > 0 ? (deltaBytes * 1000) / deltaMs : 0;
+          const speedBps =
+            prevRate.speedBps > 0 && instantBps > 0
+              ? prevRate.speedBps * 0.65 + instantBps * 0.35
+              : instantBps;
+          transferRateRef.current[transferId] = {
+            transferred,
+            ts: now,
+            speedBps,
+          };
+          const speedText = formatTransferSpeed(speedBps);
           const detail =
             total > 0
-              ? `${percent}% · ${formatTransferBytes(transferred)} / ${formatTransferBytes(total)}`
-              : `${formatTransferBytes(transferred)}`;
-          updateTransferTask(transferId, {
+              ? `${percent}% · ${formatTransferBytes(transferred)} / ${formatTransferBytes(total)}${
+                  speedText ? ` · ${speedText}` : ""
+                }`
+              : `${formatTransferBytes(transferred)}${speedText ? ` · ${speedText}` : ""}`;
+
+          const pendingPatch = {
             progress: percent,
+            speedBps,
             detail,
-          });
+          };
+          const nowTs = Date.now();
+          const uiState = transferUiProgressRef.current[transferId] ?? {
+            lastAt: 0,
+            timer: null,
+            latest: null,
+          };
+          transferUiProgressRef.current[transferId] = uiState;
+
+          const applyNow = () => {
+            uiState.lastAt = Date.now();
+            uiState.latest = null;
+            if (uiState.timer) {
+              window.clearTimeout(uiState.timer);
+              uiState.timer = null;
+            }
+            updateTransferTask(transferId, pendingPatch);
+          };
+
+          if (nowTs - uiState.lastAt >= 2000) {
+            applyNow();
+            return;
+          }
+
+          uiState.latest = pendingPatch;
+          if (uiState.timer) return;
+          const waitMs = Math.max(0, 2000 - (nowTs - uiState.lastAt));
+          uiState.timer = window.setTimeout(() => {
+            const state = transferUiProgressRef.current[transferId];
+            if (!state) return;
+            state.timer = null;
+            if (!state.latest) return;
+            const latest = state.latest;
+            state.latest = null;
+            state.lastAt = Date.now();
+            updateTransferTask(transferId, latest);
+          }, waitMs);
         },
       );
       unlistenSftpProgress = unlistenTransferProgress;
@@ -4552,7 +4696,7 @@ export function XTerminal({
                         <span className="xterminal-sftp-name">{entry.name}</span>
                         {typeof entry.size === "number" && !entry.is_dir && (
                           <span className="xterminal-sftp-meta">
-                            {entry.size.toLocaleString()} B
+                            {formatSftpListSize(entry.size)}
                           </span>
                         )}
                         {entry.is_dir && <span className="xterminal-sftp-meta">-</span>}

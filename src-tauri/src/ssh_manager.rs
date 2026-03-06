@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use ssh2::FileStat;
+use ssh2::{OpenFlags, OpenType};
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -786,19 +787,32 @@ impl SshManager {
         let mut remote_file = sftp.open(Path::new(remote_path))
             .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", remote_path, e))?;
 
-        // 创建本地文件
-        let mut local_file = std::fs::File::create(local_path)
-            .map_err(|e| anyhow::anyhow!("Failed to create local file '{}': {}", local_path, e))?;
-
         let total = sftp
             .stat(Path::new(remote_path))
             .ok()
             .and_then(|stat| stat.size)
             .unwrap_or(0);
-        let mut transferred: u64 = 0;
+        let local_existing = std::fs::metadata(local_path).map(|meta| meta.len()).unwrap_or(0);
+        let can_resume = local_existing > 0 && local_existing < total;
+
+        let mut local_file = if can_resume {
+            remote_file
+                .seek(SeekFrom::Start(local_existing))
+                .map_err(|e| anyhow::anyhow!("Failed to seek remote file '{}': {}", remote_path, e))?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(local_path)
+                .map_err(|e| anyhow::anyhow!("Failed to open local file '{}': {}", local_path, e))?
+        } else {
+            std::fs::File::create(local_path)
+                .map_err(|e| anyhow::anyhow!("Failed to create local file '{}': {}", local_path, e))?
+        };
+
+        let mut transferred: u64 = if can_resume { local_existing } else { 0 };
         let mut buf = [0u8; 64 * 1024];
 
-        on_progress(0, total);
+        on_progress(transferred, total);
         loop {
             let read = remote_file
                 .read(&mut buf)
@@ -839,18 +853,49 @@ impl SshManager {
         let mut local_file = std::fs::File::open(local_path)
             .map_err(|e| anyhow::anyhow!("Failed to open local file '{}': {}", local_path, e))?;
 
-        // 创建远程文件（使用写入和截断模式）
-        let mut remote_file = sftp.create(Path::new(remote_path))
-            .map_err(|e| anyhow::anyhow!("Failed to create remote file '{}': {}", remote_path, e))?;
-
         let total = local_file
             .metadata()
             .map(|meta| meta.len())
             .unwrap_or(0);
-        let mut transferred: u64 = 0;
+        // Upload to a temporary file first, then atomically rename to final name.
+        // This prevents users from opening an incomplete file by the final name.
+        let temp_remote_path = format!("{}.part", remote_path);
+        let temp_remote_path_ref = Path::new(&temp_remote_path);
+
+        let remote_existing = sftp
+            .stat(temp_remote_path_ref)
+            .ok()
+            .and_then(|stat| stat.size)
+            .unwrap_or(0);
+        let can_resume = remote_existing > 0 && remote_existing < total;
+
+        let mut remote_file = if can_resume {
+            local_file
+                .seek(SeekFrom::Start(remote_existing))
+                .map_err(|e| anyhow::anyhow!("Failed to seek local file '{}': {}", local_path, e))?;
+            sftp.open_mode(
+                temp_remote_path_ref,
+                OpenFlags::WRITE | OpenFlags::APPEND,
+                0o644,
+                OpenType::File,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", temp_remote_path, e))?
+        } else {
+            // Fallback to full overwrite when remote file does not exist,
+            // is empty, or is larger than local file.
+            sftp.open_mode(
+                temp_remote_path_ref,
+                OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+                0o644,
+                OpenType::File,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to create remote file '{}': {}", temp_remote_path, e))?
+        };
+
+        let mut transferred: u64 = if can_resume { remote_existing } else { 0 };
         let mut buf = [0u8; 64 * 1024];
 
-        on_progress(0, total);
+        on_progress(transferred, total);
         loop {
             let read = local_file
                 .read(&mut buf)
@@ -860,12 +905,25 @@ impl SshManager {
             }
             remote_file
                 .write_all(&buf[..read])
-                .map_err(|e| anyhow::anyhow!("Failed to write remote file '{}': {}", remote_path, e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to write remote file '{}': {}", temp_remote_path, e))?;
             transferred = transferred.saturating_add(read as u64);
             on_progress(transferred, total);
         }
         if total > 0 && transferred < total {
             on_progress(total, total);
+        }
+
+        drop(remote_file);
+
+        // Replace final file with temp file atomically when possible.
+        if sftp
+            .rename(temp_remote_path_ref, Path::new(remote_path), None)
+            .is_err()
+        {
+            let _ = sftp.unlink(Path::new(remote_path));
+            sftp
+                .rename(temp_remote_path_ref, Path::new(remote_path), None)
+                .map_err(|e| anyhow::anyhow!("Failed to finalize uploaded file '{}': {}", remote_path, e))?;
         }
 
         Ok(())
