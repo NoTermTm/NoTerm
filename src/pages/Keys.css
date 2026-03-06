@@ -397,6 +397,28 @@
     transform: scale(0.95);
 }
 
+.keys-delete-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.keys-delete-warning {
+    color: #d67f1b;
+    font-size: 12px;
+    line-height: 1.5;
+    background: rgba(214, 127, 27, 0.12);
+    border: 1px solid rgba(214, 127, 27, 0.28);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+.keys-delete-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
 .password-input-wrapper {
     position: relative;
     display: flex;

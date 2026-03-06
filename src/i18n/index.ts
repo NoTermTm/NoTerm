@@ -558,6 +558,16 @@ const MESSAGES: Messages = {
   "keys.generate.running": { "zh-CN": "生成中…", "en-US": "Generating..." },
   "keys.generate.action": { "zh-CN": "生成密钥", "en-US": "Generate key" },
   "keys.error.nameRequired": { "zh-CN": "请先填写密钥名称", "en-US": "Please enter a key name first" },
+  "keys.delete.confirm": { "zh-CN": "确定删除密钥 “{name}” 吗？", "en-US": "Delete key \"{name}\"?" },
+  "keys.delete.warning": { "zh-CN": "警告：删除后将无法恢复，请谨慎操作。", "en-US": "Warning: this action cannot be undone." },
+  "keys.delete.blocked": {
+    "zh-CN": "密钥 “{name}” 正被 {count} 个连接关联使用，禁止删除。",
+    "en-US": "Key \"{name}\" is currently used by {count} connection(s) and cannot be deleted."
+  },
+  "keys.delete.blockedHint": {
+    "zh-CN": "请先到连接管理中解除该密钥关联，再执行删除。",
+    "en-US": "Remove this key association from connections first, then delete it."
+  },
 
   "security.cryptoUnavailable": { "zh-CN": "当前环境不支持加密能力", "en-US": "Cryptography is not supported in this environment" },
 

@@ -14,6 +14,7 @@ import {
 import { getMasterKeySession } from "../utils/securitySession";
 import type { AuthProfile } from "../types/auth";
 import type { AuthType } from "../types/ssh";
+import type { ConnectionConfig } from "../types/connection";
 import { useI18n } from "../i18n";
 import "./Keys.css";
 
@@ -247,6 +248,11 @@ export function KeysPage() {
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [showGenPassphrase, setShowGenPassphrase] = useState(false);
   const [pemValidation, setPemValidation] = useState<{ valid: boolean; message: string } | null>(null);
+  const [pendingDeleteProfile, setPendingDeleteProfile] = useState<AuthProfile | null>(null);
+  const [blockedDeleteProfile, setBlockedDeleteProfile] = useState<{
+    profile: AuthProfile;
+    count: number;
+  } | null>(null);
 
   useEffect(() => {
     const run = async () => {
@@ -358,6 +364,30 @@ export function KeysPage() {
   const onDelete = async (id: string) => {
     const next = profiles.filter((p) => p.id !== id);
     await saveProfiles(next);
+  };
+
+  const getProfileUsageCount = async (profileId: string) => {
+    const connStore = await load("connections.json");
+    const connections = (await connStore.get<ConnectionConfig[]>("connections")) ?? [];
+    return connections.filter(
+      (conn) => conn.kind === "ssh" && conn.auth_profile_id === profileId,
+    ).length;
+  };
+
+  const requestDelete = async (profile: AuthProfile) => {
+    const usageCount = await getProfileUsageCount(profile.id);
+    if (usageCount > 0) {
+      setBlockedDeleteProfile({ profile, count: usageCount });
+      return;
+    }
+    setPendingDeleteProfile(profile);
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDeleteProfile) return;
+    const id = pendingDeleteProfile.id;
+    setPendingDeleteProfile(null);
+    await onDelete(id);
   };
 
   const onSave = async () => {
@@ -485,7 +515,7 @@ export function KeysPage() {
                   <AppIcon icon="proicons:pencil" size={16} />
                   {t("common.edit")}
                 </button>
-                <button className="btn btn-danger btn-sm" onClick={() => void onDelete(p.id)}>
+                <button className="btn btn-danger btn-sm" onClick={() => void requestDelete(p)}>
                   <AppIcon icon="proicons:delete" size={16} />
                   {t("common.delete")}
                 </button>
@@ -905,6 +935,62 @@ export function KeysPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={Boolean(pendingDeleteProfile)}
+        title={t("common.delete")}
+        onClose={() => setPendingDeleteProfile(null)}
+        width={420}
+      >
+        {pendingDeleteProfile ? (
+          <div className="keys-delete-modal">
+            <div>
+              {t("keys.delete.confirm", { name: pendingDeleteProfile.name })}
+            </div>
+            <div className="keys-delete-warning">{t("keys.delete.warning")}</div>
+            <div className="keys-delete-actions">
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => setPendingDeleteProfile(null)}
+              >
+                {t("common.cancel")}
+              </button>
+              <button className="btn btn-danger" type="button" onClick={() => void confirmDelete()}>
+                {t("common.delete")}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(blockedDeleteProfile)}
+        title={t("common.delete")}
+        onClose={() => setBlockedDeleteProfile(null)}
+        width={460}
+      >
+        {blockedDeleteProfile ? (
+          <div className="keys-delete-modal">
+            <div>
+              {t("keys.delete.blocked", {
+                name: blockedDeleteProfile.profile.name,
+                count: blockedDeleteProfile.count,
+              })}
+            </div>
+            <div className="keys-delete-warning">{t("keys.delete.blockedHint")}</div>
+            <div className="keys-delete-actions">
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={() => setBlockedDeleteProfile(null)}
+              >
+                {t("common.cancel")}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </Modal>
     </div>
   );
