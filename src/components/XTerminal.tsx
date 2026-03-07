@@ -945,8 +945,17 @@ export function XTerminal({
       let ok = false;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         try {
+          const connectedBeforeReconnect = await sshApi
+            .isConnected(sessionId)
+            .catch(() => false);
+          if (connectedBeforeReconnect) {
+            ok = true;
+            pushTerminalLog("info", "reconnect skipped (session still alive)");
+            break;
+          }
+
           pushTerminalLog("info", `reconnect attempt ${attempt}`);
-          await connectNow();
+          await connectNow({ forceReset: attempt > 1 });
           const connected = await sshApi.isConnected(sessionId);
           if (connected) {
             ok = true;
@@ -1589,15 +1598,17 @@ export function XTerminal({
     return "bad";
   }, [latencyMs]);
 
-  const connectNow = async () => {
+  const connectNow = async (options?: { forceReset?: boolean }) => {
     const doConnect = onConnectRef.current;
     if (!doConnect) return;
 
     setConnStatus("connecting");
     setConnError(null);
 
-    // Best-effort reset before reconnect.
-    await disconnectShell().catch(() => {});
+    if (options?.forceReset) {
+      // Best-effort reset when explicitly requested.
+      await disconnectShell().catch(() => {});
+    }
 
     try {
       await doConnect();
