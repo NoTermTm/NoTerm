@@ -40,6 +40,7 @@ export type CloudSyncConfig = {
 type SyncPayload = {
   version: 1;
   exportedAt: string;
+  encSalt?: string;
   settings: Partial<AppSettings>;
   connections: unknown[];
   profiles: unknown[];
@@ -371,7 +372,11 @@ export const readSettingsSnapshot = async () => {
   return next as AppSettings;
 };
 
-const buildSyncPayload = async (): Promise<SyncPayload> => {
+const buildSyncPayload = async (fallbackEncSalt = ""): Promise<SyncPayload> => {
+  const settingsStore = await getAppSettingsStore();
+  const encSalt =
+    (await settingsStore.get<string>("security.masterKeyEncSalt")) ??
+    fallbackEncSalt;
   const connectionStore = await load("connections.json");
   const keysStore = await load("keys.json");
   const scriptsStore = await load("scripts.json");
@@ -381,6 +386,7 @@ const buildSyncPayload = async (): Promise<SyncPayload> => {
   return {
     version: 1,
     exportedAt: new Date().toISOString(),
+    encSalt: encSalt?.trim() ? encSalt : undefined,
     settings: await readAllSettingsForSync(),
     connections: (await connectionStore.get("connections")) ?? [],
     profiles: (await keysStore.get("profiles")) ?? [],
@@ -395,6 +401,9 @@ const buildSyncPayload = async (): Promise<SyncPayload> => {
 
 const applySyncPayload = async (payload: SyncPayload) => {
   const settingsStore = await getAppSettingsStore();
+  if (payload.encSalt && payload.encSalt.trim()) {
+    await settingsStore.set("security.masterKeyEncSalt", payload.encSalt);
+  }
   const keys = Object.keys(payload.settings) as Array<keyof AppSettings>;
   for (const key of keys) {
     if (!(key in DEFAULT_APP_SETTINGS)) continue;
@@ -520,7 +529,7 @@ export const cloudSyncUpload = async (input: {
   encSalt: string;
 }) => {
   const provider = buildProvider(input.config);
-  const payload = await buildSyncPayload();
+  const payload = await buildSyncPayload(input.encSalt);
   const encrypted = await encryptString(
     JSON.stringify(payload),
     input.masterKey,
