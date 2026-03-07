@@ -401,8 +401,41 @@ impl SshManager {
             .ok_or_else(|| anyhow::anyhow!("Shell not found"))?;
 
         let mut ch = channel.lock().unwrap();
-        ch.write_all(data.as_bytes())?;
-        ch.flush()?;
+
+        // Interactive shell channel runs in non-blocking mode.
+        // Treat WouldBlock/EAGAIN as transient and retry briefly, instead of
+        // failing fast and triggering unnecessary frontend reconnects.
+        let mut remaining = data.as_bytes();
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        while !remaining.is_empty() {
+            match ch.write(remaining) {
+                Ok(0) => return Err(anyhow::anyhow!("SSH write returned 0 bytes")),
+                Ok(written) => {
+                    remaining = &remaining[written..];
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(anyhow::anyhow!("SSH write timed out (would block)"));
+                    }
+                    std::thread::sleep(Duration::from_millis(6));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+
+        loop {
+            match ch.flush() {
+                Ok(_) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(anyhow::anyhow!("SSH flush timed out (would block)"));
+                    }
+                    std::thread::sleep(Duration::from_millis(6));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
 
         Ok(())
     }
