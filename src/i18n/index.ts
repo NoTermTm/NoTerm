@@ -320,6 +320,7 @@ const MESSAGES: Messages = {
   "settings.sync.action.test": { "zh-CN": "测试连接", "en-US": "Test" },
   "settings.sync.action.upload": { "zh-CN": "上传到云端", "en-US": "Upload" },
   "settings.sync.action.download": { "zh-CN": "从云端下载", "en-US": "Download" },
+  "settings.sync.action.restore": { "zh-CN": "恢复本地备份", "en-US": "Restore local backup" },
   "settings.sync.autoBackup": { "zh-CN": "自动备份", "en-US": "Auto backup" },
   "settings.sync.autoBackup.enabled": { "zh-CN": "已启用", "en-US": "Enabled" },
   "settings.sync.autoBackup.disabled": { "zh-CN": "已关闭", "en-US": "Disabled" },
@@ -343,6 +344,7 @@ const MESSAGES: Messages = {
   "settings.sync.testing": { "zh-CN": "测试中...", "en-US": "Testing..." },
   "settings.sync.uploading": { "zh-CN": "上传中...", "en-US": "Uploading..." },
   "settings.sync.downloading": { "zh-CN": "下载中...", "en-US": "Downloading..." },
+  "settings.sync.restoring": { "zh-CN": "恢复中...", "en-US": "Restoring..." },
   "settings.sync.toast.title": { "zh-CN": "云同步", "en-US": "Cloud Sync" },
   "settings.sync.toast.errorTitle": { "zh-CN": "云同步错误", "en-US": "Cloud Sync Error" },
   "settings.sync.status.testing": { "zh-CN": "正在测试连接...", "en-US": "Testing connection..." },
@@ -353,7 +355,17 @@ const MESSAGES: Messages = {
   "settings.sync.status.uploadFailed": { "zh-CN": "上传失败。", "en-US": "Upload failed." },
   "settings.sync.status.downloading": { "zh-CN": "正在下载加密同步数据...", "en-US": "Downloading encrypted sync data..." },
   "settings.sync.status.downloadDone": { "zh-CN": "下载完成。", "en-US": "Download completed." },
+  "settings.sync.status.downloadDoneWithBackup": {
+    "zh-CN": "下载完成，已创建本地备份：{time}",
+    "en-US": "Download completed. Local backup created at {time}.",
+  },
   "settings.sync.status.downloadFailed": { "zh-CN": "下载失败。", "en-US": "Download failed." },
+  "settings.sync.status.restoring": { "zh-CN": "正在恢复本地备份...", "en-US": "Restoring local backup..." },
+  "settings.sync.status.restoreDone": {
+    "zh-CN": "恢复完成（备份时间：{time}）。",
+    "en-US": "Local backup restored (backup time: {time}).",
+  },
+  "settings.sync.status.restoreFailed": { "zh-CN": "恢复本地备份失败。", "en-US": "Failed to restore local backup." },
   "settings.sync.error.masterKeyRequired": {
     "zh-CN": "请先解锁 Master Key 后再执行云同步。",
     "en-US": "Unlock Master Key before running cloud sync.",

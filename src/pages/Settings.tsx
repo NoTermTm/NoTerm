@@ -14,6 +14,7 @@ import { TERMINAL_THEME_OPTIONS, getXtermTheme } from "../terminal/xtermThemes";
 import { sendAiChat, type AiMessage, type AiProvider } from "../api/ai";
 import {
   cloudSyncDownload,
+  cloudSyncRestoreLatestLocalBackup,
   cloudSyncTestConnection,
   cloudSyncUpload,
   readSettingsSnapshot,
@@ -174,7 +175,7 @@ export function SettingsPage() {
   >("idle");
   const [cloudSyncMessage, setCloudSyncMessage] = useState<string>("");
   const [cloudSyncAction, setCloudSyncAction] = useState<
-    "test" | "upload" | "download" | null
+    "test" | "upload" | "download" | "restore" | null
   >(null);
   const [cloudSyncModalOpen, setCloudSyncModalOpen] = useState(false);
   const [appVersion, setAppVersion] = useState<string>("--");
@@ -696,10 +697,43 @@ export function SettingsPage() {
         window.dispatchEvent(new CustomEvent("master-key-updated"));
         window.dispatchEvent(new CustomEvent("auth-profiles-updated"));
       }
-      setCloudSyncResult("success", t("settings.sync.status.downloadDone"));
+      const backupTime = result.backupAt
+        ? new Date(result.backupAt).toLocaleString()
+        : "--";
+      setCloudSyncResult(
+        "success",
+        t("settings.sync.status.downloadDoneWithBackup", { time: backupTime }),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setCloudSyncResult("error", message || t("settings.sync.status.downloadFailed"));
+    } finally {
+      setCloudSyncAction(null);
+    }
+  };
+
+  const handleCloudSyncRestore = async () => {
+    setCloudSyncAction("restore");
+    setCloudSyncStatus("working");
+    setCloudSyncMessage(t("settings.sync.status.restoring"));
+    try {
+      const { masterKey, encSalt } = getUnlockedMasterKey();
+      const result = await cloudSyncRestoreLatestLocalBackup({ masterKey, encSalt });
+      await applyLatestSettingsSnapshot();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("master-key-updated"));
+        window.dispatchEvent(new CustomEvent("auth-profiles-updated"));
+      }
+      const backupTime = result.backupAt
+        ? new Date(result.backupAt).toLocaleString()
+        : "--";
+      setCloudSyncResult(
+        "success",
+        t("settings.sync.status.restoreDone", { time: backupTime }),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCloudSyncResult("error", message || t("settings.sync.status.restoreFailed"));
     } finally {
       setCloudSyncAction(null);
     }
@@ -2801,6 +2835,16 @@ export function SettingsPage() {
                 {cloudSyncAction === "download"
                   ? t("settings.sync.downloading")
                   : t("settings.sync.action.download")}
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => void handleCloudSyncRestore()}
+                disabled={cloudSyncAction !== null}
+              >
+                {cloudSyncAction === "restore"
+                  ? t("settings.sync.restoring")
+                  : t("settings.sync.action.restore")}
               </button>
             </div>
             {cloudSyncMessage && (

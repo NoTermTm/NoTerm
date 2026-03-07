@@ -1,6 +1,11 @@
 import { load } from "@tauri-apps/plugin-store";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import { decryptString, encryptString, isEncryptedPayload } from "../utils/security";
+import {
+  decryptString,
+  encryptString,
+  isEncryptedPayload,
+  type EncryptedPayload,
+} from "../utils/security";
 import {
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
@@ -46,7 +51,16 @@ type SyncPayload = {
 type SyncEnvelope = {
   version: 1;
   updatedAt: string;
+  encSalt?: string;
   payload: unknown;
+};
+
+type LocalSyncBackup = {
+  version: 1;
+  backupAt: string;
+  remoteUpdatedAt: string;
+  encSalt: string;
+  payload: EncryptedPayload;
 };
 
 type StorageProvider = {
@@ -57,6 +71,8 @@ type StorageProvider = {
 };
 
 const REMOTE_KEY = "noterm.sync.v1.json";
+const LOCAL_BACKUP_STORE = "cloud-sync-backup.json";
+const LOCAL_BACKUP_KEY = "latest";
 
 const SYNC_EXCLUDED_SETTINGS = new Set<keyof AppSettings>([
   "security.masterKeyHash",
@@ -422,6 +438,77 @@ const ensureDecryptablePayload = (value: unknown) => {
   return value;
 };
 
+const isLocalSyncBackup = (value: unknown): value is LocalSyncBackup => {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.version === 1 &&
+    typeof record.backupAt === "string" &&
+    typeof record.remoteUpdatedAt === "string" &&
+    typeof record.encSalt === "string" &&
+    isEncryptedPayload(record.payload)
+  );
+};
+
+const saveLocalBackupBeforeDownload = async (
+  remoteUpdatedAt: string,
+  masterKey: string,
+  encSalt: string,
+) => {
+  const localPayload = await buildSyncPayload();
+  const encryptedPayload = await encryptString(
+    JSON.stringify(localPayload),
+    masterKey,
+    encSalt,
+  );
+  const backup: LocalSyncBackup = {
+    version: 1,
+    backupAt: new Date().toISOString(),
+    remoteUpdatedAt,
+    encSalt,
+    payload: encryptedPayload,
+  };
+  const backupStore = await load(LOCAL_BACKUP_STORE);
+  await backupStore.set(LOCAL_BACKUP_KEY, backup);
+  await backupStore.save();
+  return backup.backupAt;
+};
+
+export const cloudSyncRestoreLatestLocalBackup = async (input: {
+  masterKey: string;
+  encSalt: string;
+}) => {
+  const backupStore = await load(LOCAL_BACKUP_STORE);
+  const backupRaw = await backupStore.get(LOCAL_BACKUP_KEY);
+  if (!isLocalSyncBackup(backupRaw)) {
+    throw new Error("No local backup found");
+  }
+  const decryptSalt = backupRaw.encSalt || input.encSalt;
+  let decrypted = "";
+  try {
+    decrypted = await decryptString(backupRaw.payload, input.masterKey, decryptSalt);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      /operation-specific reason|OperationError|decrypt/i.test(message)
+    ) {
+      throw new Error(
+        "Unable to decrypt local backup. Ensure the Master Key matches when backup was created.",
+      );
+    }
+    throw error;
+  }
+  const payload = JSON.parse(decrypted) as SyncPayload;
+  if (payload.version !== 1) {
+    throw new Error("Unsupported local backup payload version");
+  }
+  await applySyncPayload(payload);
+  return {
+    backupAt: backupRaw.backupAt,
+    remoteUpdatedAt: backupRaw.remoteUpdatedAt,
+  };
+};
+
 export const cloudSyncTestConnection = async (config: CloudSyncConfig) => {
   const provider = buildProvider(config);
   await provider.testConnection();
@@ -442,6 +529,7 @@ export const cloudSyncUpload = async (input: {
   const envelope: SyncEnvelope = {
     version: 1,
     updatedAt: new Date().toISOString(),
+    encSalt: input.encSalt,
     payload: encrypted,
   };
   await provider.writeText(REMOTE_KEY, JSON.stringify(envelope));
@@ -458,15 +546,42 @@ export const cloudSyncDownload = async (input: {
   if (!text) {
     throw new Error("No remote sync data found");
   }
-  const envelope = JSON.parse(text) as { payload?: unknown; updatedAt?: string };
+  const envelope = JSON.parse(text) as {
+    payload?: unknown;
+    updatedAt?: string;
+    encSalt?: unknown;
+  };
   const encrypted = ensureDecryptablePayload(envelope.payload);
-  const decrypted = await decryptString(encrypted, input.masterKey, input.encSalt);
+  const decryptSalt =
+    typeof envelope.encSalt === "string" && envelope.encSalt.trim()
+      ? envelope.encSalt
+      : input.encSalt;
+  let decrypted = "";
+  try {
+    decrypted = await decryptString(encrypted, input.masterKey, decryptSalt);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      /operation-specific reason|OperationError|decrypt/i.test(message)
+    ) {
+      throw new Error(
+        "Unable to decrypt remote sync data. Ensure the Master Key matches the uploading device.",
+      );
+    }
+    throw error;
+  }
   const payload = JSON.parse(decrypted) as SyncPayload;
   if (payload.version !== 1) {
     throw new Error("Unsupported sync payload version");
   }
+  const backupAt = await saveLocalBackupBeforeDownload(
+    envelope.updatedAt ?? "",
+    input.masterKey,
+    input.encSalt,
+  );
   await applySyncPayload(payload);
   return {
+    backupAt,
     updatedAt: envelope.updatedAt ?? "",
     payload,
   };
