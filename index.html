@@ -6,24 +6,74 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NoTerm</title>
     <style>
+      :root {
+        --loading-bg-start: #f5f6f8;
+        --loading-bg-end: #ffffff;
+        --loading-card-bg: rgba(255, 255, 255, 0.92);
+        --loading-card-border: rgba(226, 226, 226, 0.9);
+        --loading-card-shadow: 0 12px 30px rgba(15, 15, 45, 0.12);
+        --loading-text: #2c2c2c;
+        --loading-subtext: #6b6b6b;
+        --loading-canvas-clear: #f5f6f8;
+        --loading-canvas-ink: #0f172a;
+      }
+
+      :root[data-theme="mint"] {
+        --loading-bg-start: #eef8f3;
+        --loading-bg-end: #ffffff;
+        --loading-card-bg: rgba(255, 255, 255, 0.9);
+        --loading-card-border: rgba(205, 231, 220, 0.95);
+        --loading-card-shadow: 0 12px 30px rgba(30, 86, 62, 0.14);
+        --loading-text: #233029;
+        --loading-subtext: #4f6b5e;
+        --loading-canvas-clear: #eef8f3;
+        --loading-canvas-ink: #1f3c2f;
+      }
+
+      :root[data-theme="dark"] {
+        --loading-bg-start: #1a1d24;
+        --loading-bg-end: #11141b;
+        --loading-card-bg: rgba(31, 36, 47, 0.92);
+        --loading-card-border: rgba(74, 83, 101, 0.7);
+        --loading-card-shadow: 0 16px 42px rgba(1, 4, 10, 0.56);
+        --loading-text: #eef2fb;
+        --loading-subtext: #9da8bc;
+        --loading-canvas-clear: #1a1d24;
+        --loading-canvas-ink: #b6d2ff;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme]) {
+          --loading-bg-start: #1a1d24;
+          --loading-bg-end: #11141b;
+          --loading-card-bg: rgba(31, 36, 47, 0.92);
+          --loading-card-border: rgba(74, 83, 101, 0.7);
+          --loading-card-shadow: 0 16px 42px rgba(1, 4, 10, 0.56);
+          --loading-text: #eef2fb;
+          --loading-subtext: #9da8bc;
+          --loading-canvas-clear: #1a1d24;
+          --loading-canvas-ink: #b6d2ff;
+        }
+      }
+
       html, body {
         margin: 0;
         padding: 0;
         width: 100%;
         height: 100%;
-        background: #f5f6f8;
+        background: var(--loading-bg-start);
       }
 
       #root {
         width: 100vw;
         height: 100vh;
-        background: #f5f6f8;
+        background: radial-gradient(circle at top, var(--loading-bg-start), var(--loading-bg-end) 60%);
         display: flex;
         align-items: center;
         justify-content: center;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
           "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
-        color: #2c2c2c;
+        color: var(--loading-text);
         border-radius: 16px;
       }
 
@@ -52,13 +102,13 @@
 
       .app-loading-subtitle {
         font-size: 12px;
-        color: #6b6b6b;
+        color: var(--loading-subtext);
       }
 
       .app-loading-time {
         position: absolute;
         font-size: 12px;
-        color: #6b6b6b;
+        color: var(--loading-subtext);
         transform: translate(-50%, -50%);
         left: 50%;
         top: 50%;
@@ -73,11 +123,22 @@
           transform: translateX(120%);
         }
       }
-      body {background: #f5f6f8; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: rgba(0, 0, 0, 0);}
+      body {background: var(--loading-bg-start); -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: rgba(0, 0, 0, 0);}
       #wrap {position: absolute; left: 0; right: 0; top: 0; bottom: 0; overflow: hidden;}
-      #wrap canvas {position: absolute; left: 50%; top: 50%; width: 500px; height: 500px; margin: -250px 0 0 -250px; -outline: 1px solid #f5f6f8;}
+      #wrap canvas {position: absolute; left: 50%; top: 50%; width: 500px; height: 500px; margin: -250px 0 0 -250px; -outline: 1px solid var(--loading-canvas-clear);}
       .info {position: absolute; left: 0; right: 0; bottom: 0; font-size: 12px; color: #ccc; line-height: 2em; text-align: center;}
     </style>
+    <script>
+      (function () {
+        try {
+          var key = "noterm.ui.theme";
+          var theme = localStorage.getItem(key);
+          if (theme === "bright" || theme === "mint" || theme === "dark") {
+            document.documentElement.setAttribute("data-theme", theme);
+          }
+        } catch (_) {}
+      })();
+    </script>
   </head>
 
   <body>
@@ -107,6 +168,18 @@
         requestAnimationFrame(update);
       })();
 
+      var rootStyle = window.getComputedStyle(document.documentElement);
+      var loadingInk = (rootStyle.getPropertyValue("--loading-canvas-ink") || "#0f172a").trim();
+      var loadingClear = (rootStyle.getPropertyValue("--loading-canvas-clear") || "#f5f6f8").trim();
+
+      function toThreeHex(value, fallback) {
+        var hex = (value || "").replace("#", "").trim();
+        if (!/^[0-9a-fA-F]{6}$/.test(hex)) return fallback;
+        return parseInt(hex, 16);
+      }
+
+      var loadingInkHex = toThreeHex(loadingInk, 0x0f172a);
+      var loadingClearHex = toThreeHex(loadingClear, 0xf5f6f8);
 
 var $body = document.body,
 		$wrap = document.getElementById('wrap'),
@@ -159,18 +232,18 @@ var $body = document.body,
     mesh = new THREE.Mesh(
       new THREE.TubeGeometry(new RibbonCurve(), 200, 1.1, 2, true),
       new THREE.MeshBasicMaterial({
-        color: 0x000000
+        color: loadingInkHex
         // , wireframe: true
       })
     );
     group.add(mesh);
 
-    ringcover = new THREE.Mesh(new THREE.PlaneGeometry(50, 15, 1), new THREE.MeshBasicMaterial({color: 0xf5f6f8, opacity: 0, transparent: true}));
+    ringcover = new THREE.Mesh(new THREE.PlaneGeometry(50, 15, 1), new THREE.MeshBasicMaterial({color: loadingClearHex, opacity: 0, transparent: true}));
     ringcover.position.x = length+1;
     ringcover.rotation.y = Math.PI/2;
     group.add(ringcover);
 
-    ring = new THREE.Mesh(new THREE.RingGeometry(4.3, 5.55, 32), new THREE.MeshBasicMaterial({color: 0x000000, opacity: 0, transparent: true}));
+    ring = new THREE.Mesh(new THREE.RingGeometry(4.3, 5.55, 32), new THREE.MeshBasicMaterial({color: loadingInkHex, opacity: 0, transparent: true}));
     ring.position.x = length+1.1;
     ring.rotation.y = Math.PI/2;
     group.add(ring);
@@ -179,18 +252,19 @@ var $body = document.body,
     (function() {
       var plain, i;
       for (i = 0; i < 10; i++) {
-        plain = new THREE.Mesh(new THREE.PlaneGeometry(length*2+1, radius*3, 1), new THREE.MeshBasicMaterial({color: 0xf5f6f8, transparent: true, opacity: 0.13}));
+        plain = new THREE.Mesh(new THREE.PlaneGeometry(length*2+1, radius*3, 1), new THREE.MeshBasicMaterial({color: loadingClearHex, transparent: true, opacity: 0.13}));
         plain.position.z = -2.5+i*0.5;
         group.add(plain);
       }
     })();
 
     renderer = new THREE.WebGLRenderer({
-      antialias: true
+      antialias: true,
+      alpha: true
     });
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(canvassize, canvassize);
-    renderer.setClearColor('#f5f6f8');
+    renderer.setClearColor(loadingClear, 0);
 
     $wrap.appendChild(renderer.domElement);
 

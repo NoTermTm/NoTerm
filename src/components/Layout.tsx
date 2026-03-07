@@ -1061,6 +1061,11 @@ export function Layout() {
     const applyTheme = (value?: AppSettings["ui.theme"] | null) => {
       const next = (value ?? DEFAULT_APP_SETTINGS["ui.theme"]) as AppSettings["ui.theme"];
       document.documentElement.dataset.theme = next;
+      try {
+        localStorage.setItem("noterm.ui.theme", next);
+      } catch {
+        // Ignore storage failures in restricted environments.
+      }
     };
     const applyAccent = (value?: string | null) => {
       const root = document.documentElement;
