@@ -234,19 +234,36 @@ const createDefaultRdpConnection = (name: string): RdpConnectionConfig => ({
   redirectDrives: false,
 });
 
+const trimValue = (value: string | undefined | null) => (value ?? "").trim();
+
+const normalizeSshAuthType = (authType: SshConnectionConfig["auth_type"]) => {
+  if (authType.type === "Password") {
+    return {
+      ...authType,
+    } as SshConnectionConfig["auth_type"];
+  }
+  return {
+    ...authType,
+    key_path: trimValue(authType.key_path),
+    passphrase: authType.passphrase,
+  } as SshConnectionConfig["auth_type"];
+};
+
 const normalizeSshConnection = (
   conn: Partial<SshConnectionConfig>,
   fallbackName: string,
 ): SshConnectionConfig => ({
   kind: "ssh",
   id: conn.id ?? crypto.randomUUID(),
-  name: conn.name ?? fallbackName,
+  name: trimValue(conn.name) || fallbackName,
   tags: normalizeTags(conn.tags),
   color: normalizeColor(conn.color),
-  host: conn.host ?? "",
+  host: trimValue(conn.host),
   port: Number.isFinite(conn.port as number) ? (conn.port as number) : 22,
-  username: conn.username ?? "",
-  auth_type: conn.auth_type ?? { type: "Password", password: "" },
+  username: trimValue(conn.username),
+  auth_type: normalizeSshAuthType(
+    conn.auth_type ?? { type: "Password", password: "" },
+  ),
   auth_profile_id: conn.auth_profile_id,
   encoding: conn.encoding ?? "utf-8",
   osType: normalizeOsType(conn.osType),
@@ -258,17 +275,17 @@ const normalizeRdpConnection = (
 ): RdpConnectionConfig => ({
   kind: "rdp",
   id: conn.id ?? crypto.randomUUID(),
-  name: conn.name ?? fallbackName,
+  name: trimValue(conn.name) || fallbackName,
   tags: normalizeTags(conn.tags),
   color: normalizeColor(conn.color),
-  host: conn.host ?? "",
+  host: trimValue(conn.host),
   port: Number.isFinite(conn.port as number) ? (conn.port as number) : 3389,
-  username: conn.username ?? "",
+  username: trimValue(conn.username),
   password: conn.password ?? "",
-  gatewayHost: conn.gatewayHost ?? "",
-  gatewayUsername: conn.gatewayUsername ?? "",
+  gatewayHost: trimValue(conn.gatewayHost),
+  gatewayUsername: trimValue(conn.gatewayUsername),
   gatewayPassword: conn.gatewayPassword ?? "",
-  gatewayDomain: conn.gatewayDomain ?? "",
+  gatewayDomain: trimValue(conn.gatewayDomain),
   resolutionWidth: conn.resolutionWidth,
   resolutionHeight: conn.resolutionHeight,
   colorDepth: conn.colorDepth ?? 32,

@@ -158,23 +158,72 @@ impl SshManager {
 
     // 辅助方法：创建并认证 SSH 会话
     fn create_authenticated_session(&self, connection: &SshConnection) -> anyhow::Result<Session> {
-        let addr = format!("{}:{}", connection.host, connection.port)
+        let host = connection.host.trim();
+        if host.is_empty() {
+            return Err(anyhow::anyhow!("Host is empty"));
+        }
+
+        let addrs: Vec<_> = format!("{}:{}", host, connection.port)
             .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("Failed to resolve host: {}", connection.host))?;
+            .collect();
+        if addrs.is_empty() {
+            return Err(anyhow::anyhow!("Failed to resolve host: {}", host));
+        }
 
-        let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-            .map_err(|e| anyhow::anyhow!("Connection timeout or failed to connect to {}:{} - {}", connection.host, connection.port, e))?;
+        let mut sess_opt: Option<Session> = None;
+        let mut attempts: Vec<String> = Vec::new();
+        for addr in addrs {
+            let tcp = match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
+                Ok(tcp) => tcp,
+                Err(e) => {
+                    attempts.push(format!("{} connect failed: {}", addr, e));
+                    continue;
+                }
+            };
 
-        tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
-        tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
-        tcp.set_nonblocking(false)?;
+            if let Err(e) = tcp.set_read_timeout(Some(Duration::from_secs(30))) {
+                attempts.push(format!("{} set read timeout failed: {}", addr, e));
+                continue;
+            }
+            if let Err(e) = tcp.set_write_timeout(Some(Duration::from_secs(30))) {
+                attempts.push(format!("{} set write timeout failed: {}", addr, e));
+                continue;
+            }
+            if let Err(e) = tcp.set_nonblocking(false) {
+                attempts.push(format!("{} set blocking mode failed: {}", addr, e));
+                continue;
+            }
 
-        let mut sess = Session::new()?;
-        sess.set_tcp_stream(tcp);
-        sess.set_timeout(30000); // 30秒超时
-        sess.handshake()
-            .map_err(|e| anyhow::anyhow!("SSH handshake failed: {}", e))?;
+            let mut sess = Session::new()?;
+            sess.set_tcp_stream(tcp);
+            sess.set_timeout(30000); // 30秒超时
+            if let Err(e) = sess.handshake() {
+                let raw = e.to_string();
+                let reason = if raw.contains("Failed getting banner") {
+                    format!(
+                        "{} handshake failed: {} (target may not be SSH / SSHD not ready / network device interrupted banner)",
+                        addr, raw
+                    )
+                } else {
+                    format!("{} handshake failed: {}", addr, raw)
+                };
+                attempts.push(reason);
+                continue;
+            }
+
+            sess_opt = Some(sess);
+            break;
+        }
+
+        let sess = sess_opt.ok_or_else(|| {
+            anyhow::anyhow!(
+                "SSH connection failed for {}:{}; tried {} address(es): {}",
+                host,
+                connection.port,
+                attempts.len(),
+                attempts.join(" | ")
+            )
+        })?;
         sess.set_keepalive(true, 15);
 
         let effective_username = if connection.username.trim().is_empty() {

@@ -368,6 +368,11 @@ fn clipboard_write_text(text: String) -> Result<(), String> {
 #[tauri::command]
 async fn ssh_check_endpoint(host: String, port: u16) -> Result<EndpointCheck, String> {
     tokio::task::spawn_blocking(move || {
+        let host = host.trim().to_string();
+        if host.is_empty() {
+            return Err("Host is empty".to_string());
+        }
+
         let addrs: Vec<_> = format!("{}:{}", host, port)
             .to_socket_addrs()
             .map_err(|e| e.to_string())?

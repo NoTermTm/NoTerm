@@ -72,6 +72,7 @@ type StorageProvider = {
 };
 
 const REMOTE_KEY = "noterm.sync.v1.json";
+const LEGACY_REMOTE_KEYS = ["noterm.sync.json", "noterm-sync.json"];
 const LOCAL_BACKUP_STORE = "cloud-sync-backup.json";
 const LOCAL_BACKUP_KEY = "latest";
 
@@ -312,7 +313,10 @@ const createS3Provider = (config: S3Config): StorageProvider => {
     async readText(key) {
       const req = await buildSignedRequest("GET", key);
       const resp = await tauriFetch(req.url, { method: "GET", headers: req.headers });
-      if (resp.status === 404 || resp.status === 403) return null;
+      if (resp.status === 404) return null;
+      if (resp.status === 403) {
+        throw new Error(`S3 GET access denied (403) for key "${joinKey(config.prefix, key)}"`);
+      }
       if (!resp.ok) throw new Error(`S3 GET failed: ${resp.status} ${resp.statusText}`);
       return resp.text();
     },
@@ -347,6 +351,28 @@ const createS3Provider = (config: S3Config): StorageProvider => {
 const buildProvider = (config: CloudSyncConfig): StorageProvider => {
   if (config.provider === "webdav") return createWebDavProvider(config.webdav);
   return createS3Provider(config.s3);
+};
+
+const buildDownloadCandidates = (config: CloudSyncConfig) => {
+  const candidates: Array<{ provider: StorageProvider; key: string }> = [];
+  const provider = buildProvider(config);
+  candidates.push({ provider, key: REMOTE_KEY });
+  for (const legacyKey of LEGACY_REMOTE_KEYS) {
+    candidates.push({ provider, key: legacyKey });
+  }
+
+  if (config.provider === "s3" && normalizePrefix(config.s3.prefix)) {
+    const noPrefixProvider = buildProvider({
+      ...config,
+      s3: { ...config.s3, prefix: "" },
+    });
+    candidates.push({ provider: noPrefixProvider, key: REMOTE_KEY });
+    for (const legacyKey of LEGACY_REMOTE_KEYS) {
+      candidates.push({ provider: noPrefixProvider, key: legacyKey });
+    }
+  }
+
+  return candidates;
 };
 
 const readAllSettingsForSync = async () => {
@@ -550,10 +576,19 @@ export const cloudSyncDownload = async (input: {
   masterKey: string;
   encSalt: string;
 }) => {
-  const provider = buildProvider(input.config);
-  const text = await provider.readText(REMOTE_KEY);
+  const candidates = buildDownloadCandidates(input.config);
+  let text: string | null = null;
+  for (const candidate of candidates) {
+    text = await candidate.provider.readText(candidate.key);
+    if (text) break;
+  }
   if (!text) {
-    throw new Error("No remote sync data found");
+    throw new Error(
+      `No remote sync data found (tried keys: ${[
+        REMOTE_KEY,
+        ...LEGACY_REMOTE_KEYS,
+      ].join(", ")}${input.config.provider === "s3" && normalizePrefix(input.config.s3.prefix) ? ", and no-prefix fallback" : ""})`,
+    );
   }
   const envelope = JSON.parse(text) as {
     payload?: unknown;

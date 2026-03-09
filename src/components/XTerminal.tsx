@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -306,8 +307,11 @@ export function XTerminal({
   const mountedRef = useRef(true);
   const [connStatus, setConnStatus] = useState<ConnectionStatus>("idle");
   const [connError, setConnError] = useState<string | null>(null);
+  const [connectionLogs, setConnectionLogs] = useState<string[]>([]);
+  const [connectionLogOpen, setConnectionLogOpen] = useState(false);
   const [endpointIp, setEndpointIp] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const endpointProbeLogRef = useRef<string>("");
   const endpointLatencyRef = useRef<number | null>(null);
   const observedLatencyRef = useRef<number | null>(null);
   const [endpointCopied, setEndpointCopied] = useState(false);
@@ -825,6 +829,19 @@ export function XTerminal({
     }
     terminalLogRef.current = next;
   };
+
+  const appendConnectionLog = useCallback((message: string) => {
+    const stamp = new Date().toLocaleTimeString(locale === "zh-CN" ? "zh-CN" : "en-US", {
+      hour12: false,
+    });
+    setConnectionLogs((prev) => {
+      const next = [...prev, `[${stamp}] ${message}`];
+      if (next.length > 80) {
+        next.splice(0, next.length - 80);
+      }
+      return next;
+    });
+  }, [locale]);
 
   const copyTerminalLog = async () => {
     const header = `session=${sessionId} local=${isLocal} conn=${connStatus} sftp=${sftpOpen} ai=${aiOpen} lastInput=${lastInputAtRef.current} lastOutput=${lastOutputAtRef.current}`;
@@ -1604,32 +1621,61 @@ export function XTerminal({
 
     setConnStatus("connecting");
     setConnError(null);
+    if (!options?.forceReset) {
+      setConnectionLogs([]);
+      endpointProbeLogRef.current = "";
+    }
+    appendConnectionLog(
+      isLocal
+        ? locale === "zh-CN"
+          ? "开始连接本地终端"
+          : "Starting local terminal session"
+        : locale === "zh-CN"
+          ? `开始连接 ${host}:${port}`
+          : `Starting connection to ${host}:${port}`,
+    );
 
     if (options?.forceReset) {
       // Best-effort reset when explicitly requested.
+      appendConnectionLog(
+        locale === "zh-CN" ? "执行连接重置（force reset）" : "Running force reset before reconnect",
+      );
       await disconnectShell().catch(() => {});
     }
 
     try {
+      appendConnectionLog(locale === "zh-CN" ? "调用后端连接接口..." : "Calling backend connect...");
       await doConnect();
       if (!mountedRef.current) return;
       setConnStatus("connected");
+      appendConnectionLog(locale === "zh-CN" ? "连接成功" : "Connection established");
     } catch (error) {
       if (!mountedRef.current) return;
       const message = formatError(error);
       setConnStatus("error");
       setConnError(message);
+      appendConnectionLog(
+        locale === "zh-CN" ? `连接失败：${message}` : `Connection failed: ${message}`,
+      );
     }
   };
 
   const recoverSessionAfterUnlock = async () => {
     setConnStatus("connecting");
     setConnError(null);
+    appendConnectionLog(
+      locale === "zh-CN"
+        ? "检测到解锁，尝试恢复会话"
+        : "Session unlock detected, attempting recovery",
+    );
     try {
       if (isLocal) {
         await sshApi.localOpenShell(sessionId);
         if (!mountedRef.current) return;
         setConnStatus("connected");
+        appendConnectionLog(
+          locale === "zh-CN" ? "本地会话恢复成功" : "Local session recovered",
+        );
         return;
       }
 
@@ -1637,6 +1683,9 @@ export function XTerminal({
       if (connected) {
         if (!mountedRef.current) return;
         setConnStatus("connected");
+        appendConnectionLog(
+          locale === "zh-CN" ? "检测到现有会话仍可用" : "Existing session is still alive",
+        );
         return;
       }
 
@@ -1646,6 +1695,9 @@ export function XTerminal({
       const message = formatError(error);
       setConnStatus("error");
       setConnError(message);
+      appendConnectionLog(
+        locale === "zh-CN" ? `恢复失败：${message}` : `Recovery failed: ${message}`,
+      );
     }
   };
 
@@ -4431,6 +4483,15 @@ export function XTerminal({
         const info = await sshApi.checkEndpoint(host, port);
         if (disposed) return;
         setEndpointIp(info.ip);
+        const probe = `${info.ip}:${info.port}/${info.latency_ms}ms`;
+        if (connStatus === "connecting" && endpointProbeLogRef.current !== probe) {
+          endpointProbeLogRef.current = probe;
+          appendConnectionLog(
+            locale === "zh-CN"
+              ? `端点探测成功：${info.ip}:${info.port}（${info.latency_ms}ms）`
+              : `Endpoint probe ok: ${info.ip}:${info.port} (${info.latency_ms}ms)`,
+          );
+        }
         endpointLatencyRef.current = info.latency_ms;
         if (observedLatencyRef.current !== null) {
           observedLatencyRef.current = Math.round(observedLatencyRef.current * 0.85);
@@ -4460,11 +4521,21 @@ export function XTerminal({
       disposed = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [host, port, isLocal, t]);
+  }, [appendConnectionLog, connStatus, host, isLocal, locale, port, t]);
 
   useEffect(() => {
     setEndpointCopied(false);
   }, [endpointCopyText]);
+
+  useEffect(() => {
+    setConnectionLogOpen(false);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (connStatus !== "error") {
+      setConnectionLogOpen(false);
+    }
+  }, [connStatus]);
 
   useEffect(
     () => () => {
@@ -4546,6 +4617,17 @@ export function XTerminal({
             {statusText}
             {connStatus === "error" && connError ? `：${connError}` : ""}
           </span>
+          {connStatus === "error" && (
+            <button
+              className={`xterminal-topbar-btn ${connectionLogOpen ? "xterminal-topbar-btn--active" : ""}`}
+              type="button"
+              onClick={() => setConnectionLogOpen((prev) => !prev)}
+              title={locale === "zh-CN" ? "连接日志" : "Connection log"}
+              aria-label={locale === "zh-CN" ? "连接日志" : "Connection log"}
+            >
+              <AppIcon icon="material-symbols:article-outline-rounded" size={18} />
+            </button>
+          )}
         </div>
 
         <div className="xterminal-topbar-right">
@@ -4610,6 +4692,21 @@ export function XTerminal({
           )}
         </div>
       </div>
+
+      {connectionLogOpen && connectionLogs.length > 0 && (
+        <div className="xterminal-connect-log" role="status" aria-live="polite">
+          <div className="xterminal-connect-log-title">
+            {locale === "zh-CN" ? "连接日志" : "Connection Log"}
+          </div>
+          <div className="xterminal-connect-log-list">
+            {connectionLogs.slice(-8).map((line, index) => (
+              <div key={`${line}-${index}`} className="xterminal-connect-log-line">
+                {line}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="xterminal-body">
         {terminalIssue && (
