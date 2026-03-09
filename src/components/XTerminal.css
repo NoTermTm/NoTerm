@@ -1504,10 +1504,14 @@
 .xterminal-script-target .select-trigger {
     border: 1px solid var(--border-color);
     background: var(--bg-tertiary);
-    border-radius: 8px;
     padding: 4px 8px;
     font-size: 12px;
     color: var(--text-primary);
+    border-radius: 6px;
+    -webkit-border-radius: 6px;
+    -moz-border-radius: 6px;
+    -ms-border-radius: 6px;
+    -o-border-radius: 6px;
 }
 
 .xterminal-script-body {

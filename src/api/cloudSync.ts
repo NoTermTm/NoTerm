@@ -56,6 +56,23 @@ type SyncEnvelope = {
   payload: unknown;
 };
 
+type SyncLock = {
+  version: 1;
+  deviceId: string;
+  acquiredAt: string;
+  expiresAt: string;
+};
+
+type SnapshotEntry = {
+  key: string;
+  updatedAt: string;
+};
+
+type SnapshotIndex = {
+  version: 1;
+  entries: SnapshotEntry[];
+};
+
 type LocalSyncBackup = {
   version: 1;
   backupAt: string;
@@ -73,8 +90,15 @@ type StorageProvider = {
 
 const REMOTE_KEY = "noterm.sync.v1.json";
 const LEGACY_REMOTE_KEYS = ["noterm.sync.json", "noterm-sync.json"];
+const REMOTE_LOCK_KEY = "noterm.sync.lock.v1.json";
+const REMOTE_SNAPSHOT_INDEX_KEY = "noterm.sync.snapshots.v1.json";
+const REMOTE_SNAPSHOT_PREFIX = "noterm.sync.snapshot";
 const LOCAL_BACKUP_STORE = "cloud-sync-backup.json";
 const LOCAL_BACKUP_KEY = "latest";
+const LOCAL_SYNC_META_STORE = "cloud-sync-meta.json";
+const LOCAL_SYNC_DEVICE_ID_KEY = "deviceId";
+const REMOTE_LOCK_TTL_MS = 2 * 60_000;
+const MAX_REMOTE_SNAPSHOTS = 5;
 
 const SYNC_EXCLUDED_SETTINGS = new Set<keyof AppSettings>([
   "security.masterKeyHash",
@@ -375,6 +399,121 @@ const buildDownloadCandidates = (config: CloudSyncConfig) => {
   return candidates;
 };
 
+const getOrCreateSyncDeviceId = async () => {
+  const store = await load(LOCAL_SYNC_META_STORE);
+  const existing = await store.get<string>(LOCAL_SYNC_DEVICE_ID_KEY);
+  if (existing && existing.trim()) return existing.trim();
+  const next = crypto.randomUUID();
+  await store.set(LOCAL_SYNC_DEVICE_ID_KEY, next);
+  await store.save();
+  return next;
+};
+
+const readJsonOrNull = async <T>(provider: StorageProvider, key: string) => {
+  const text = await provider.readText(key);
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+};
+
+const acquireRemoteLock = async (
+  provider: StorageProvider,
+  deviceId: string,
+) => {
+  const now = Date.now();
+  const lock = await readJsonOrNull<SyncLock>(provider, REMOTE_LOCK_KEY);
+  if (lock) {
+    const expiresAtMs = Date.parse(lock.expiresAt);
+    const lockedByOther = lock.deviceId !== deviceId;
+    const notExpired = Number.isFinite(expiresAtMs) && expiresAtMs > now;
+    if (lockedByOther && notExpired) {
+      throw new Error("Remote sync is locked by another device. Try again later.");
+    }
+  }
+  const nextLock: SyncLock = {
+    version: 1,
+    deviceId,
+    acquiredAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + REMOTE_LOCK_TTL_MS).toISOString(),
+  };
+  await provider.writeText(REMOTE_LOCK_KEY, JSON.stringify(nextLock));
+};
+
+const releaseRemoteLock = async (
+  provider: StorageProvider,
+  deviceId: string,
+) => {
+  const lock = await readJsonOrNull<SyncLock>(provider, REMOTE_LOCK_KEY);
+  if (!lock || lock.deviceId !== deviceId) return;
+  await provider.deleteKey(REMOTE_LOCK_KEY);
+};
+
+const persistSnapshotWithRetention = async (
+  provider: StorageProvider,
+  envelope: SyncEnvelope,
+) => {
+  const stamp = envelope.updatedAt.replace(/[^\d]/g, "").slice(0, 14);
+  const suffix = Math.random().toString(16).slice(2, 8);
+  const snapshotKey = `${REMOTE_SNAPSHOT_PREFIX}.${stamp}.${suffix}.json`;
+  await provider.writeText(snapshotKey, JSON.stringify(envelope));
+
+  const index =
+    (await readJsonOrNull<SnapshotIndex>(provider, REMOTE_SNAPSHOT_INDEX_KEY)) ??
+    { version: 1, entries: [] };
+  const nextEntries = [
+    { key: snapshotKey, updatedAt: envelope.updatedAt },
+    ...index.entries.filter((item) => item.key !== snapshotKey),
+  ]
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, MAX_REMOTE_SNAPSHOTS);
+
+  await provider.writeText(
+    REMOTE_SNAPSHOT_INDEX_KEY,
+    JSON.stringify({ version: 1, entries: nextEntries }),
+  );
+
+  const keep = new Set(nextEntries.map((item) => item.key));
+  for (const old of index.entries) {
+    if (!keep.has(old.key)) {
+      await provider.deleteKey(old.key);
+    }
+  }
+};
+
+const decryptSyncEnvelope = async (input: {
+  envelope: { payload?: unknown; updatedAt?: string; encSalt?: unknown };
+  masterKey: string;
+  encSalt: string;
+}) => {
+  const encrypted = ensureDecryptablePayload(input.envelope.payload);
+  const decryptSalt =
+    typeof input.envelope.encSalt === "string" && input.envelope.encSalt.trim()
+      ? input.envelope.encSalt
+      : input.encSalt;
+  let decrypted = "";
+  try {
+    decrypted = await decryptString(encrypted, input.masterKey, decryptSalt);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      /operation-specific reason|OperationError|decrypt/i.test(message)
+    ) {
+      throw new Error(
+        "Unable to decrypt remote sync data. Ensure the Master Key matches the uploading device.",
+      );
+    }
+    throw error;
+  }
+  const payload = JSON.parse(decrypted) as SyncPayload;
+  if (payload.version !== 1) {
+    throw new Error("Unsupported sync payload version");
+  }
+  return payload;
+};
+
 const readAllSettingsForSync = async () => {
   const store = await getAppSettingsStore();
   const keys = Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>;
@@ -555,20 +694,27 @@ export const cloudSyncUpload = async (input: {
   encSalt: string;
 }) => {
   const provider = buildProvider(input.config);
-  const payload = await buildSyncPayload(input.encSalt);
-  const encrypted = await encryptString(
-    JSON.stringify(payload),
-    input.masterKey,
-    input.encSalt,
-  );
-  const envelope: SyncEnvelope = {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    encSalt: input.encSalt,
-    payload: encrypted,
-  };
-  await provider.writeText(REMOTE_KEY, JSON.stringify(envelope));
-  return envelope.updatedAt;
+  const deviceId = await getOrCreateSyncDeviceId();
+  await acquireRemoteLock(provider, deviceId);
+  try {
+    const payload = await buildSyncPayload(input.encSalt);
+    const encrypted = await encryptString(
+      JSON.stringify(payload),
+      input.masterKey,
+      input.encSalt,
+    );
+    const envelope: SyncEnvelope = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      encSalt: input.encSalt,
+      payload: encrypted,
+    };
+    await provider.writeText(REMOTE_KEY, JSON.stringify(envelope));
+    await persistSnapshotWithRetention(provider, envelope);
+    return envelope.updatedAt;
+  } finally {
+    await releaseRemoteLock(provider, deviceId).catch(() => {});
+  }
 };
 
 export const cloudSyncDownload = async (input: {
@@ -595,29 +741,11 @@ export const cloudSyncDownload = async (input: {
     updatedAt?: string;
     encSalt?: unknown;
   };
-  const encrypted = ensureDecryptablePayload(envelope.payload);
-  const decryptSalt =
-    typeof envelope.encSalt === "string" && envelope.encSalt.trim()
-      ? envelope.encSalt
-      : input.encSalt;
-  let decrypted = "";
-  try {
-    decrypted = await decryptString(encrypted, input.masterKey, decryptSalt);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (
-      /operation-specific reason|OperationError|decrypt/i.test(message)
-    ) {
-      throw new Error(
-        "Unable to decrypt remote sync data. Ensure the Master Key matches the uploading device.",
-      );
-    }
-    throw error;
-  }
-  const payload = JSON.parse(decrypted) as SyncPayload;
-  if (payload.version !== 1) {
-    throw new Error("Unsupported sync payload version");
-  }
+  const payload = await decryptSyncEnvelope({
+    envelope,
+    masterKey: input.masterKey,
+    encSalt: input.encSalt,
+  });
   const backupAt = await saveLocalBackupBeforeDownload(
     envelope.updatedAt ?? "",
     input.masterKey,
@@ -629,4 +757,53 @@ export const cloudSyncDownload = async (input: {
     updatedAt: envelope.updatedAt ?? "",
     payload,
   };
+};
+
+export const cloudSyncRollbackPreviousRemoteVersion = async (input: {
+  config: CloudSyncConfig;
+  masterKey: string;
+  encSalt: string;
+}) => {
+  const provider = buildProvider(input.config);
+  const deviceId = await getOrCreateSyncDeviceId();
+  await acquireRemoteLock(provider, deviceId);
+  try {
+    const index = await readJsonOrNull<SnapshotIndex>(provider, REMOTE_SNAPSHOT_INDEX_KEY);
+    const entries = index?.entries ?? [];
+    if (entries.length < 2) {
+      throw new Error("No previous remote snapshot available for rollback");
+    }
+    const target = entries[1];
+    const snapshotText = await provider.readText(target.key);
+    if (!snapshotText) {
+      throw new Error("Rollback snapshot is missing");
+    }
+    const snapshotEnvelope = JSON.parse(snapshotText) as SyncEnvelope;
+    const backupAt = await saveLocalBackupBeforeDownload(
+      target.updatedAt,
+      input.masterKey,
+      input.encSalt,
+    );
+
+    const rollbackEnvelope: SyncEnvelope = {
+      ...snapshotEnvelope,
+      updatedAt: new Date().toISOString(),
+    };
+    await provider.writeText(REMOTE_KEY, JSON.stringify(rollbackEnvelope));
+    await persistSnapshotWithRetention(provider, rollbackEnvelope);
+
+    const payload = await decryptSyncEnvelope({
+      envelope: rollbackEnvelope,
+      masterKey: input.masterKey,
+      encSalt: input.encSalt,
+    });
+    await applySyncPayload(payload);
+    return {
+      backupAt,
+      rolledBackFrom: target.updatedAt,
+      updatedAt: rollbackEnvelope.updatedAt,
+    };
+  } finally {
+    await releaseRemoteLock(provider, deviceId).catch(() => {});
+  }
 };

@@ -99,22 +99,21 @@ export function Select({
         Math.max(viewportMargin, rect.left),
       );
       const spaceBelow = window.innerHeight - rect.bottom - viewportMargin;
-      const spaceAbove = rect.top - viewportMargin;
-      const openUpward = spaceBelow < 180 && spaceAbove > spaceBelow;
-      const available = openUpward ? spaceAbove : spaceBelow;
-      const height = Math.max(120, Math.min(maxMenuHeight, available - gap));
-      const top = openUpward
-        ? rect.top - gap - height
-        : rect.bottom + gap;
-
-      setMenuStyle({
+      const maxHeight = Math.max(120, Math.min(maxMenuHeight, spaceBelow - gap));
+      const top = Math.min(
+        Math.max(viewportMargin, rect.bottom + gap),
+        Math.max(viewportMargin, window.innerHeight - viewportMargin - maxHeight),
+      );
+      const nextStyle: CSSProperties = {
         position: "fixed",
-        top: Math.max(viewportMargin, Math.round(top)),
+        top: Math.round(top),
         left: Math.round(left),
         width: Math.round(width),
         minWidth: Math.round(width),
-        maxHeight: Math.round(height),
-      });
+        maxHeight: Math.round(maxHeight),
+      };
+
+      setMenuStyle(nextStyle);
     };
 
     updateMenuPosition();

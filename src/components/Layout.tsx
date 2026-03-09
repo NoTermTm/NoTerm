@@ -591,6 +591,14 @@ export function Layout() {
       }, ms);
     };
 
+    const nextDelayWithJitter = (intervalMs: number) => {
+      const base = Math.max(60_000, intervalMs);
+      const jitter = Math.min(180_000, Math.floor(base * 0.1));
+      if (jitter <= 0) return base;
+      const delta = Math.floor(Math.random() * (jitter * 2 + 1)) - jitter;
+      return Math.max(10_000, base + delta);
+    };
+
     const tick = async () => {
       if (disposed || running || isLocked) return;
       running = true;
@@ -598,8 +606,9 @@ export function Layout() {
         const masterKey = getMasterKeySession();
         const sync = await readSyncConfig();
         const intervalMs = sync.intervalMinutes * 60_000;
+        const nextDelayMs = nextDelayWithJitter(intervalMs);
         if (!sync.autoBackupEnabled || !masterKey || !sync.encSalt) {
-          schedule(intervalMs);
+          schedule(nextDelayMs);
           return;
         }
 
@@ -619,7 +628,7 @@ export function Layout() {
             },
           }),
         );
-        schedule(intervalMs);
+        schedule(nextDelayMs);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         window.dispatchEvent(

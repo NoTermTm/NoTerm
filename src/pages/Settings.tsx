@@ -14,6 +14,7 @@ import { TERMINAL_THEME_OPTIONS, getXtermTheme } from "../terminal/xtermThemes";
 import { sendAiChat, type AiMessage, type AiProvider } from "../api/ai";
 import {
   cloudSyncDownload,
+  cloudSyncRollbackPreviousRemoteVersion,
   cloudSyncRestoreLatestLocalBackup,
   cloudSyncTestConnection,
   cloudSyncUpload,
@@ -175,9 +176,10 @@ export function SettingsPage() {
   >("idle");
   const [cloudSyncMessage, setCloudSyncMessage] = useState<string>("");
   const [cloudSyncAction, setCloudSyncAction] = useState<
-    "test" | "upload" | "download" | "restore" | null
+    "test" | "upload" | "download" | "restore" | "rollback" | null
   >(null);
   const [cloudSyncModalOpen, setCloudSyncModalOpen] = useState(false);
+  const [showS3SecretAccessKey, setShowS3SecretAccessKey] = useState(false);
   const [appVersion, setAppVersion] = useState<string>("--");
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "up-to-date" | "downloading" | "installed" | "error"
@@ -301,9 +303,6 @@ export function SettingsPage() {
         "terminal.autoCopy":
           (await store.get<boolean>("terminal.autoCopy")) ??
           DEFAULT_APP_SETTINGS["terminal.autoCopy"],
-        "terminal.inputAnimation":
-          (await store.get<boolean>("terminal.inputAnimation")) ??
-          DEFAULT_APP_SETTINGS["terminal.inputAnimation"],
         "terminal.reconnectWriteFailures":
           (await store.get<number>("terminal.reconnectWriteFailures")) ??
           DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"],
@@ -734,6 +733,32 @@ export function SettingsPage() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setCloudSyncResult("error", message || t("settings.sync.status.restoreFailed"));
+    } finally {
+      setCloudSyncAction(null);
+    }
+  };
+
+  const handleCloudSyncRollback = async () => {
+    setCloudSyncAction("rollback");
+    setCloudSyncStatus("working");
+    setCloudSyncMessage(t("settings.sync.status.rollbacking"));
+    try {
+      const { masterKey, encSalt } = getUnlockedMasterKey();
+      const result = await cloudSyncRollbackPreviousRemoteVersion({
+        config: buildCloudSyncConfig(),
+        masterKey,
+        encSalt,
+      });
+      updateSetting("sync.lastSyncedAt", result.updatedAt || new Date().toISOString());
+      await applyLatestSettingsSnapshot();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("master-key-updated"));
+        window.dispatchEvent(new CustomEvent("auth-profiles-updated"));
+      }
+      setCloudSyncResult("success", t("settings.sync.status.rollbackDone"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCloudSyncResult("error", message || t("settings.sync.status.rollbackFailed"));
     } finally {
       setCloudSyncAction(null);
     }
@@ -1884,24 +1909,6 @@ export function SettingsPage() {
                   </div>
                   <div className="settings-row settings-row--two">
                     <div className="settings-field">
-                      <label className="settings-field-label">{t("settings.terminal.inputAnimation")}</label>
-                      <div
-                        className={`toggle-switch ${settings["terminal.inputAnimation"] ? "active" : ""}`}
-                        onClick={() =>
-                          updateSetting("terminal.inputAnimation", !settings["terminal.inputAnimation"])
-                        }
-                      >
-                        <div className="toggle-switch-handle" />
-                      </div>
-                    </div>
-                    <div className="settings-field">
-                      <div className="settings-field-description">
-                        {t("settings.terminal.inputAnimation.desc")}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="settings-row settings-row--two">
-                    <div className="settings-field">
                       <label className="settings-field-label">
                         {t("settings.terminal.reconnectWriteFailures")}
                       </label>
@@ -2781,14 +2788,40 @@ export function SettingsPage() {
                   <label className="settings-field-label">
                     {t("settings.sync.s3.secretAccessKey")}
                   </label>
-                  <input
-                    className="settings-input"
-                    type="password"
-                    value={settings["sync.s3.secretAccessKey"]}
-                    onChange={(event) =>
-                      updateSetting("sync.s3.secretAccessKey", event.target.value)
-                    }
-                  />
+                  <div className="settings-input-with-action">
+                    <input
+                      className="settings-input"
+                      type={showS3SecretAccessKey ? "text" : "password"}
+                      value={settings["sync.s3.secretAccessKey"]}
+                      onChange={(event) =>
+                        updateSetting("sync.s3.secretAccessKey", event.target.value)
+                      }
+                    />
+                    <button
+                      className="settings-input-action-btn"
+                      type="button"
+                      onClick={() => setShowS3SecretAccessKey((prev) => !prev)}
+                      title={
+                        showS3SecretAccessKey
+                          ? t("connections.password.hide")
+                          : t("connections.password.show")
+                      }
+                      aria-label={
+                        showS3SecretAccessKey
+                          ? t("connections.password.hide")
+                          : t("connections.password.show")
+                      }
+                    >
+                      <AppIcon
+                        icon={
+                          showS3SecretAccessKey
+                            ? "material-symbols:visibility-off-rounded"
+                            : "material-symbols:visibility-rounded"
+                        }
+                        size={16}
+                      />
+                    </button>
+                  </div>
                 </div>
                 <label className="settings-inline-actions">
                   <input
@@ -2845,6 +2878,16 @@ export function SettingsPage() {
                 {cloudSyncAction === "restore"
                   ? t("settings.sync.restoring")
                   : t("settings.sync.action.restore")}
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => void handleCloudSyncRollback()}
+                disabled={cloudSyncAction !== null}
+              >
+                {cloudSyncAction === "rollback"
+                  ? t("settings.sync.rollbacking")
+                  : t("settings.sync.action.rollback")}
               </button>
             </div>
             {cloudSyncMessage && (

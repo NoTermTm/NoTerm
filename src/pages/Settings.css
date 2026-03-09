@@ -528,6 +528,38 @@
     border-color: var(--accent);
 }
 
+.settings-input-with-action {
+    position: relative;
+    width: 100%;
+    display: block;
+}
+
+.settings-input-action-btn {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.settings-input-action-btn:hover {
+    color: var(--text-primary);
+}
+
+.settings-input-with-action .settings-input {
+    width: 100%;
+    padding-right: 44px;
+}
+
 .settings-model-current {
     width: 100%;
     display: flex;

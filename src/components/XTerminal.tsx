@@ -361,8 +361,6 @@ export function XTerminal({
   const writingRef = useRef(false);
   const typingBufferRef = useRef("");
   const typingFlushTimerRef = useRef<number | null>(null);
-  const animatedTypingQueueRef = useRef<string[]>([]);
-  const animatedTypingTimerRef = useRef<number | null>(null);
   const reconnectPromiseRef = useRef<Promise<boolean> | null>(null);
   const reconnectingRef = useRef(false);
   const writeBlockedRef = useRef(false);
@@ -376,7 +374,6 @@ export function XTerminal({
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptPanelOpen, setScriptPanelOpen] = useState(false);
   const [transferPanelOpen, setTransferPanelOpen] = useState(false);
-  const inputAnimationRef = useRef<boolean>(DEFAULT_APP_SETTINGS["terminal.inputAnimation"]);
   const [transferTasks, setTransferTasks] = useState<TransferTask[]>([]);
   const transferRateRef = useRef<
     Record<string, { transferred: number; ts: number; speedBps: number }>
@@ -1113,21 +1110,6 @@ export function XTerminal({
       if (!chunk) return;
       enqueueTerminalWrite(chunk);
     }, 12);
-  };
-
-  const enqueueAnimatedTypingWrite = (data: string) => {
-    animatedTypingQueueRef.current.push(...Array.from(data));
-    if (animatedTypingTimerRef.current !== null) return;
-    const pump = () => {
-      const next = animatedTypingQueueRef.current.shift();
-      if (next === undefined) {
-        animatedTypingTimerRef.current = null;
-        return;
-      }
-      enqueueTerminalWrite(next);
-      animatedTypingTimerRef.current = window.setTimeout(pump, 14);
-    };
-    pump();
   };
 
   const resizePty = (cols: number, rows: number) => {
@@ -3788,7 +3770,6 @@ export function XTerminal({
     let unlistenCursorBlink: (() => void) | null = null;
     let unlistenLineHeight: (() => void) | null = null;
     let unlistenAutoCopy: (() => void) | null = null;
-    let unlistenInputAnimation: (() => void) | null = null;
     let unlistenReconnectWriteFailures: (() => void) | null = null;
     let unlistenBackgroundImage: (() => void) | null = null;
     let unlistenBackgroundFit: (() => void) | null = null;
@@ -3833,9 +3814,6 @@ export function XTerminal({
       const autoCopy =
         (await store.get<boolean>("terminal.autoCopy")) ??
         DEFAULT_APP_SETTINGS["terminal.autoCopy"];
-      const inputAnimation =
-        (await store.get<boolean>("terminal.inputAnimation")) ??
-        DEFAULT_APP_SETTINGS["terminal.inputAnimation"];
       const reconnectWriteFailures =
         (await store.get<number>("terminal.reconnectWriteFailures")) ??
         DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"];
@@ -3883,7 +3861,6 @@ export function XTerminal({
       setXtermBaseBg(baseBg);
       setXtermBg(themeBg);
       autoCopyRef.current = autoCopy;
-      inputAnimationRef.current = inputAnimation;
       reconnectWriteFailuresRef.current = Math.max(
         1,
         Math.min(10, reconnectWriteFailures),
@@ -4202,15 +4179,6 @@ export function XTerminal({
       disposable = term.onData((data) => {
         lastInputAtRef.current = Date.now();
         consumeTerminalInput(data);
-        if (
-          inputAnimationRef.current &&
-          data.length === 1 &&
-          data >= " " &&
-          data !== "\u007f"
-        ) {
-          enqueueAnimatedTypingWrite(data);
-          return;
-        }
         enqueueTypingWrite(data);
       });
 
@@ -4310,14 +4278,6 @@ export function XTerminal({
           if (!autoCopyRef.current) {
             lastSelectionRef.current = "";
           }
-        },
-      );
-      unlistenInputAnimation = await store.onKeyChange<boolean>(
-        "terminal.inputAnimation",
-        (v) => {
-          if (disposed) return;
-          const next = v ?? DEFAULT_APP_SETTINGS["terminal.inputAnimation"];
-          inputAnimationRef.current = next;
         },
       );
       unlistenReconnectWriteFailures = await store.onKeyChange<number>(
@@ -4429,7 +4389,6 @@ export function XTerminal({
       unlistenCursorBlink?.();
       unlistenLineHeight?.();
       unlistenAutoCopy?.();
-      unlistenInputAnimation?.();
       unlistenReconnectWriteFailures?.();
       unlistenBackgroundImage?.();
       unlistenBackgroundFit?.();
@@ -4457,12 +4416,7 @@ export function XTerminal({
         window.clearTimeout(typingFlushTimerRef.current);
         typingFlushTimerRef.current = null;
       }
-      if (animatedTypingTimerRef.current !== null) {
-        window.clearTimeout(animatedTypingTimerRef.current);
-        animatedTypingTimerRef.current = null;
-      }
       typingBufferRef.current = "";
-      animatedTypingQueueRef.current = [];
     };
   }, [sessionId]);
 

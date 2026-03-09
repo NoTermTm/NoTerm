@@ -184,11 +184,6 @@ const MESSAGES: Messages = {
     "zh-CN": "选中文本后自动复制到剪贴板",
     "en-US": "Copy selected text to clipboard automatically",
   },
-  "settings.terminal.inputAnimation": { "zh-CN": "输入动效", "en-US": "Input animation" },
-  "settings.terminal.inputAnimation.desc": {
-    "zh-CN": "输入时显示轻微高亮动画",
-    "en-US": "Show subtle highlight animation while typing",
-  },
   "settings.terminal.reconnectWriteFailures": {
     "zh-CN": "写入失败重连阈值",
     "en-US": "Reconnect failure threshold",
@@ -321,6 +316,7 @@ const MESSAGES: Messages = {
   "settings.sync.action.upload": { "zh-CN": "上传到云端", "en-US": "Upload" },
   "settings.sync.action.download": { "zh-CN": "从云端下载", "en-US": "Download" },
   "settings.sync.action.restore": { "zh-CN": "恢复本地备份", "en-US": "Restore local backup" },
+  "settings.sync.action.rollback": { "zh-CN": "回滚上一云端版本", "en-US": "Rollback previous remote version" },
   "settings.sync.autoBackup": { "zh-CN": "自动备份", "en-US": "Auto backup" },
   "settings.sync.autoBackup.enabled": { "zh-CN": "已启用", "en-US": "Enabled" },
   "settings.sync.autoBackup.disabled": { "zh-CN": "已关闭", "en-US": "Disabled" },
@@ -345,6 +341,7 @@ const MESSAGES: Messages = {
   "settings.sync.uploading": { "zh-CN": "上传中...", "en-US": "Uploading..." },
   "settings.sync.downloading": { "zh-CN": "下载中...", "en-US": "Downloading..." },
   "settings.sync.restoring": { "zh-CN": "恢复中...", "en-US": "Restoring..." },
+  "settings.sync.rollbacking": { "zh-CN": "回滚中...", "en-US": "Rolling back..." },
   "settings.sync.toast.title": { "zh-CN": "云同步", "en-US": "Cloud Sync" },
   "settings.sync.toast.errorTitle": { "zh-CN": "云同步错误", "en-US": "Cloud Sync Error" },
   "settings.sync.status.testing": { "zh-CN": "正在测试连接...", "en-US": "Testing connection..." },
@@ -366,6 +363,9 @@ const MESSAGES: Messages = {
     "en-US": "Local backup restored (backup time: {time}).",
   },
   "settings.sync.status.restoreFailed": { "zh-CN": "恢复本地备份失败。", "en-US": "Failed to restore local backup." },
+  "settings.sync.status.rollbacking": { "zh-CN": "正在回滚上一云端版本...", "en-US": "Rolling back to previous remote version..." },
+  "settings.sync.status.rollbackDone": { "zh-CN": "回滚完成。", "en-US": "Rollback completed." },
+  "settings.sync.status.rollbackFailed": { "zh-CN": "回滚失败。", "en-US": "Rollback failed." },
   "settings.sync.error.masterKeyRequired": {
     "zh-CN": "请先解锁 Master Key 后再执行云同步。",
     "en-US": "Unlock Master Key before running cloud sync.",
