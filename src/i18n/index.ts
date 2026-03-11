@@ -91,6 +91,14 @@ const MESSAGES: Messages = {
     "zh-CN": "保持连接的心跳包发送间隔",
     "en-US": "Interval for sending keep-alive packets",
   },
+  "settings.connection.reconnectWriteFailures": {
+    "zh-CN": "写入失败重连阈值",
+    "en-US": "Reconnect failure threshold",
+  },
+  "settings.connection.reconnectWriteFailures.desc": {
+    "zh-CN": "连续写入失败达到该次数后触发自动重连",
+    "en-US": "Auto reconnect after this many consecutive write failures",
+  },
 
   "settings.section.security": { "zh-CN": "安全设置", "en-US": "Security" },
   "settings.security.masterKey": { "zh-CN": "Master Key", "en-US": "Master Key" },

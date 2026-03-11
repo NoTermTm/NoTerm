@@ -1670,6 +1670,42 @@ export function SettingsPage() {
             />
           </div>
         </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-label">
+              {t("settings.connection.reconnectWriteFailures")}
+            </div>
+            <div className="settings-item-description">
+              {t("settings.connection.reconnectWriteFailures.desc")}
+            </div>
+          </div>
+          <div className="settings-item-control">
+            <Select
+              className="settings-select"
+              value={String(settings["terminal.reconnectWriteFailures"])}
+              onChange={(nextValue) =>
+                updateSetting(
+                  "terminal.reconnectWriteFailures",
+                  Math.max(
+                    1,
+                    Math.min(
+                      10,
+                      parseInt(nextValue, 10) ||
+                        DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"],
+                    ),
+                  ),
+                )
+              }
+              options={[
+                { value: "1", label: "1" },
+                { value: "2", label: "2" },
+                { value: "3", label: "3" },
+                { value: "4", label: "4" },
+                { value: "5", label: "5" },
+              ]}
+            />
+          </div>
+        </div>
       </div>
 
       <div className="settings-section">
@@ -1904,42 +1940,6 @@ export function SettingsPage() {
                     <div className="settings-field">
                       <div className="settings-field-description">
                         {t("settings.terminal.autoCopy.desc")}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="settings-row settings-row--two">
-                    <div className="settings-field">
-                      <label className="settings-field-label">
-                        {t("settings.terminal.reconnectWriteFailures")}
-                      </label>
-                      <Select
-                        className="settings-select"
-                        value={String(settings["terminal.reconnectWriteFailures"])}
-                        onChange={(nextValue) =>
-                          updateSetting(
-                            "terminal.reconnectWriteFailures",
-                            Math.max(
-                              1,
-                              Math.min(
-                                10,
-                                parseInt(nextValue, 10) ||
-                                  DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"],
-                              ),
-                            ),
-                          )
-                        }
-                        options={[
-                          { value: "1", label: "1" },
-                          { value: "2", label: "2" },
-                          { value: "3", label: "3" },
-                          { value: "4", label: "4" },
-                          { value: "5", label: "5" },
-                        ]}
-                      />
-                    </div>
-                    <div className="settings-field">
-                      <div className="settings-field-description">
-                        {t("settings.terminal.reconnectWriteFailures.desc")}
                       </div>
                     </div>
                   </div>
