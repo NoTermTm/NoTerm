@@ -655,6 +655,10 @@ const MESSAGES: Messages = {
   "security.cryptoUnavailable": { "zh-CN": "当前环境不支持加密能力", "en-US": "Cryptography is not supported in this environment" },
 
   "terminal.session.disconnected": { "zh-CN": "会话已断开", "en-US": "Session disconnected" },
+  "terminal.session.recreated": {
+    "zh-CN": "SSH 会话已重建，未发送完成的输入已丢弃",
+    "en-US": "SSH session recreated. Unsent input was discarded",
+  },
   "terminal.write.timeout": { "zh-CN": "写入超时", "en-US": "Write timeout" },
   "terminal.write.fail": { "zh-CN": "写入失败", "en-US": "Write failed" },
   "terminal.write.issue": { "zh-CN": "{detail}，请检查连接状态", "en-US": "{detail}. Please check the connection status" },

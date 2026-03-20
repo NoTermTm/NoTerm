@@ -252,6 +252,14 @@ const stripAgentInternalOutput = (value: string) => {
   return next;
 };
 
+const RECONNECT_PROMPT_PATTERN = /(?:^|\n)([^\n]*[@:][^\n]*[#$] )/;
+
+const stripReconnectBanner = (value: string) => {
+  const promptMatch = value.match(RECONNECT_PROMPT_PATTERN);
+  if (!promptMatch || promptMatch.index === undefined) return null;
+  return value.slice(promptMatch.index + (promptMatch[0].startsWith("\n") ? 1 : 0));
+};
+
 const normalizeAgentActionStatus = (
   statuses: AgentActionStatus[],
 ): AgentPlanRuntime["status"] => {
@@ -365,6 +373,8 @@ export function XTerminal({
   const reconnectingRef = useRef(false);
   const writeBlockedRef = useRef(false);
   const writeFailureCountRef = useRef(0);
+  const suppressReconnectBannerRef = useRef(false);
+  const reconnectBannerBufferRef = useRef("");
   const reconnectWriteFailuresRef = useRef<number>(
     DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"],
   );
@@ -953,6 +963,8 @@ export function XTerminal({
     writeFailureCountRef.current = 0;
     writeBlockedRef.current = true;
     reconnectingRef.current = true;
+    suppressReconnectBannerRef.current = true;
+    reconnectBannerBufferRef.current = "";
     setConnStatus("connecting");
     setConnError(null);
     reconnectPromiseRef.current = (async () => {
@@ -993,8 +1005,15 @@ export function XTerminal({
     reconnectPromiseRef.current
       .then((ok) => {
         if (ok) {
+          inputCommandBufferRef.current = "";
+          typingBufferRef.current = "";
+          setTerminalQuickDraftState("");
+          trackedCommandRef.current = null;
+          terminalInstance.current?.write(`\r\n\x1b[33m[${t("terminal.session.recreated")}]\x1b[0m\r\n`);
           void flushWriteQueue();
         } else {
+          suppressReconnectBannerRef.current = false;
+          reconnectBannerBufferRef.current = "";
           setConnStatus("error");
           setConnError(t("terminal.session.disconnected"));
         }
@@ -1054,7 +1073,7 @@ export function XTerminal({
         writeFailureCountRef.current += 1;
         observedLatencyRef.current = Math.max(observedLatencyRef.current ?? 0, 1200);
         updateDisplayLatency();
-        if (!terminalIssueRef.current && isLocal) {
+        if (!terminalIssueRef.current) {
           setTerminalIssue({
             message: t("terminal.write.issue", { detail }),
             timestamp: Date.now(),
@@ -1064,7 +1083,16 @@ export function XTerminal({
           !isLocal &&
           writeFailureCountRef.current >= reconnectWriteFailuresRef.current
         ) {
-          startReconnectFlow();
+          const stillConnected = await sshApi.isConnected(sessionId).catch(() => false);
+          pushTerminalLog(
+            stillConnected
+              ? "warn"
+              : "error",
+            `write failures reached threshold connected=${stillConnected}`,
+          );
+          if (!stillConnected) {
+            startReconnectFlow();
+          }
         }
         return false;
       } finally {
@@ -1631,6 +1659,7 @@ export function XTerminal({
       if (!mountedRef.current) return;
       setConnStatus("connected");
       appendConnectionLog(locale === "zh-CN" ? "连接成功" : "Connection established");
+      void syncTerminalGeometry();
     } catch (error) {
       if (!mountedRef.current) return;
       const message = formatError(error);
@@ -1658,6 +1687,7 @@ export function XTerminal({
         appendConnectionLog(
           locale === "zh-CN" ? "本地会话恢复成功" : "Local session recovered",
         );
+        void syncTerminalGeometry();
         return;
       }
 
@@ -1668,6 +1698,7 @@ export function XTerminal({
         appendConnectionLog(
           locale === "zh-CN" ? "检测到现有会话仍可用" : "Existing session is still alive",
         );
+        void syncTerminalGeometry();
         return;
       }
 
@@ -3681,11 +3712,25 @@ export function XTerminal({
     setTermMenu(null);
   };
 
+  const syncTerminalGeometry = async () => {
+    const term = terminalInstance.current;
+    const fit = fitAddon.current;
+    if (!term || !fit || !paneRef.current) return;
+    if (paneRef.current.offsetParent === null) return;
+    fit.fit();
+    try {
+      await resizePty(term.cols, term.rows);
+    } catch {
+      // Paste can proceed even if PTY resize fails; this is a best-effort sync.
+    }
+  };
+
   const handleTermPaste = async () => {
     const term = terminalInstance.current;
     if (!term) return;
     const text = await clipboardRead();
     if (!text) return;
+    await syncTerminalGeometry();
     term.paste(text);
     setTermMenu(null);
   };
@@ -3891,6 +3936,12 @@ export function XTerminal({
       terminalInstance.current = term;
       fitAddon.current = fit;
 
+      const syncGeometryOnNativePaste = () => {
+        void syncTerminalGeometry();
+      };
+      term.textarea?.addEventListener("paste", syncGeometryOnNativePaste, true);
+      term.element?.addEventListener("paste", syncGeometryOnNativePaste, true);
+
       const adjustTerminalFontSize = (delta: number) => {
         if (!term) return;
         const current =
@@ -4003,7 +4054,10 @@ export function XTerminal({
           void clipboardRead().then((text) => {
             if (!term || disposed) return;
             if (!text) return;
-            term.paste(text);
+            void syncTerminalGeometry().then(() => {
+              if (!term || disposed) return;
+              term.paste(text);
+            });
           });
           return false;
         }
@@ -4038,7 +4092,12 @@ export function XTerminal({
         };
 
         el.addEventListener("contextmenu", onContextMenu);
-        removeContextMenu = () => el.removeEventListener("contextmenu", onContextMenu);
+        removeContextMenu = () => {
+          const activeTerm = term;
+          el.removeEventListener("contextmenu", onContextMenu);
+          activeTerm?.textarea?.removeEventListener("paste", syncGeometryOnNativePaste, true);
+          activeTerm?.element?.removeEventListener("paste", syncGeometryOnNativePaste, true);
+        };
       }
 
       void connectNow();
@@ -4049,8 +4108,23 @@ export function XTerminal({
         (event) => {
           if (!term) return;
           if (event.payload.session_id === sessionId) {
-            consumeAgentTerminalOutput(event.payload.data);
-            const displayChunk = stripAgentInternalOutput(event.payload.data);
+            let nextChunk = event.payload.data;
+            if (suppressReconnectBannerRef.current) {
+              reconnectBannerBufferRef.current += nextChunk;
+              const stripped = stripReconnectBanner(reconnectBannerBufferRef.current);
+              if (stripped === null) {
+                if (reconnectBannerBufferRef.current.length < 4096 && reconnectingRef.current) {
+                  return;
+                }
+                nextChunk = reconnectBannerBufferRef.current;
+              } else {
+                nextChunk = stripped;
+              }
+              suppressReconnectBannerRef.current = false;
+              reconnectBannerBufferRef.current = "";
+            }
+            consumeAgentTerminalOutput(nextChunk);
+            const displayChunk = stripAgentInternalOutput(nextChunk);
             if (displayChunk) {
               term.write(displayChunk);
               consumeSmartOutput(displayChunk);

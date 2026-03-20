@@ -400,9 +400,14 @@ impl SshManager {
         let session_id_clone = session_id.to_string();
         let channel_clone = channel_arc.clone();
         let app_handle = app_handle.clone();
+        let sessions_map = self.sessions.clone();
+        let channels_map = self.channels.clone();
+        let sftp_sessions_map = self.sftp_sessions.clone();
+        let connections_map = self.connections.clone();
         std::thread::spawn(move || {
             let mut buffer = [0u8; 8192];
             let mut disconnected_reason: Option<String> = None;
+            let mut zero_read_streak: u8 = 0;
             loop {
                 let mut channel_lock = match channel_clone.lock() {
                     Ok(ch) => ch,
@@ -411,6 +416,7 @@ impl SshManager {
                 
                 match channel_lock.read(&mut buffer) {
                     Ok(n) if n > 0 => {
+                        zero_read_streak = 0;
                         let output = String::from_utf8_lossy(&buffer[..n]).to_string();
                         let _ = app_handle.emit("terminal-output", TerminalOutput {
                             session_id: session_id_clone.clone(),
@@ -418,10 +424,20 @@ impl SshManager {
                         });
                     }
                     Ok(_) => {
-                        disconnected_reason = Some("eof".to_string());
-                        break;
+                        // In non-blocking mode, occasional zero-byte reads can happen transiently.
+                        // Only treat it as a disconnect when EOF is confirmed or it repeats.
+                        if channel_lock.eof() {
+                            disconnected_reason = Some("eof".to_string());
+                            break;
+                        }
+                        zero_read_streak = zero_read_streak.saturating_add(1);
+                        if zero_read_streak >= 3 {
+                            disconnected_reason = Some("eof-like-zero-read".to_string());
+                            break;
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        zero_read_streak = 0;
                         // No data available in non-blocking mode, continue
                     }
                     Err(e) => {
@@ -433,6 +449,18 @@ impl SshManager {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             if let Some(reason) = disconnected_reason {
+                if let Ok(mut channels) = channels_map.lock() {
+                    channels.remove(&session_id_clone);
+                }
+                if let Ok(mut sftp_sessions) = sftp_sessions_map.lock() {
+                    sftp_sessions.remove(&session_id_clone);
+                }
+                if let Ok(mut sessions) = sessions_map.lock() {
+                    sessions.remove(&session_id_clone);
+                }
+                if let Ok(mut connections) = connections_map.lock() {
+                    connections.remove(&session_id_clone);
+                }
                 let _ = app_handle.emit("terminal-disconnected", TerminalDisconnected {
                     session_id: session_id_clone.clone(),
                     reason,
@@ -455,7 +483,7 @@ impl SshManager {
         // Treat WouldBlock/EAGAIN as transient and retry briefly, instead of
         // failing fast and triggering unnecessary frontend reconnects.
         let mut remaining = data.as_bytes();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(8);
 
         while !remaining.is_empty() {
             match ch.write(remaining) {
