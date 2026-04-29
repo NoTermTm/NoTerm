@@ -952,6 +952,13 @@ export function Layout() {
   };
 
   const handleTabClose = (id: string) => {
+    const closeEvent = new CustomEvent("app-tab-close-request", {
+      detail: { id },
+      cancelable: true,
+    });
+    window.dispatchEvent(closeEvent);
+    if (closeEvent.defaultPrevented) return;
+
     // 关闭标签
     setTabs((prev) => prev.filter((tab) => tab.id !== id));
     

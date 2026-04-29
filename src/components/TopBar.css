@@ -28,7 +28,7 @@
     padding: 6px 12px;
     background-color: transparent;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
     transition: all 0.15s ease;
     min-width: 140px;
@@ -53,8 +53,9 @@
 }
 
 .tab-title {
-    font-size: 12px;
-    font-weight: 500;
+    font-size: var(--type-meta);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
     color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
@@ -66,7 +67,8 @@
 }
 
 .tab-subtitle {
-    font-size: 10px;
+    font-size: var(--type-caption);
+    line-height: var(--leading-tight);
     color: var(--text-tertiary);
     white-space: nowrap;
     overflow: hidden;
@@ -81,15 +83,11 @@
     justify-content: center;
     background: none;
     border: none;
-    border-radius: 3px;
+    border-radius: 4px;
     color: var(--text-tertiary);
     cursor: pointer;
     flex-shrink: 0;
     transition: all 0.15s ease;
-    -webkit-transition: all 0.15s ease;
-    -moz-transition: all 0.15s ease;
-    -ms-transition: all 0.15s ease;
-    -o-transition: all 0.15s ease;
 }
 
 .tab-close:hover {

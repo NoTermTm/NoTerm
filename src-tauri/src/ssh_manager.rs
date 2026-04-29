@@ -948,6 +948,7 @@ impl SshManager {
         session_id: &str,
         local_path: &str,
         remote_path: &str,
+        use_temp_file: bool,
         mut on_progress: F,
     ) -> anyhow::Result<()>
     where
@@ -967,42 +968,107 @@ impl SshManager {
             .metadata()
             .map(|meta| meta.len())
             .unwrap_or(0);
-        // Upload to a temporary file first, then atomically rename to final name.
-        // This prevents users from opening an incomplete file by the final name.
-        let temp_remote_path = format!("{}.part", remote_path);
-        let temp_remote_path_ref = Path::new(&temp_remote_path);
+        let (mut remote_file, using_temp_file, mut transferred, write_target_label): (ssh2::File, bool, u64, String) =
+            if use_temp_file {
+                // Prefer upload-to-temp + rename so readers never observe partial writes.
+                // Some servers allow overwriting an existing file but deny creating sibling files.
+                // In that case, fall back to writing the target file directly.
+                let temp_remote_path = format!("{}.part", remote_path);
+                let temp_remote_path_ref = Path::new(&temp_remote_path);
 
-        let remote_existing = sftp
-            .stat(temp_remote_path_ref)
-            .ok()
-            .and_then(|stat| stat.size)
-            .unwrap_or(0);
-        let can_resume = remote_existing > 0 && remote_existing < total;
+                let temp_existing = sftp
+                    .stat(temp_remote_path_ref)
+                    .ok()
+                    .and_then(|stat| stat.size)
+                    .unwrap_or(0);
+                let can_resume_temp = temp_existing > 0 && temp_existing < total;
 
-        let mut remote_file = if can_resume {
-            local_file
-                .seek(SeekFrom::Start(remote_existing))
-                .map_err(|e| anyhow::anyhow!("Failed to seek local file '{}': {}", local_path, e))?;
-            sftp.open_mode(
-                temp_remote_path_ref,
-                OpenFlags::WRITE | OpenFlags::APPEND,
-                0o644,
-                OpenType::File,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", temp_remote_path, e))?
-        } else {
-            // Fallback to full overwrite when remote file does not exist,
-            // is empty, or is larger than local file.
-            sftp.open_mode(
-                temp_remote_path_ref,
-                OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-                0o644,
-                OpenType::File,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to create remote file '{}': {}", temp_remote_path, e))?
-        };
-
-        let mut transferred: u64 = if can_resume { remote_existing } else { 0 };
+                if can_resume_temp {
+                    local_file
+                        .seek(SeekFrom::Start(temp_existing))
+                        .map_err(|e| anyhow::anyhow!("Failed to seek local file '{}': {}", local_path, e))?;
+                    (
+                        sftp.open_mode(
+                            temp_remote_path_ref,
+                            OpenFlags::WRITE | OpenFlags::APPEND,
+                            0o644,
+                            OpenType::File,
+                        )
+                        .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", temp_remote_path, e))?,
+                        true,
+                        temp_existing,
+                        temp_remote_path.clone(),
+                    )
+                } else {
+                    match sftp.open_mode(
+                        temp_remote_path_ref,
+                        OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+                        0o644,
+                        OpenType::File,
+                    ) {
+                        Ok(file) => (file, true, 0, temp_remote_path.clone()),
+                        Err(temp_err) => {
+                            let final_ref = Path::new(remote_path);
+                            let fallback = sftp.open_mode(
+                                final_ref,
+                                OpenFlags::WRITE | OpenFlags::TRUNCATE,
+                                0o644,
+                                OpenType::File,
+                            );
+                            match fallback {
+                                Ok(file) => (file, false, 0, remote_path.to_string()),
+                                Err(final_err) => {
+                                    return Err(anyhow::anyhow!(
+                                        "Failed to create remote file '{}': {}. Direct overwrite fallback for '{}' also failed: {}",
+                                        temp_remote_path,
+                                        temp_err,
+                                        remote_path,
+                                        final_err
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                let final_ref = Path::new(remote_path);
+                let remote_existing = sftp
+                    .stat(final_ref)
+                    .ok()
+                    .and_then(|stat| stat.size)
+                    .unwrap_or(0);
+                let can_resume = remote_existing > 0 && remote_existing < total;
+                if can_resume {
+                    local_file
+                        .seek(SeekFrom::Start(remote_existing))
+                        .map_err(|e| anyhow::anyhow!("Failed to seek local file '{}': {}", local_path, e))?;
+                    (
+                        sftp.open_mode(
+                            final_ref,
+                            OpenFlags::WRITE | OpenFlags::APPEND,
+                            0o644,
+                            OpenType::File,
+                        )
+                        .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", remote_path, e))?,
+                        false,
+                        remote_existing,
+                        remote_path.to_string(),
+                    )
+                } else {
+                    (
+                        sftp.open_mode(
+                            final_ref,
+                            OpenFlags::WRITE | OpenFlags::TRUNCATE,
+                            0o644,
+                            OpenType::File,
+                        )
+                        .map_err(|e| anyhow::anyhow!("Failed to overwrite remote file '{}': {}", remote_path, e))?,
+                        false,
+                        0,
+                        remote_path.to_string(),
+                    )
+                }
+            };
         let mut buf = [0u8; 64 * 1024];
 
         on_progress(transferred, total);
@@ -1015,7 +1081,11 @@ impl SshManager {
             }
             remote_file
                 .write_all(&buf[..read])
-                .map_err(|e| anyhow::anyhow!("Failed to write remote file '{}': {}", temp_remote_path, e))?;
+                .map_err(|e| anyhow::anyhow!(
+                    "Failed to write remote file '{}': {}",
+                    write_target_label,
+                    e
+                ))?;
             transferred = transferred.saturating_add(read as u64);
             on_progress(transferred, total);
         }
@@ -1026,14 +1096,18 @@ impl SshManager {
         drop(remote_file);
 
         // Replace final file with temp file atomically when possible.
-        if sftp
-            .rename(temp_remote_path_ref, Path::new(remote_path), None)
-            .is_err()
-        {
-            let _ = sftp.unlink(Path::new(remote_path));
-            sftp
+        if using_temp_file {
+            let temp_remote_path = format!("{}.part", remote_path);
+            let temp_remote_path_ref = Path::new(&temp_remote_path);
+            if sftp
                 .rename(temp_remote_path_ref, Path::new(remote_path), None)
-                .map_err(|e| anyhow::anyhow!("Failed to finalize uploaded file '{}': {}", remote_path, e))?;
+                .is_err()
+            {
+                let _ = sftp.unlink(Path::new(remote_path));
+                sftp
+                    .rename(temp_remote_path_ref, Path::new(remote_path), None)
+                    .map_err(|e| anyhow::anyhow!("Failed to finalize uploaded file '{}': {}", remote_path, e))?;
+            }
         }
 
         Ok(())

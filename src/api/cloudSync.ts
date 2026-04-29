@@ -560,6 +560,7 @@ const buildSyncPayload = async (fallbackEncSalt = ""): Promise<SyncPayload> => {
     aiModels: {
       openai: (await aiModelsStore.get("openai")) ?? [],
       anthropic: (await aiModelsStore.get("anthropic")) ?? [],
+      volcengine: (await aiModelsStore.get("volcengine")) ?? [],
     },
   };
 };
@@ -601,6 +602,10 @@ const applySyncPayload = async (payload: SyncPayload) => {
   await aiModelsStore.set(
     "anthropic",
     Array.isArray(aiModels.anthropic) ? aiModels.anthropic : [],
+  );
+  await aiModelsStore.set(
+    "volcengine",
+    Array.isArray(aiModels.volcengine) ? aiModels.volcengine : [],
   );
   await aiModelsStore.save();
 };

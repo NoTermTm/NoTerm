@@ -9,7 +9,7 @@
     align-items: center;
     gap: 8px;
     border: 1px solid var(--border-color);
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 8px 10px;
     background: var(--bg-secondary);
     color: var(--text-secondary);
@@ -19,7 +19,8 @@
     border: none;
     background: transparent;
     color: var(--text-primary);
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-tight);
     width: 100%;
     outline: none;
 }
@@ -35,7 +36,7 @@
 .script-picker-item {
     border: 1px solid var(--border-color);
     background: var(--bg-primary);
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 10px 12px;
     text-align: left;
     cursor: pointer;
@@ -52,18 +53,21 @@
 }
 
 .script-picker-name {
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--type-ui);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
 }
 
 .script-picker-meta {
-    font-size: 11px;
+    font-size: var(--type-caption);
+    line-height: var(--leading-tight);
     color: var(--text-tertiary);
 }
 
 .script-picker-empty {
     text-align: center;
     color: var(--text-tertiary);
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-ui);
     padding: 16px 0;
 }

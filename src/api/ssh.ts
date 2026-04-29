@@ -102,8 +102,15 @@ export const sshApi = {
     localPath: string,
     remotePath: string,
     transferId?: string,
+    useTempFile?: boolean,
   ): Promise<void> => {
-    return await invoke('ssh_sftp_upload_file', { sessionId, localPath, remotePath, transferId });
+    return await invoke('ssh_sftp_upload_file', {
+      sessionId,
+      localPath,
+      remotePath,
+      transferId,
+      useTempFile,
+    });
   },
 
   renameSftpEntry: async (sessionId: string, fromPath: string, toPath: string): Promise<void> => {

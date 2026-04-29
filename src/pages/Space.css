@@ -15,13 +15,15 @@
 }
 
 .space-title {
-    font-size: 18px;
-    font-weight: 600;
+    font-size: var(--type-subhead);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
     color: var(--text-primary);
 }
 
 .space-subtitle {
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-ui);
     color: var(--text-tertiary);
 }
 
@@ -35,7 +37,7 @@
         linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 32%),
         var(--bg-secondary);
     border: 1px solid var(--border-color);
-    border-radius: 10px;
+    border-radius: 12px;
     overflow: hidden;
     min-height: 0;
 }
@@ -50,9 +52,10 @@
 
 .space-panel-header {
     padding: 12px 14px;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    font-size: var(--type-caption);
+    font-weight: var(--weight-bold);
+    letter-spacing: var(--tracking-caps);
+    line-height: var(--leading-tight);
     text-transform: uppercase;
     color: var(--text-secondary);
     border-bottom: 1px solid var(--border-light);
@@ -112,7 +115,8 @@
     border-radius: 8px;
     padding: 5px 8px;
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-tight);
 }
 
 .space-breadcrumb:hover {
@@ -132,9 +136,10 @@
     padding: 10px 14px;
     border-bottom: 1px solid var(--border-light);
     color: var(--text-tertiary);
-    font-size: 11px;
+    font-size: var(--type-caption);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: var(--tracking-caps);
+    line-height: var(--leading-tight);
 }
 
 .space-list-body {
@@ -169,8 +174,9 @@
     align-items: center;
     gap: 10px;
     color: var(--text-primary);
-    font-size: 13px;
-    font-weight: 500;
+    font-size: var(--type-ui);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
 }
 
 .space-entry-name span {
@@ -181,7 +187,8 @@
 
 .space-entry-meta {
     color: var(--text-tertiary);
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-tight);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -204,7 +211,7 @@
     background: transparent;
     color: var(--text-tertiary);
     cursor: pointer;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 4px;
 }
 
@@ -216,7 +223,8 @@
 .space-empty {
     text-align: center;
     color: var(--text-tertiary);
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-ui);
     padding: 40px 16px;
 }
 
@@ -231,13 +239,14 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-ui);
     color: var(--text-tertiary);
 }
 
 .space-editor-meta-label {
     color: var(--text-secondary);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
     margin-right: 6px;
 }
 
@@ -249,8 +258,8 @@
 
 .space-modal-warning {
     color: #d67f1b;
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--type-meta);
+    line-height: var(--leading-copy);
     background: rgba(214, 127, 27, 0.12);
     border: 1px solid rgba(214, 127, 27, 0.28);
     border-radius: 8px;
@@ -265,9 +274,9 @@
     background: var(--bg-secondary);
     color: var(--text-primary);
     padding: 10px;
-    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
-    font-size: 12px;
-    line-height: 1.6;
+    font-family: var(--font-mono);
+    font-size: var(--type-meta);
+    line-height: var(--leading-copy);
     resize: vertical;
 }
 
@@ -285,9 +294,9 @@
 }
 
 .space-code-editor .cm-scroller {
-    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
-    font-size: 12px;
-    line-height: 1.6;
+    font-family: var(--font-mono);
+    font-size: var(--type-meta);
+    line-height: var(--leading-copy);
 }
 
 .space-code-editor .cm-focused {

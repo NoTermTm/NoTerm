@@ -13,8 +13,10 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
+import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { mkdir, stat, watch, type UnwatchFn } from "@tauri-apps/plugin-fs";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { sshApi } from "../api/ssh";
 import type { SftpEntry } from "../types/ssh";
@@ -27,11 +29,13 @@ import { ScriptPicker } from "./ScriptPicker";
 import { parseAgentPlanFromText, sendAiChatStream, type AiMessage } from "../api/ai";
 import AiRenderer from "./AiRenderer2";
 import {
+  type AppSettings,
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
   writeAppSetting,
   type TerminalBackgroundFit,
   type TerminalThemeName,
+  withTerminalIconFontFallback,
 } from "../store/appSettings";
 import { getXtermTheme } from "../terminal/xtermThemes";
 import {
@@ -77,6 +81,7 @@ interface XTerminalProps {
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
 type TransferTaskDirection = "upload" | "download";
 type TransferTaskStatus = "running" | "success" | "failed";
+type AppMessageTone = "info" | "success" | "error";
 type AiChatMessage = AiMessage & {
   createdAt: number;
   id: string;
@@ -106,6 +111,35 @@ interface SftpTransferProgressEvent {
   total: number;
   percent: number;
 }
+
+type AppMessageDetail = {
+  title: string;
+  detail?: string;
+  tone?: AppMessageTone;
+  autoOpen?: boolean;
+  toast?: boolean;
+  toastDuration?: number;
+  store?: boolean;
+};
+
+type SftpNotice = {
+  tone: AppMessageTone;
+  message: string;
+};
+
+type SftpEditSession = {
+  localDir: string;
+  localPath: string;
+  name: string;
+  remotePath: string;
+  unwatch: UnwatchFn | null;
+  debounceId: number | null;
+  lastSyncedSignature: string;
+  syncing: boolean;
+  pendingSync: boolean;
+  lastSyncErrorMessage: string | null;
+  lastSyncErrorAt: number;
+};
 
 type TransferUiProgressState = {
   lastAt: number;
@@ -228,15 +262,33 @@ const hasExecutableCommand = (text: string): boolean => {
 };
 
 const escapeForRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const normalizeFsPath = (value: string) => value.replace(/\\/g, "/");
+const SFTP_EDIT_CACHE_DIR = "sftp-edit-cache";
+const SFTP_EDIT_SYNC_DEBOUNCE_MS = 1200;
+const SFTP_SYNC_ERROR_TOAST_DEDUPE_MS = 15000;
+
+const toSafePathSegment = (value: string) => {
+  const sanitized = value.replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "");
+  return sanitized || "file";
+};
+
+const createStableHash = (value: string) => {
+  let hash = 5381;
+  for (const char of value) {
+    hash = ((hash << 5) + hash + char.charCodeAt(0)) >>> 0;
+  }
+  return hash.toString(16);
+};
 
 const MAX_TRANSFER_TASKS = 120;
-const MAX_LOG_SIGNALS = 900;
+const MAX_LOG_SIGNALS = 200;
 const LOG_SUMMARY_WINDOW_MS = 60_000;
 const MAX_LOG_SUMMARIES = 12;
 const AGENT_MAX_ACTIONS = 5;
 const AGENT_RESULT_SNIPPET_CHARS = 2000;
 const AGENT_TERMINAL_CAPTURE_CHARS = 220_000;
 const AGENT_MAX_ACTIVITY_ITEMS = 40;
+const MAX_AI_MESSAGES = 60;
 const AI_SCROLL_BOTTOM_THRESHOLD = 72;
 const TERMINAL_FONT_SIZE_MIN = 9;
 const TERMINAL_FONT_SIZE_MAX = 28;
@@ -303,6 +355,7 @@ export function XTerminal({
   osType = "unknown",
   onConnect,
   onRequestSplit,
+  onCloseSession,
   isSplit = false,
   onSendScript,
 }: XTerminalProps) {
@@ -344,6 +397,7 @@ export function XTerminal({
   const [sftpEntries, setSftpEntries] = useState<SftpEntry[]>([]);
   const [sftpLoading, setSftpLoading] = useState(false);
   const [sftpError, setSftpError] = useState<string | null>(null);
+  const [sftpNotice, setSftpNotice] = useState<SftpNotice | null>(null);
   const [sftpDragging, setSftpDragging] = useState(false);
   const [sftpWidth, setSftpWidth] = useState(380);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
@@ -365,6 +419,7 @@ export function XTerminal({
   const sftpPanelRef = useRef<HTMLDivElement>(null);
   const sftpPathRef = useRef(sftpPath);
   const sftpDraggingRef = useRef(false);
+  const sftpEditSessionsRef = useRef<Record<string, SftpEditSession>>({});
   const writeQueueRef = useRef<string[]>([]);
   const writingRef = useRef(false);
   const typingBufferRef = useRef("");
@@ -395,6 +450,7 @@ export function XTerminal({
   const [aiMessages, setAiMessages] = useState<AiChatMessage[]>([]);
   const aiMessagesRef = useRef<AiChatMessage[]>([]);
   const aiHistoryRef = useRef<HTMLDivElement>(null);
+  const aiInputRef = useRef<HTMLTextAreaElement | null>(null);
   const agentActivityListRef = useRef<HTMLDivElement>(null);
   const aiAutoStickToBottomRef = useRef(true);
   const aiStreamAbortRef = useRef<AbortController | null>(null);
@@ -415,9 +471,11 @@ export function XTerminal({
   const [agentMode, setAgentMode] = useState<AgentMode>(
     DEFAULT_APP_SETTINGS["ai.agentMode"],
   );
+  const [agentActivityExpanded, setAgentActivityExpanded] = useState(false);
   const planStopRequestedRef = useRef<Record<string, boolean>>({});
   const planExecutionLockRef = useRef<Record<string, boolean>>({});
   const aiModelTouchedRef = useRef(false);
+  const [aiInsightsOpen, setAiInsightsOpen] = useState(true);
   const [aiModelMenuOpen, setAiModelMenuOpen] = useState(false);
   const aiModelMenuRef = useRef<HTMLDivElement>(null);
   const [resizing, setResizing] = useState<{
@@ -473,6 +531,22 @@ export function XTerminal({
   const transferStatusLabel = (status: TransferTaskStatus) =>
     t(`terminal.transfer.status.${status}`);
   const hasAiInsights = !!smartTable || logSummaries.length > 0;
+  const aiContextSummaryKey = useMemo(() => {
+    if (smartTable && logSummaries.length > 0) {
+      return "terminal.ai.context.summary.both";
+    }
+    if (smartTable) {
+      return "terminal.ai.context.summary.structured";
+    }
+    return "terminal.ai.context.summary.logs";
+  }, [smartTable, logSummaries.length]);
+
+  useEffect(() => {
+    if (hasAiInsights && aiMessages.length === 0) {
+      setAiInsightsOpen(true);
+    }
+  }, [aiMessages.length, hasAiInsights]);
+
   const latestAgentPlanForActivity = useMemo(() => {
     for (let i = aiMessages.length - 1; i >= 0; i -= 1) {
       const message = aiMessages[i];
@@ -488,6 +562,12 @@ export function XTerminal({
     const tail = list[list.length - 1];
     return `${list.length}-${tail.id}-${tail.ts}`;
   }, [latestAgentPlanForActivity]);
+  const latestAgentActivities = latestAgentPlanForActivity?.activities || [];
+  const latestAgentActivity =
+    latestAgentActivities.length > 0
+      ? latestAgentActivities[latestAgentActivities.length - 1]
+      : null;
+  const canExpandAgentActivities = latestAgentActivities.length > 1;
   const terminalQuickCommands = useMemo(
     () => [
       {
@@ -1236,7 +1316,7 @@ export function XTerminal({
         (await store.get<boolean>("ai.enabled")) ??
         DEFAULT_APP_SETTINGS["ai.enabled"],
       provider:
-        (await store.get<"openai" | "anthropic">("ai.provider")) ??
+        (await store.get<AppSettings["ai.provider"]>("ai.provider")) ??
         DEFAULT_APP_SETTINGS["ai.provider"],
       model:
         (await store.get<string>("ai.model")) ??
@@ -1263,6 +1343,14 @@ export function XTerminal({
           (await store.get<string>("ai.anthropic.apiKey")) ??
           DEFAULT_APP_SETTINGS["ai.anthropic.apiKey"],
       },
+      volcengine: {
+        baseUrl:
+          (await store.get<string>("ai.volcengine.baseUrl")) ??
+          DEFAULT_APP_SETTINGS["ai.volcengine.baseUrl"],
+        apiKey:
+          (await store.get<string>("ai.volcengine.apiKey")) ??
+          DEFAULT_APP_SETTINGS["ai.volcengine.apiKey"],
+      },
     };
   };
 
@@ -1285,6 +1373,9 @@ export function XTerminal({
     return () => {
       aiStreamAbortRef.current?.abort();
       aiStreamAbortRef.current = null;
+      for (const remotePath of Object.keys(sftpEditSessionsRef.current)) {
+        disposeSftpEditSession(remotePath);
+      }
       mountedRef.current = false;
     };
   }, []);
@@ -1325,14 +1416,18 @@ export function XTerminal({
   }, [aiMessages, aiOpen]);
 
   useEffect(() => {
-    if (!aiOpen) return;
+    if (!aiOpen || !agentActivityExpanded) return;
     const el = agentActivityListRef.current;
     if (!el) return;
     const handle = requestAnimationFrame(() => {
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(handle);
-  }, [aiOpen, latestAgentActivityKey]);
+  }, [agentActivityExpanded, aiOpen, latestAgentActivityKey]);
+
+  useEffect(() => {
+    setAgentActivityExpanded(false);
+  }, [latestAgentPlanForActivity?.id]);
 
   useEffect(() => {
     let disposed = false;
@@ -1350,7 +1445,8 @@ export function XTerminal({
               content: item.content,
               createdAt: item.createdAt ?? Date.now(),
               id: item.id ?? createMessageId(),
-            }));
+            }))
+            .slice(-MAX_AI_MESSAGES);
           setAiMessages(normalized);
         }
       } finally {
@@ -1398,6 +1494,64 @@ export function XTerminal({
     } catch {
       return normalizeBackendErrorMessage(String(error));
     }
+  };
+
+  const emitAppMessage = (detail: AppMessageDetail) => {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent("app-message", { detail }));
+  };
+
+  const showSftpNotice = (
+    message: string,
+    tone: AppMessageTone = "error",
+  ) => {
+    setSftpNotice({ tone, message });
+  };
+
+  const isPermissionDeniedError = (message: string) =>
+    /\bpermission denied\b/i.test(message);
+
+  const reportSftpSyncFailure = (
+    session: SftpEditSession,
+    message: string,
+  ) => {
+    const permissionDenied = isPermissionDeniedError(message);
+    showSftpNotice(
+      permissionDenied
+        ? t("terminal.sftp.edit.sync.notice.permission", {
+            name: session.name,
+          })
+        : t("terminal.sftp.edit.sync.notice.generic", {
+            name: session.name,
+          }),
+      "error",
+    );
+
+    const now = Date.now();
+    const shouldToast =
+      session.lastSyncErrorMessage !== message ||
+      now - session.lastSyncErrorAt > SFTP_SYNC_ERROR_TOAST_DEDUPE_MS;
+
+    session.lastSyncErrorMessage = message;
+    session.lastSyncErrorAt = now;
+
+    if (!shouldToast) return;
+
+    emitAppMessage({
+      title: t("terminal.sftp.edit.sync.toast.title"),
+      detail: permissionDenied
+        ? t("terminal.sftp.edit.sync.toast.permission.detail", {
+            path: session.remotePath,
+          })
+        : t("terminal.sftp.edit.sync.fail", {
+            name: session.name,
+            message,
+          }),
+      tone: "error",
+      toast: true,
+      toastDuration: 4200,
+      store: false,
+    });
   };
 
   const isAbortError = (error: unknown) => {
@@ -1489,7 +1643,7 @@ export function XTerminal({
         await openPath(localPath);
       } catch (fallbackError) {
         const message = formatError(fallbackError || error);
-        setSftpError(t("terminal.transfer.openFolder.fail", { message }));
+        showSftpNotice(t("terminal.transfer.openFolder.fail", { message }));
       }
     }
   };
@@ -1535,6 +1689,9 @@ export function XTerminal({
         window.clearTimeout(uiState.timer);
       }
       delete transferUiProgressRef.current[id];
+      if (!patch.finishedAt) {
+        patch = { ...patch, finishedAt: Date.now() };
+      }
     }
     setTransferTasks((prev) =>
       prev.map((task) => (task.id === id ? { ...task, ...patch } : task)),
@@ -1571,6 +1728,24 @@ export function XTerminal({
     },
     [],
   );
+
+  // Auto-remove completed/failed transfers older than 5 minutes
+  useEffect(() => {
+    const COMPLETED_TTL_MS = 5 * 60 * 1000;
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      setTransferTasks((prev) => {
+        const hasStale = prev.some(
+          (t) => t.status !== "running" && t.finishedAt && now - t.finishedAt > COMPLETED_TTL_MS,
+        );
+        if (!hasStale) return prev;
+        return prev.filter(
+          (t) => t.status === "running" || !t.finishedAt || now - t.finishedAt <= COMPLETED_TTL_MS,
+        );
+      });
+    }, COMPLETED_TTL_MS);
+    return () => window.clearInterval(id);
+  }, []);
 
   const runningTransferCount = useMemo(
     () => transferTasks.filter((task) => task.status === "running").length,
@@ -1742,6 +1917,239 @@ export function XTerminal({
   const buildRemotePath = (name: string) => {
     const base = sftpPath || "/";
     return base.endsWith("/") ? `${base}${name}` : `${base}/${name}`;
+  };
+
+  const getSftpEditSessionKey = (remotePath: string) => normalizeFsPath(remotePath);
+
+  const getRemoteParentPath = (remotePath: string) => {
+    const parts = normalizeFsPath(remotePath).split("/").filter(Boolean);
+    parts.pop();
+    return parts.length > 0 ? `/${parts.join("/")}` : "/";
+  };
+
+  const getLocalFileSignature = async (localPath: string) => {
+    const info = await stat(localPath);
+    return `${info.size}:${info.mtime?.getTime() ?? 0}`;
+  };
+
+  const disposeSftpEditSession = (remotePath: string) => {
+    const key = getSftpEditSessionKey(remotePath);
+    const session = sftpEditSessionsRef.current[key];
+    if (!session) return;
+    if (session.debounceId !== null) {
+      window.clearTimeout(session.debounceId);
+    }
+    session.unwatch?.();
+    delete sftpEditSessionsRef.current[key];
+  };
+
+  const buildSftpEditLocalPaths = async (remotePath: string, fileName: string) => {
+    const baseDir = await appLocalDataDir();
+    const localDir = await join(
+      baseDir,
+      SFTP_EDIT_CACHE_DIR,
+      toSafePathSegment(sessionId),
+      `${toSafePathSegment(fileName)}-${createStableHash(remotePath)}`,
+    );
+    const localPath = await join(localDir, fileName);
+    return { localDir, localPath };
+  };
+
+  const syncSftpEditedFile = async (remotePath: string) => {
+    const key = getSftpEditSessionKey(remotePath);
+    const session = sftpEditSessionsRef.current[key];
+    if (!session) return;
+
+    let signature = "";
+    try {
+      signature = await getLocalFileSignature(session.localPath);
+    } catch {
+      return;
+    }
+
+    if (!signature || signature === session.lastSyncedSignature) {
+      return;
+    }
+
+    if (session.syncing) {
+      session.pendingSync = true;
+      return;
+    }
+
+    let taskId: string | null = null;
+    session.syncing = true;
+    session.pendingSync = false;
+    try {
+      taskId = createTransferTask("upload", session.name, session.localPath, session.remotePath);
+      setUploadProgress(t("terminal.sftp.edit.sync.progress", { name: session.name }));
+      await sshApi.uploadFile(
+        sessionId,
+        session.localPath,
+        session.remotePath,
+        taskId,
+        false,
+      );
+      session.lastSyncErrorMessage = null;
+      session.lastSyncErrorAt = 0;
+      setSftpNotice(null);
+      session.lastSyncedSignature = signature;
+      if (taskId) {
+        updateTransferTask(taskId, {
+          status: "success",
+          progress: 100,
+          detail: t("terminal.sftp.edit.sync.done"),
+          finishedAt: Date.now(),
+        });
+      }
+      if (getRemoteParentPath(session.remotePath) === normalizeFsPath(sftpPathRef.current || "/")) {
+        void loadSftpEntries(sftpPathRef.current || "/");
+      }
+    } catch (error) {
+      const message = formatError(error);
+      reportSftpSyncFailure(session, message);
+      if (taskId) {
+        updateTransferTask(taskId, {
+          status: "failed",
+          progress: 100,
+          detail: message,
+          finishedAt: Date.now(),
+        });
+      }
+    } finally {
+      setUploadProgress(null);
+      session.syncing = false;
+      if (session.pendingSync) {
+        session.pendingSync = false;
+        session.debounceId = window.setTimeout(() => {
+          const nextSession = sftpEditSessionsRef.current[key];
+          if (!nextSession) return;
+          nextSession.debounceId = null;
+          void syncSftpEditedFile(remotePath);
+        }, SFTP_EDIT_SYNC_DEBOUNCE_MS);
+      }
+    }
+  };
+
+  const scheduleSftpEditSync = (remotePath: string) => {
+    const key = getSftpEditSessionKey(remotePath);
+    const session = sftpEditSessionsRef.current[key];
+    if (!session) return;
+    if (session.debounceId !== null) {
+      window.clearTimeout(session.debounceId);
+    }
+    session.debounceId = window.setTimeout(() => {
+      const nextSession = sftpEditSessionsRef.current[key];
+      if (!nextSession) return;
+      nextSession.debounceId = null;
+      void syncSftpEditedFile(remotePath);
+    }, SFTP_EDIT_SYNC_DEBOUNCE_MS);
+  };
+
+  const ensureSftpEditSession = async (
+    remotePath: string,
+    fileName: string,
+    localDir: string,
+    localPath: string,
+    signature: string,
+  ) => {
+    const key = getSftpEditSessionKey(remotePath);
+    const existing = sftpEditSessionsRef.current[key];
+    if (existing) {
+      existing.lastSyncedSignature = signature;
+      return existing;
+    }
+
+    const session: SftpEditSession = {
+      localDir,
+      localPath,
+      name: fileName,
+      remotePath,
+      unwatch: null,
+      debounceId: null,
+      lastSyncedSignature: signature,
+      syncing: false,
+      pendingSync: false,
+      lastSyncErrorMessage: null,
+      lastSyncErrorAt: 0,
+    };
+
+    session.unwatch = await watch(
+      localDir,
+      () => {
+        scheduleSftpEditSync(remotePath);
+      },
+      {
+        recursive: false,
+        delayMs: 250,
+      },
+    );
+
+    sftpEditSessionsRef.current[key] = session;
+    return session;
+  };
+
+  const handleOpenFileForEditing = async (entry: SftpEntry) => {
+    if (entry.is_dir) return;
+
+    const remotePath = buildRemotePath(entry.name);
+    const key = getSftpEditSessionKey(remotePath);
+    const existing = sftpEditSessionsRef.current[key];
+    if (existing) {
+      try {
+        await openPath(existing.localPath);
+      } catch (error) {
+        showSftpNotice(
+          t("terminal.sftp.edit.open.fail", { message: formatError(error) }),
+        );
+        disposeSftpEditSession(remotePath);
+        return;
+      }
+      return;
+    }
+
+    let taskId: string | null = null;
+    try {
+      const { localDir, localPath } = await buildSftpEditLocalPaths(remotePath, entry.name);
+      await mkdir(localDir, { recursive: true });
+
+      taskId = createTransferTask("download", entry.name, remotePath, localPath);
+      setUploadProgress(t("terminal.sftp.edit.download.progress", { name: entry.name }));
+      await sshApi.downloadFile(sessionId, remotePath, localPath, taskId);
+      const signature = await getLocalFileSignature(localPath);
+      await ensureSftpEditSession(remotePath, entry.name, localDir, localPath, signature);
+      await openPath(localPath);
+      setSftpNotice(null);
+
+      if (taskId) {
+        updateTransferTask(taskId, {
+          status: "success",
+          progress: 100,
+          detail: t("terminal.sftp.edit.opened"),
+          finishedAt: Date.now(),
+        });
+      }
+      emitAppMessage({
+        title: t("terminal.sftp.edit.opened.title"),
+        detail: t("terminal.sftp.edit.opened.detail", { name: entry.name }),
+        tone: "success",
+        toast: true,
+        store: false,
+      });
+    } catch (error) {
+      const message = formatError(error);
+      disposeSftpEditSession(remotePath);
+      showSftpNotice(t("terminal.sftp.edit.open.fail", { message }));
+      if (taskId) {
+        updateTransferTask(taskId, {
+          status: "failed",
+          progress: 100,
+          detail: message,
+          finishedAt: Date.now(),
+        });
+      }
+    } finally {
+      setUploadProgress(null);
+    }
   };
 
   const formatPermValue = (perm?: number, isDir?: boolean) => {
@@ -1948,7 +2356,7 @@ export function XTerminal({
         const paths = Array.isArray(payload?.paths) ? payload?.paths : [];
         if (!paths.length) return;
         if (uploadProgress) {
-          setSftpError(t("terminal.sftp.upload.inProgress"));
+          showSftpNotice(t("terminal.sftp.upload.inProgress"), "info");
           return;
         }
         void handleUploadFiles(paths);
@@ -2179,7 +2587,7 @@ export function XTerminal({
       setUploadProgress(null);
     } catch (error) {
       const message = formatError(error);
-      setSftpError(t("terminal.sftp.download.fail", { message }));
+      showSftpNotice(t("terminal.sftp.download.fail", { message }));
       if (taskId) {
         updateTransferTask(taskId, {
           status: "failed",
@@ -2219,7 +2627,7 @@ export function XTerminal({
         }
       } catch (error) {
         const message = formatError(error);
-        setSftpError(
+        showSftpNotice(
           t("terminal.sftp.upload.fail", { path: filePath, message }),
         );
         if (taskId) {
@@ -2278,12 +2686,12 @@ export function XTerminal({
     sftpDragCounterRef.current = 0;
     setSftpDragging(false);
     if (uploadProgress) {
-      setSftpError(t("terminal.sftp.upload.inProgress"));
+      showSftpNotice(t("terminal.sftp.upload.inProgress"), "info");
       return;
     }
     const filePaths = extractDroppedPaths(event);
     if (filePaths.length === 0) {
-      setSftpError(t("terminal.sftp.drop.error"));
+      showSftpNotice(t("terminal.sftp.drop.error"));
       return;
     }
     await handleUploadFiles(filePaths);
@@ -2302,7 +2710,7 @@ export function XTerminal({
       await handleUploadFiles(files);
     } catch (error) {
       const message = formatError(error);
-      setSftpError(t("terminal.sftp.select.fail", { message }));
+      showSftpNotice(t("terminal.sftp.select.fail", { message }));
       setUploadProgress(null);
     }
   };
@@ -3343,7 +3751,7 @@ export function XTerminal({
     aiStreamAbortRef.current = requestAbortController;
     aiAbortReasonRef.current = null;
     const nextMessages = [...aiMessagesRef.current, userMessage];
-    setAiMessages((prev) => [...prev, userMessage, assistantMessage]);
+    setAiMessages((prev) => [...prev, userMessage, assistantMessage].slice(-MAX_AI_MESSAGES));
 
     try {
       const settings = await readAiSettings();
@@ -3454,28 +3862,75 @@ export function XTerminal({
     }
   };
 
+  const buildStrictCommandPrompt = () =>
+    locale === "en-US"
+      ? [
+          "Respond in English only.",
+          "You must provide executable next-step commands, not only high-level promises.",
+          "Output format:",
+          "1) One short sentence explaining the approach;",
+          "2) At least one bash fenced code block with runnable commands;",
+          "3) A short note after each command describing purpose and risk.",
+        ].join("\n")
+      : [
+          "你必须给出可执行的下一步命令，不能只说“我会帮你处理”。",
+          "输出格式：",
+          "1) 一句话说明方案；",
+          "2) 至少一个 bash 代码块，包含可直接执行命令；",
+          "3) 每条命令后简短说明作用与风险。",
+        ].join("\n");
+
+  const seedAiInput = (value: string) => {
+    setAiOpen(true);
+    setAiError(null);
+    setAiInput(value);
+    window.requestAnimationFrame(() => {
+      if (!aiInputRef.current) return;
+      aiInputRef.current.focus();
+      const caret = value.length;
+      aiInputRef.current.setSelectionRange(caret, caret);
+    });
+  };
+
+  const handleAiOnboardAction = async (action: "ask" | "analyze" | "fix") => {
+    if (action === "ask") {
+      seedAiInput(t("terminal.ai.onboard.askSeed"));
+      return;
+    }
+
+    const context = getTerminalContext(60);
+    setAiOpen(true);
+    if (!context) {
+      setAiError(t("terminal.ai.onboard.contextNeeded"));
+      return;
+    }
+
+    setAiError(null);
+    setAiInput("");
+
+    if (action === "analyze") {
+      await sendAiMessage(buildAiPrompt("ask", context));
+      return;
+    }
+
+    const strictCommandPrompt = buildStrictCommandPrompt();
+    const prompt = [t("terminal.ai.quick.fix.prefixEmpty"), "", buildAiPrompt("fix", context)].join("\n");
+    const firstReply = await sendAiMessage(prompt, {
+      extraSystemPrompt: strictCommandPrompt,
+    });
+    if (firstReply && !hasExecutableCommand(firstReply)) {
+      await sendAiMessage(t("terminal.ai.quick.followup.commandsOnly"), {
+        extraSystemPrompt: strictCommandPrompt,
+      });
+    }
+  };
+
   const handleTerminalHashCommand = async (rawCommand: string) => {
     const parsed = parseTerminalHashCommand(rawCommand);
     if (!parsed) return;
     setAiOpen(true);
     setAiError(null);
-    const strictCommandPrompt =
-      locale === "en-US"
-        ? [
-            "Respond in English only.",
-            "You must provide executable next-step commands, not only high-level promises.",
-            "Output format:",
-            "1) One short sentence explaining the approach;",
-            "2) At least one bash fenced code block with runnable commands;",
-            "3) A short note after each command describing purpose and risk.",
-          ].join("\n")
-        : [
-            "你必须给出可执行的下一步命令，不能只说“我会帮你处理”。",
-            "输出格式：",
-            "1) 一句话说明方案；",
-            "2) 至少一个 bash 代码块，包含可直接执行命令；",
-            "3) 每条命令后简短说明作用与风险。",
-          ].join("\n");
+    const strictCommandPrompt = buildStrictCommandPrompt();
 
     if (parsed.kind === "help") {
       const lines = terminalQuickCommands.map(
@@ -3917,11 +4372,11 @@ export function XTerminal({
         lineHeight,
         fontWeight,
         fontSize,
-        fontFamily,
+        fontFamily: withTerminalIconFontFallback(fontFamily),
         theme: { ...xtermTheme, background: themeBg },
         allowTransparency: true,
         allowProposedApi: true,
-        scrollback: 10000,
+        scrollback: 2000,
       });
 
       fit = new FitAddon();
@@ -4306,7 +4761,7 @@ export function XTerminal({
         (v) => {
           if (!term || disposed) return;
           const next = v ?? DEFAULT_APP_SETTINGS["terminal.fontFamily"];
-          term.options.fontFamily = next;
+          term.options.fontFamily = withTerminalIconFontFallback(next);
           requestAnimationFrame(() => {
             fitAndResize();
           });
@@ -4718,6 +5173,17 @@ export function XTerminal({
               {t("terminal.reconnect")}
             </button>
           )}
+          {onCloseSession && (
+            <button
+              className="xterminal-topbar-btn"
+              type="button"
+              onClick={onCloseSession}
+              title={t("common.close")}
+              aria-label={t("common.close")}
+            >
+              <AppIcon icon="material-symbols:close-rounded" size={18} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -4991,6 +5457,33 @@ export function XTerminal({
                   {uploadProgress}
                 </div>
               )}
+              {sftpNotice && (
+                <div
+                  className={`xterminal-sftp-notice xterminal-sftp-notice--${sftpNotice.tone}`}
+                  role={sftpNotice.tone === "error" ? "alert" : "status"}
+                >
+                  <AppIcon
+                    className="xterminal-sftp-notice-icon"
+                    icon={
+                      sftpNotice.tone === "error"
+                        ? "material-symbols:error-outline-rounded"
+                        : sftpNotice.tone === "success"
+                          ? "material-symbols:check-circle-outline-rounded"
+                          : "material-symbols:info-outline-rounded"
+                    }
+                    size={15}
+                  />
+                  <span className="xterminal-sftp-notice-text">{sftpNotice.message}</span>
+                  <button
+                    type="button"
+                    className="xterminal-sftp-notice-close"
+                    aria-label={t("terminal.sftp.notice.close")}
+                    onClick={() => setSftpNotice(null)}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
               <div
                 className="xterminal-sftp-body"
                 onPointerDown={(event) => {
@@ -5037,6 +5530,10 @@ export function XTerminal({
                         key={entry.name}
                         className={`xterminal-sftp-item ${entry.is_dir ? "xterminal-sftp-item--dir" : "xterminal-sftp-item--file"}`}
                         onClick={() => handleEntryClick(entry)}
+                        onDoubleClick={() => {
+                          if (entry.is_dir) return;
+                          void handleOpenFileForEditing(entry);
+                        }}
                         onPointerDown={(event) => {
                           if (event.button !== 2) return;
                           openSftpMenu(event, entry);
@@ -5147,6 +5644,20 @@ export function XTerminal({
                           className="xterminal-sftp-menu-item"
                           onClick={() => {
                             if (!sftpMenu.entry) return;
+                            void handleOpenFileForEditing(sftpMenu.entry);
+                            setSftpMenu(null);
+                          }}
+                        >
+                          <AppIcon icon="material-symbols:open-in-new-rounded" size={16} />
+                          {t("terminal.sftp.menu.open")}
+                        </button>
+                      )}
+                      {!sftpMenu.entry.is_dir && (
+                        <button
+                          type="button"
+                          className="xterminal-sftp-menu-item"
+                          onClick={() => {
+                            if (!sftpMenu.entry) return;
                             void handleDownloadFile(sftpMenu.entry);
                             setSftpMenu(null);
                           }}
@@ -5207,14 +5718,10 @@ export function XTerminal({
               />
               <div className="xterminal-ai" style={{ width: aiWidth }}>
                 <div className="xterminal-ai-header">
-                  <div className="xterminal-ai-header-main">
-                    <div className="xterminal-ai-title">
-                      {t(
-                        agentMode === "confirm_then_execute"
-                          ? "terminal.ai.title.agent"
-                          : "terminal.ai.title.chat",
-                      )}
-                    </div>
+	                  <div className="xterminal-ai-header-main">
+	                    <div className="xterminal-ai-title">
+	                      {t("terminal.ai.title")}
+	                    </div>
                     <div className="xterminal-agent-mode" role="group" aria-label="agent mode">
                       <button
                         type="button"
@@ -5257,119 +5764,211 @@ export function XTerminal({
                   ref={aiHistoryRef}
                   onScroll={updateAiAutoStickFlag}
                 >
-                  {hasAiInsights && (
-                    <div className="xterminal-ai-insights">
-                      {smartTable && (
-                        <section className="xterminal-ai-card">
-                          <div className="xterminal-ai-card-head">
-                            <div className="xterminal-ai-card-title">
-                              <AppIcon icon="material-symbols:table-view-rounded" size={15} />
-                              {t("terminal.ai.smartTable.title")}
-                            </div>
-                            <span className="xterminal-ai-card-time">
-                              {new Date(smartTable.updatedAt).toLocaleTimeString()}
-                            </span>
-                          </div>
-                          <div className="xterminal-ai-card-subtitle">
-                            {t("terminal.ai.smartTable.command", { command: smartTable.command })}
-                          </div>
-                          {smartTable.kind === "docker-ps" ? (
-                            <div className="xterminal-ai-table">
-                              <div className="xterminal-ai-table-head xterminal-ai-table-head--docker">
-                                <span>{t("terminal.ai.table.docker.name")}</span>
-                                <span>{t("terminal.ai.table.docker.image")}</span>
-                                <span>{t("terminal.ai.table.docker.status")}</span>
-                                <span>{t("terminal.ai.table.docker.ports")}</span>
-                              </div>
-                              <div className="xterminal-ai-table-body">
-                                {smartTable.rows.map((row) => (
-                                  <button
-                                    key={row.id}
-                                    type="button"
-                                    className="xterminal-ai-table-row xterminal-ai-table-row--docker"
-                                    onClick={(event) =>
-                                      openSmartMenu(event, {
-                                        kind: "docker-ps",
-                                        row,
-                                        x: event.clientX,
-                                        y: event.clientY,
-                                      })
-                                    }
-                                  >
-                                    <span>{row.name || row.containerId}</span>
-                                    <span>{row.image || "--"}</span>
-                                    <span>{row.status || "--"}</span>
-                                    <span>{row.ports || "--"}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="xterminal-ai-table">
-                              <div className="xterminal-ai-table-head xterminal-ai-table-head--ls">
-                                <span>{t("terminal.ai.table.ls.name")}</span>
-                                <span>{t("terminal.ai.table.ls.mode")}</span>
-                                <span>{t("terminal.ai.table.ls.size")}</span>
-                                <span>{t("terminal.ai.table.ls.modified")}</span>
-                              </div>
-                              <div className="xterminal-ai-table-body">
-                                {smartTable.rows.map((row) => (
-                                  <button
-                                    key={row.id}
-                                    type="button"
-                                    className="xterminal-ai-table-row xterminal-ai-table-row--ls"
-                                    onClick={(event) =>
-                                      openSmartMenu(event, {
-                                        kind: "ls",
-                                        row,
-                                        x: event.clientX,
-                                        y: event.clientY,
-                                      })
-                                    }
-                                  >
-                                    <span>{row.name}</span>
-                                    <span>{row.mode}</span>
-                                    <span>{row.size}</span>
-                                    <span>{row.modified}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
+	                  {hasAiInsights && (
+	                    <section className={`xterminal-ai-context${aiInsightsOpen ? " is-open" : ""}`}>
+	                      <button
+	                        type="button"
+	                        className="xterminal-ai-context-toggle"
+	                        onClick={() => setAiInsightsOpen((prev) => !prev)}
+	                        aria-expanded={aiInsightsOpen}
+	                      >
+	                        <div className="xterminal-ai-context-copy">
+	                          <div className="xterminal-ai-context-title">
+	                            {t("terminal.ai.context.title")}
+	                          </div>
+	                          <div className="xterminal-ai-context-summary">
+	                            {t(aiContextSummaryKey)}
+	                          </div>
+	                        </div>
+	                        <AppIcon
+	                          className={`xterminal-ai-context-caret${aiInsightsOpen ? " is-open" : ""}`}
+	                          icon="material-symbols:keyboard-arrow-down-rounded"
+	                          size={18}
+	                        />
+	                      </button>
+	                      {aiInsightsOpen && (
+	                        <div className="xterminal-ai-context-body">
+	                          <div className="xterminal-ai-insights">
+	                            {smartTable && (
+	                              <section className="xterminal-ai-card">
+	                                <div className="xterminal-ai-card-head">
+	                                  <div className="xterminal-ai-card-title">
+	                                    <AppIcon icon="material-symbols:table-view-rounded" size={15} />
+	                                    {t("terminal.ai.smartTable.title")}
+	                                  </div>
+	                                  <span className="xterminal-ai-card-time">
+	                                    {new Date(smartTable.updatedAt).toLocaleTimeString()}
+	                                  </span>
+	                                </div>
+	                                <div className="xterminal-ai-card-subtitle">
+	                                  {t("terminal.ai.smartTable.command", { command: smartTable.command })}
+	                                </div>
+	                                {smartTable.kind === "docker-ps" ? (
+	                                  <div className="xterminal-ai-table">
+	                                    <div className="xterminal-ai-table-head xterminal-ai-table-head--docker">
+	                                      <span>{t("terminal.ai.table.docker.name")}</span>
+	                                      <span>{t("terminal.ai.table.docker.image")}</span>
+	                                      <span>{t("terminal.ai.table.docker.status")}</span>
+	                                      <span>{t("terminal.ai.table.docker.ports")}</span>
+	                                    </div>
+	                                    <div className="xterminal-ai-table-body">
+	                                      {smartTable.rows.map((row) => (
+	                                        <button
+	                                          key={row.id}
+	                                          type="button"
+	                                          className="xterminal-ai-table-row xterminal-ai-table-row--docker"
+	                                          onClick={(event) =>
+	                                            openSmartMenu(event, {
+	                                              kind: "docker-ps",
+	                                              row,
+	                                              x: event.clientX,
+	                                              y: event.clientY,
+	                                            })
+	                                          }
+	                                        >
+	                                          <span>{row.name || row.containerId}</span>
+	                                          <span>{row.image || "--"}</span>
+	                                          <span>{row.status || "--"}</span>
+	                                          <span>{row.ports || "--"}</span>
+	                                        </button>
+	                                      ))}
+	                                    </div>
+	                                  </div>
+	                                ) : (
+	                                  <div className="xterminal-ai-table">
+	                                    <div className="xterminal-ai-table-head xterminal-ai-table-head--ls">
+	                                      <span>{t("terminal.ai.table.ls.name")}</span>
+	                                      <span>{t("terminal.ai.table.ls.mode")}</span>
+	                                      <span>{t("terminal.ai.table.ls.size")}</span>
+	                                      <span>{t("terminal.ai.table.ls.modified")}</span>
+	                                    </div>
+	                                    <div className="xterminal-ai-table-body">
+	                                      {smartTable.rows.map((row) => (
+	                                        <button
+	                                          key={row.id}
+	                                          type="button"
+	                                          className="xterminal-ai-table-row xterminal-ai-table-row--ls"
+	                                          onClick={(event) =>
+	                                            openSmartMenu(event, {
+	                                              kind: "ls",
+	                                              row,
+	                                              x: event.clientX,
+	                                              y: event.clientY,
+	                                            })
+	                                          }
+	                                        >
+	                                          <span>{row.name}</span>
+	                                          <span>{row.mode}</span>
+	                                          <span>{row.size}</span>
+	                                          <span>{row.modified}</span>
+	                                        </button>
+	                                      ))}
+	                                    </div>
+	                                  </div>
+	                                )}
+	                              </section>
+	                            )}
+	                            {logSummaries.length > 0 && (
+	                              <section className="xterminal-ai-card xterminal-ai-card--log">
+	                                <div className="xterminal-ai-card-head">
+	                                  <div className="xterminal-ai-card-title">
+	                                    <AppIcon icon="material-symbols:analytics-rounded" size={15} />
+	                                    {t("terminal.ai.logSummary.title")}
+	                                  </div>
+	                                </div>
+	                                <div className="xterminal-ai-log-list">
+	                                  {[...logSummaries].reverse().map((item) => (
+	                                    <div key={item.id} className="xterminal-ai-log-item">
+	                                      <div className="xterminal-ai-log-time">
+	                                        {new Date(item.ts).toLocaleTimeString()}
+	                                      </div>
+	                                      <div className="xterminal-ai-log-text">
+	                                        {t("terminal.ai.logSummary.line", {
+	                                          loginFailed: item.loginFailed,
+	                                          dbTimeout: item.dbTimeout,
+	                                          errorCount: item.errorCount,
+	                                        })}
+	                                      </div>
+	                                    </div>
+	                                  ))}
+	                                </div>
+	                              </section>
+	                            )}
+	                          </div>
+	                        </div>
+	                      )}
+	                    </section>
+	                  )}
+                  {aiMessages.length === 0 && (
+                    <section className="xterminal-ai-empty xterminal-ai-onboard">
+                      <div className="xterminal-ai-onboard-badge">
+                        {t("terminal.ai.onboard.badge")}
+                      </div>
+                      <div className="xterminal-ai-onboard-title">
+                        {t("terminal.ai.onboard.title")}
+                      </div>
+                      <div className="xterminal-ai-onboard-hint">
+                        <AppIcon icon="material-symbols:tips-and-updates-outline-rounded" size={16} />
+                        <span>
+                          {t(
+                            hasAiInsights
+                              ? "terminal.ai.onboard.hint.ready"
+                              : "terminal.ai.onboard.hint",
                           )}
-                        </section>
-                      )}
-                      {logSummaries.length > 0 && (
-                        <section className="xterminal-ai-card xterminal-ai-card--log">
-                          <div className="xterminal-ai-card-head">
-                            <div className="xterminal-ai-card-title">
-                              <AppIcon icon="material-symbols:analytics-rounded" size={15} />
-                              {t("terminal.ai.logSummary.title")}
-                            </div>
+                        </span>
+                      </div>
+                      <div className="xterminal-ai-onboard-actions">
+                        <button
+                          type="button"
+                          className="xterminal-ai-onboard-action"
+                          onClick={() => {
+                            void handleAiOnboardAction("analyze");
+                          }}
+                        >
+                          <div className="xterminal-ai-onboard-action-title">
+                            {t("terminal.ai.onboard.action.analyze.title")}
                           </div>
-                          <div className="xterminal-ai-log-list">
-                            {[...logSummaries].reverse().map((item) => (
-                              <div key={item.id} className="xterminal-ai-log-item">
-                                <div className="xterminal-ai-log-time">
-                                  {new Date(item.ts).toLocaleTimeString()}
-                                </div>
-                                <div className="xterminal-ai-log-text">
-                                  {t("terminal.ai.logSummary.line", {
-                                    loginFailed: item.loginFailed,
-                                    dbTimeout: item.dbTimeout,
-                                    errorCount: item.errorCount,
-                                  })}
-                                </div>
-                              </div>
-                            ))}
+                          <div className="xterminal-ai-onboard-action-desc">
+                            {t("terminal.ai.onboard.action.analyze.desc")}
                           </div>
-                        </section>
-                      )}
-                    </div>
-                  )}
-                  {aiMessages.length === 0 && !hasAiInsights && (
-                    <div className="xterminal-ai-empty">
-                      {t("terminal.ai.empty")}
-                    </div>
+                        </button>
+                        <button
+                          type="button"
+                          className="xterminal-ai-onboard-action"
+                          onClick={() => {
+                            void handleAiOnboardAction("fix");
+                          }}
+                        >
+                          <div className="xterminal-ai-onboard-action-title">
+                            {t("terminal.ai.onboard.action.fix.title")}
+                          </div>
+                          <div className="xterminal-ai-onboard-action-desc">
+                            {t("terminal.ai.onboard.action.fix.desc")}
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          className="xterminal-ai-onboard-action"
+                          onClick={() => {
+                            void handleAiOnboardAction("ask");
+                          }}
+                        >
+                          <div className="xterminal-ai-onboard-action-title">
+                            {t("terminal.ai.onboard.action.ask.title")}
+                          </div>
+                          <div className="xterminal-ai-onboard-action-desc">
+                            {t("terminal.ai.onboard.action.ask.desc")}
+                          </div>
+                        </button>
+                      </div>
+                      <div className="xterminal-ai-onboard-shortcuts">
+                        <span className="xterminal-ai-onboard-shortcuts-label">
+                          {t("terminal.ai.onboard.shortcuts")}
+                        </span>
+                        <code>#ai</code>
+                        <code>#fix</code>
+                      </div>
+                    </section>
                   )}
                   {aiMessages.map((msg, index) => {
                     const prev = aiMessages[index - 1];
@@ -5408,40 +6007,6 @@ export function XTerminal({
                           <div className="xterminal-agent-plan-head">
                             <div className="xterminal-agent-plan-title">
                               {t("terminal.agent.card.title")}
-                            </div>
-                            <div className="xterminal-agent-plan-actions">
-                              <button
-                                type="button"
-                                className={`xterminal-agent-plan-btn${
-                                  hasBlockedActions ? " xterminal-agent-plan-btn--danger" : ""
-                                }`}
-                                onClick={() => {
-                                  if (hasBlockedActions) {
-                                    openForceRunDialog(msg.id);
-                                    return;
-                                  }
-                                  void runRemainingAgentActions(msg.id);
-                                }}
-                                disabled={
-                                  agentMode !== "confirm_then_execute" ||
-                                  plan.status === "running" ||
-                                  !hasRunnableActions ||
-                                  plan.actions.some((action) => action.status === "running")
-                                }
-                              >
-                                {t("terminal.agent.plan.executeRemaining")}
-                              </button>
-                              <button
-                                type="button"
-                                className="xterminal-agent-plan-btn xterminal-agent-plan-btn--ghost"
-                                onClick={() => stopRemainingAgentActions(msg.id)}
-                                disabled={
-                                  plan.status !== "running" &&
-                                  !plan.actions.some((action) => action.status === "running")
-                                }
-                              >
-                                {t("terminal.agent.plan.stopRemaining")}
-                              </button>
                             </div>
                           </div>
                           <div className="xterminal-agent-plan-summary">
@@ -5512,6 +6077,42 @@ export function XTerminal({
                               )}
                             </div>
                           ))}
+                          <div className="xterminal-agent-plan-footer">
+                            <div className="xterminal-agent-plan-actions">
+                              <button
+                                type="button"
+                                className={`xterminal-agent-plan-btn${
+                                  hasBlockedActions ? " xterminal-agent-plan-btn--danger" : ""
+                                }`}
+                                onClick={() => {
+                                  if (hasBlockedActions) {
+                                    openForceRunDialog(msg.id);
+                                    return;
+                                  }
+                                  void runRemainingAgentActions(msg.id);
+                                }}
+                                disabled={
+                                  agentMode !== "confirm_then_execute" ||
+                                  plan.status === "running" ||
+                                  !hasRunnableActions ||
+                                  plan.actions.some((action) => action.status === "running")
+                                }
+                              >
+                                {t("terminal.agent.plan.executeRemaining")}
+                              </button>
+                              <button
+                                type="button"
+                                className="xterminal-agent-plan-btn xterminal-agent-plan-btn--ghost"
+                                onClick={() => stopRemainingAgentActions(msg.id)}
+                                disabled={
+                                  plan.status !== "running" &&
+                                  !plan.actions.some((action) => action.status === "running")
+                                }
+                              >
+                                {t("terminal.agent.plan.stopRemaining")}
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -5520,10 +6121,39 @@ export function XTerminal({
                   {latestAgentPlanForActivity &&
                     !latestAgentPlanForActivity.final_report_ready &&
                     (latestAgentPlanForActivity.thinking ||
-                      (latestAgentPlanForActivity.activities?.length || 0) > 0) && (
-                    <section className="xterminal-agent-activity-panel" aria-live="polite">
-                      <div className="xterminal-agent-activity-title">
-                        {t("terminal.agent.activity.title")}
+                      latestAgentActivities.length > 0) && (
+                    <section className="xterminal-agent-activity-panel">
+                      <div className="xterminal-agent-activity-head">
+                        <div className="xterminal-agent-activity-title">
+                          {t("terminal.agent.activity.title")}
+                        </div>
+                        {canExpandAgentActivities && (
+                          <button
+                            type="button"
+                            className="xterminal-agent-activity-toggle"
+                            aria-expanded={agentActivityExpanded}
+                            aria-label={
+                              agentActivityExpanded
+                                ? t("terminal.agent.activity.collapse")
+                                : t("terminal.agent.activity.expand")
+                            }
+                            title={
+                              agentActivityExpanded
+                                ? t("terminal.agent.activity.collapse")
+                                : t("terminal.agent.activity.expand")
+                            }
+                            onClick={() => setAgentActivityExpanded((prev) => !prev)}
+                          >
+                            <AppIcon
+                              icon={
+                                agentActivityExpanded
+                                  ? "material-symbols:expand-less-rounded"
+                                  : "material-symbols:expand-more-rounded"
+                              }
+                              size={16}
+                            />
+                          </button>
+                        )}
                       </div>
                       {latestAgentPlanForActivity.thinking && (
                         <div className="xterminal-agent-plan-thinking" role="status" aria-live="polite">
@@ -5534,14 +6164,14 @@ export function XTerminal({
                           <span>{t("terminal.agent.activity.thinkingStatus")}</span>
                         </div>
                       )}
-                      {(latestAgentPlanForActivity.activities?.length || 0) > 0 && (
+                      {latestAgentActivities.length > 0 && agentActivityExpanded && (
                         <div
                           className="xterminal-agent-activity-list"
                           role="log"
                           aria-live="polite"
                           ref={agentActivityListRef}
                         >
-                          {(latestAgentPlanForActivity.activities || []).map((activity) => (
+                          {latestAgentActivities.map((activity) => (
                             <div
                               key={activity.id}
                               className={`xterminal-agent-activity-item xterminal-agent-activity-item--${activity.tone}`}
@@ -5556,14 +6186,29 @@ export function XTerminal({
                           ))}
                         </div>
                       )}
+                      {latestAgentActivity && !agentActivityExpanded && (
+                        <div className="xterminal-agent-activity-current">
+                          <div
+                            className={`xterminal-agent-activity-item xterminal-agent-activity-item--${latestAgentActivity.tone}`}
+                          >
+                            <span className="xterminal-agent-activity-time">
+                              {formatAgentActivityTime(latestAgentActivity.ts)}
+                            </span>
+                            <span className="xterminal-agent-activity-text">
+                              {latestAgentActivity.text}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </section>
                   )}
                 </div>
                 {aiError && <div className="xterminal-ai-error">{aiError}</div>}
                 <div className="xterminal-ai-input">
-                  <div className="xterminal-ai-input-box">
-                    <textarea
-                      value={aiInput}
+	                  <div className="xterminal-ai-input-box">
+	                    <textarea
+	                      ref={aiInputRef}
+	                      value={aiInput}
                       onChange={(event) => setAiInput(event.target.value)}
                       placeholder={t("terminal.ai.input.placeholder", {
                         modifier: modifierKeyAbbr,
@@ -5577,9 +6222,9 @@ export function XTerminal({
                       }}
                       disabled={aiBusy}
                     />
-                    <div className="xterminal-ai-input-footer">
-                      <div className="xterminal-ai-input-meta">
-                        <div className="xterminal-ai-model-dropdown" ref={aiModelMenuRef}>
+	                      <div className="xterminal-ai-input-footer">
+	                      <div className="xterminal-ai-input-meta">
+	                        <div className="xterminal-ai-model-dropdown" ref={aiModelMenuRef}>
                           <button
                             type="button"
                             className={`xterminal-ai-model-pill${aiModelMenuOpen ? " xterminal-ai-model-pill--open" : ""}`}
@@ -5623,30 +6268,33 @@ export function XTerminal({
                             </div>
                           )}
                         </div>
-                      </div>
-                      <div className="xterminal-ai-input-actions">
-                        <button
-                          type="button"
-                          className="xterminal-ai-footer-icon-btn"
-                          onClick={clearAiConversationContext}
-                          title={t("terminal.ai.clearContext")}
-                          aria-label={t("terminal.ai.clearContext")}
-                        >
-                          <AppIcon icon="proicons:delete" size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          className="xterminal-ai-footer-icon-btn xterminal-ai-footer-icon-btn--danger"
-                          onClick={interruptAiConversation}
-                          disabled={!aiBusy}
-                          title={t("terminal.ai.stop")}
-                          aria-label={t("terminal.ai.stop")}
-                        >
-                          <AppIcon icon="proicons:record-stop" size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          className="xterminal-ai-send"
+	                      </div>
+	                      <div className="xterminal-ai-input-actions">
+	                        {aiMessages.length > 0 && (
+	                          <button
+	                            type="button"
+	                            className="xterminal-ai-footer-icon-btn"
+	                            onClick={clearAiConversationContext}
+	                            title={t("terminal.ai.clearContext")}
+	                            aria-label={t("terminal.ai.clearContext")}
+	                          >
+	                            <AppIcon icon="proicons:delete" size={16} />
+	                          </button>
+	                        )}
+	                        {aiBusy && (
+	                          <button
+	                            type="button"
+	                            className="xterminal-ai-footer-icon-btn xterminal-ai-footer-icon-btn--danger"
+	                            onClick={interruptAiConversation}
+	                            title={t("terminal.ai.stop")}
+	                            aria-label={t("terminal.ai.stop")}
+	                          >
+	                            <AppIcon icon="proicons:record-stop" size={16} />
+	                          </button>
+	                        )}
+	                        <button
+	                          type="button"
+	                          className="xterminal-ai-send"
                           onClick={() => {
                             void sendAiMessage(aiInput);
                             setAiInput("");

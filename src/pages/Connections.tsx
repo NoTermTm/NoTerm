@@ -671,6 +671,21 @@ interface SplitLayout {
   ratio: number;
 }
 
+const formatSessionEndpoint = (connection: SshConnectionConfig) =>
+  `${connection.username ? `${connection.username}@` : ""}${connection.host}`;
+
+const buildSessionTab = (
+  sessionId: string,
+  session: ActiveSession,
+  title?: string,
+  subtitle?: string,
+): Tab => ({
+  id: sessionId,
+  title: title ?? session.connection.name,
+  subtitle: subtitle ?? formatSessionEndpoint(session.connection),
+  color: session.kind === "ssh" ? normalizeColor(session.connection.color) : undefined,
+});
+
 export function ConnectionsPage({
   activePanel,
   setActivePanel,
@@ -685,7 +700,6 @@ export function ConnectionsPage({
     ssh: t("connections.defaultName"),
     rdp: t("connections.rdpDefaultName"),
   };
-  const localSessionIdRef = useRef<string | null>(null);
   const [connections, setConnections] = useState<ConnectionConfig[]>([]);
   const [selectedConnection, setSelectedConnection] =
     useState<ConnectionConfig | null>(null);
@@ -1195,12 +1209,16 @@ export function ConnectionsPage({
         sessionCount > 1
           ? `${connection.name} (${sessionCount})`
           : connection.name;
-      const newTab: Tab = {
-        id: sessionId,
-        title: tabTitle,
-        subtitle: `${connection.username ? `${connection.username}@` : ""}${connection.host}`,
-        color: kind === "ssh" ? normalizeColor(connection.color) : undefined,
-      };
+      const newTab = buildSessionTab(
+        sessionId,
+        {
+          sessionId,
+          connectionId: connection.id,
+          connection,
+          kind,
+        },
+        tabTitle,
+      );
       setTabs((prev) => [...prev, newTab]);
       if (activateTab) setActiveTabId(sessionId);
     }
@@ -1227,22 +1245,6 @@ export function ConnectionsPage({
     }
     createSession(connection, true, true);
   };
-
-  useEffect(() => {
-    if (localSessionIdRef.current) return;
-    const localConnection: SshConnectionConfig = {
-      kind: "ssh",
-      id: "local",
-      name: t("connections.localTerminal"),
-      host: "local",
-      port: 0,
-      username: "local",
-      auth_type: { type: "Password", password: "" },
-      encoding: "utf-8",
-    };
-    const sessionId = createSession(localConnection, true, true, "local");
-    localSessionIdRef.current = sessionId;
-  }, []);
 
   const openSplitPicker = (
     baseSessionId: string,
@@ -1291,13 +1293,49 @@ export function ConnectionsPage({
 
   const handleDisconnect = async (sessionId: string) => {
     try {
+      const session = activeSessions.get(sessionId);
+      if (!session) return;
       const splitForPrimary = splitLayouts.get(sessionId);
       const splitForSecondary = Array.from(splitLayouts.entries()).find(
         ([, layout]) => layout.secondarySessionId === sessionId,
       );
 
       if (splitForPrimary) {
-        await disconnectSession(splitForPrimary.secondarySessionId);
+        const promotedSession = activeSessions.get(splitForPrimary.secondarySessionId);
+        await disconnectSession(sessionId);
+
+        setActiveSessions((prev) => {
+          const next = new Map(prev);
+          next.delete(sessionId);
+          return next;
+        });
+
+        setSplitLayouts((prev) => {
+          const next = new Map(prev);
+          next.delete(sessionId);
+          return next;
+        });
+
+        if (promotedSession) {
+          setTabs((prev) =>
+            prev.map((tab) =>
+              tab.id === sessionId
+                ? buildSessionTab(splitForPrimary.secondarySessionId, promotedSession)
+                : tab,
+            ),
+          );
+          if (activeTabId === sessionId) {
+            setActiveTabId(splitForPrimary.secondarySessionId);
+          }
+          setSelectedConnection(promotedSession.connection);
+        } else {
+          setTabs((prev) => prev.filter((tab) => tab.id !== sessionId));
+          if (activeTabId === sessionId) {
+            setActiveTabId(null);
+            setSelectedConnection(null);
+          }
+        }
+        return;
       }
 
       await disconnectSession(sessionId);
@@ -1305,19 +1343,32 @@ export function ConnectionsPage({
       setActiveSessions((prev) => {
         const next = new Map(prev);
         next.delete(sessionId);
-        if (splitForPrimary) {
-          next.delete(splitForPrimary.secondarySessionId);
-        }
         return next;
       });
 
-      if (splitForPrimary || splitForSecondary) {
+      if (splitForSecondary) {
+        const primarySessionId = splitForSecondary[0];
+        const primarySession = activeSessions.get(primarySessionId);
         setSplitLayouts((prev) => {
           const next = new Map(prev);
-          if (splitForPrimary) next.delete(sessionId);
-          if (splitForSecondary) next.delete(splitForSecondary[0]);
+          next.delete(primarySessionId);
           return next;
         });
+
+        if (primarySession) {
+          setTabs((prev) =>
+            prev.map((tab) =>
+              tab.id === primarySessionId
+                ? buildSessionTab(primarySessionId, primarySession)
+                : tab,
+            ),
+          );
+          setSelectedConnection(primarySession.connection);
+          if (activeTabId === sessionId) {
+            setActiveTabId(primarySessionId);
+          }
+        }
+        return;
       }
 
       // 移除标签页
@@ -1330,6 +1381,68 @@ export function ConnectionsPage({
       console.error("Disconnect error:", error);
     }
   };
+
+  useEffect(() => {
+    setTabs((prev) => {
+      let changed = false;
+      const nextTabs = prev.map((tab) => {
+        const primarySession = activeSessions.get(tab.id);
+        if (!primarySession) return tab;
+
+        const split = splitLayouts.get(tab.id);
+        const secondarySession = split
+          ? activeSessions.get(split.secondarySessionId)
+          : undefined;
+        const nextTab = secondarySession
+          ? buildSessionTab(
+              tab.id,
+              primarySession,
+              `${primarySession.connection.name} / ${secondarySession.connection.name}`,
+              `${formatSessionEndpoint(primarySession.connection)} | ${formatSessionEndpoint(
+                secondarySession.connection,
+              )}`,
+            )
+          : buildSessionTab(tab.id, primarySession);
+
+        if (
+          tab.title === nextTab.title &&
+          tab.subtitle === nextTab.subtitle &&
+          tab.color === nextTab.color
+        ) {
+          return tab;
+        }
+        changed = true;
+        return nextTab;
+      });
+      return changed ? nextTabs : prev;
+    });
+  }, [activeSessions, setTabs, splitLayouts]);
+
+  useEffect(() => {
+    const onTabCloseRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ id?: string }>).detail;
+      const sessionId = detail?.id;
+      if (!sessionId || !activeSessions.has(sessionId)) return;
+      if (splitLayouts.has(sessionId)) {
+        event.preventDefault();
+        void handleDisconnect(sessionId);
+        return;
+      }
+
+      void (async () => {
+        await disconnectSession(sessionId);
+        setActiveSessions((prev) => {
+          const next = new Map(prev);
+          next.delete(sessionId);
+          return next;
+        });
+      })();
+    };
+    window.addEventListener("app-tab-close-request", onTabCloseRequest);
+    return () => {
+      window.removeEventListener("app-tab-close-request", onTabCloseRequest);
+    };
+  }, [activeSessions, handleDisconnect, splitLayouts]);
 
   const handleTestConnection = async () => {
     if (!isSshConnection(editingConnection)) return;
@@ -2543,15 +2656,51 @@ export function ConnectionsPage({
     }
 
     return (
-      <div className="empty-state">
-        <span className="empty-state-icon" aria-hidden="true">
-          <AppIcon icon="material-symbols:terminal-rounded" size={64} />
-        </span>
-        <div>
-          <h3>{t("connections.empty.readyTitle")}</h3>
-          <p style={{ marginTop: 20 }}>
-            {t("connections.empty.readyDesc")}
-          </p>
+      <div className="connections-welcome">
+        <div className="connections-welcome-hero">
+          <span className="connections-welcome-icon" aria-hidden="true">
+            <AppIcon icon="material-symbols:terminal-rounded" size={36} />
+          </span>
+          <h2 className="connections-welcome-title">{t("connections.welcome.title")}</h2>
+          <p className="connections-welcome-desc">{t("connections.welcome.subtitle")}</p>
+        </div>
+        <div className="connections-welcome-features">
+          <div className="connections-welcome-feature">
+            <span className="connections-welcome-feature-icon" aria-hidden="true">
+              <AppIcon icon="material-symbols:tab-rounded" size={16} />
+            </span>
+            <div>
+              <p className="connections-welcome-feature-title">{t("connections.welcome.feature.tabs")}</p>
+              <p className="connections-welcome-feature-desc">{t("connections.welcome.feature.tabsDesc")}</p>
+            </div>
+          </div>
+          <div className="connections-welcome-feature">
+            <span className="connections-welcome-feature-icon" aria-hidden="true">
+              <AppIcon icon="material-symbols:folder-open-rounded" size={16} />
+            </span>
+            <div>
+              <p className="connections-welcome-feature-title">{t("connections.welcome.feature.sftp")}</p>
+              <p className="connections-welcome-feature-desc">{t("connections.welcome.feature.sftpDesc")}</p>
+            </div>
+          </div>
+          <div className="connections-welcome-feature">
+            <span className="connections-welcome-feature-icon" aria-hidden="true">
+              <AppIcon icon="material-symbols:smart-toy-rounded" size={16} />
+            </span>
+            <div>
+              <p className="connections-welcome-feature-title">{t("connections.welcome.feature.ai")}</p>
+              <p className="connections-welcome-feature-desc">{t("connections.welcome.feature.aiDesc")}</p>
+            </div>
+          </div>
+          <div className="connections-welcome-feature">
+            <span className="connections-welcome-feature-icon" aria-hidden="true">
+              <AppIcon icon="material-symbols:code-rounded" size={16} />
+            </span>
+            <div>
+              <p className="connections-welcome-feature-title">{t("connections.welcome.feature.scripts")}</p>
+              <p className="connections-welcome-feature-desc">{t("connections.welcome.feature.scriptsDesc")}</p>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -2735,9 +2884,25 @@ export function ConnectionsPage({
           </div>
           <div className="connections-list-items">
             {filteredConnections.length === 0 && (
-              <div className="connections-empty-hint">
-                {t("connections.list.empty")}
-              </div>
+              connections.length === 0 ? (
+                <div className="connections-onboard">
+                  <span className="connections-onboard-icon" aria-hidden="true">
+                    <AppIcon icon="material-symbols:terminal-rounded" size={28} />
+                  </span>
+                  <p className="connections-onboard-title">{t("connections.onboard.title")}</p>
+                  <p className="connections-onboard-desc">{t("connections.onboard.subtitle")}</p>
+                  <button
+                    className="btn btn-primary connections-onboard-btn"
+                    onClick={() => void handleAddConnection()}
+                  >
+                    {t("connections.onboard.cta")}
+                  </button>
+                </div>
+              ) : (
+                <div className="connections-empty-hint">
+                  {t("connections.list.empty")}
+                </div>
+              )
             )}
             {filteredConnections.map((conn) => {
               const connColor = normalizeColor(conn.color);

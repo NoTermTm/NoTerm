@@ -1,7 +1,8 @@
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getTranslator } from "../i18n";
 import type { AgentAction, AgentPlan, AgentPlanParseResult, AgentRisk } from "../types/agent";
 
-export type AiProvider = "openai" | "anthropic";
+export type AiProvider = "openai" | "anthropic" | "volcengine";
 
 export type AiMessage = {
   role: "system" | "user" | "assistant";
@@ -21,6 +22,10 @@ export type AiSettings = {
     baseUrl: string;
     apiKey: string;
   };
+  volcengine: {
+    baseUrl: string;
+    apiKey: string;
+  };
 };
 
 export type AiStreamHandler = (delta: string) => void;
@@ -30,6 +35,35 @@ const normalizeBaseUrl = (value: string) => {
   if (!trimmed) return "";
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
 };
+
+const isOpenAiCompatibleProvider = (
+  provider: AiProvider,
+): provider is "openai" | "volcengine" =>
+  provider === "openai" || provider === "volcengine";
+
+const getOpenAiCompatibleConfig = (
+  settings: AiSettings,
+  provider: "openai" | "volcengine",
+) =>
+  provider === "openai"
+    ? settings.openai
+    : settings.volcengine;
+
+const getOpenAiCompatibleErrorKey = (
+  provider: "openai" | "volcengine",
+  type: "url" | "key" | "requestFail" | "empty",
+) => {
+  const prefix = provider === "openai" ? "openai" : "volcengine";
+  return `ai.error.${prefix}${type[0].toUpperCase()}${type.slice(1)}`;
+};
+
+const getOpenAiCompatibleChatUrl = (
+  provider: "openai" | "volcengine",
+  baseUrl: string,
+) =>
+  provider === "openai"
+    ? `${baseUrl}/v1/chat/completions`
+    : `${baseUrl}/chat/completions`;
 
 type SseEvent = {
   event: string;
@@ -213,16 +247,18 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
     throw new Error(t("ai.error.modelMissing"));
   }
 
-  if (settings.provider === "openai") {
-    const baseUrl = normalizeBaseUrl(settings.openai.baseUrl);
-    if (!baseUrl) throw new Error(t("ai.error.openaiUrl"));
-    if (!settings.openai.apiKey) throw new Error(t("ai.error.openaiKey"));
+  if (isOpenAiCompatibleProvider(settings.provider)) {
+    const provider = settings.provider;
+    const config = getOpenAiCompatibleConfig(settings, provider);
+    const baseUrl = normalizeBaseUrl(config.baseUrl);
+    if (!baseUrl) throw new Error(t(getOpenAiCompatibleErrorKey(provider, "url")));
+    if (!config.apiKey) throw new Error(t(getOpenAiCompatibleErrorKey(provider, "key")));
 
-    const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const resp = await tauriFetch(getOpenAiCompatibleChatUrl(provider, baseUrl), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${settings.openai.apiKey}`,
+        Authorization: `Bearer ${config.apiKey}`,
       },
       body: JSON.stringify({
         model,
@@ -233,7 +269,7 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
 
     if (!resp.ok) {
       const text = await resp.text();
-      throw new Error(text || t("ai.error.openaiRequestFail"));
+      throw new Error(text || t(getOpenAiCompatibleErrorKey(provider, "requestFail")));
     }
 
     const data = (await resp.json()) as {
@@ -242,7 +278,7 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
 
     const content = data.choices?.[0]?.message?.content?.trim();
     if (!content) {
-      throw new Error(t("ai.error.openaiEmpty"));
+      throw new Error(t(getOpenAiCompatibleErrorKey(provider, "empty")));
     }
 
     return content;
@@ -252,7 +288,7 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
   if (!baseUrl) throw new Error(t("ai.error.anthropicUrl"));
   if (!settings.anthropic.apiKey) throw new Error(t("ai.error.anthropicKey"));
 
-  const resp = await fetch(`${baseUrl}/v1/messages`, {
+  const resp = await tauriFetch(`${baseUrl}/v1/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -305,17 +341,19 @@ export async function sendAiChatStream(
     throw new Error(t("ai.error.modelMissing"));
   }
 
-  if (settings.provider === "openai") {
-    const baseUrl = normalizeBaseUrl(settings.openai.baseUrl);
-    if (!baseUrl) throw new Error(t("ai.error.openaiUrl"));
-    if (!settings.openai.apiKey) throw new Error(t("ai.error.openaiKey"));
+  if (isOpenAiCompatibleProvider(settings.provider)) {
+    const provider = settings.provider;
+    const config = getOpenAiCompatibleConfig(settings, provider);
+    const baseUrl = normalizeBaseUrl(config.baseUrl);
+    if (!baseUrl) throw new Error(t(getOpenAiCompatibleErrorKey(provider, "url")));
+    if (!config.apiKey) throw new Error(t(getOpenAiCompatibleErrorKey(provider, "key")));
 
-    const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const resp = await tauriFetch(getOpenAiCompatibleChatUrl(provider, baseUrl), {
       method: "POST",
       signal: options?.signal,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${settings.openai.apiKey}`,
+        Authorization: `Bearer ${config.apiKey}`,
       },
       body: JSON.stringify({
         model,
@@ -327,7 +365,7 @@ export async function sendAiChatStream(
 
     if (!resp.ok) {
       const text = await resp.text();
-      throw new Error(text || t("ai.error.openaiRequestFail"));
+      throw new Error(text || t(getOpenAiCompatibleErrorKey(provider, "requestFail")));
     }
 
     let final = "";
@@ -349,7 +387,7 @@ export async function sendAiChatStream(
     });
 
     if (!final.trim()) {
-      throw new Error(t("ai.error.openaiEmpty"));
+      throw new Error(t(getOpenAiCompatibleErrorKey(provider, "empty")));
     }
     return final;
   }
@@ -358,7 +396,7 @@ export async function sendAiChatStream(
   if (!baseUrl) throw new Error(t("ai.error.anthropicUrl"));
   if (!settings.anthropic.apiKey) throw new Error(t("ai.error.anthropicKey"));
 
-  const resp = await fetch(`${baseUrl}/v1/messages`, {
+  const resp = await tauriFetch(`${baseUrl}/v1/messages`, {
     method: "POST",
     signal: options?.signal,
     headers: {

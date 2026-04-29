@@ -2,6 +2,7 @@ import { Store } from "@tauri-apps/plugin-store";
 
 export type TerminalThemeName =
   | "light"
+  | "paper"
   | "dark"
   | "monokai"
   | "solarized"
@@ -39,11 +40,13 @@ export type AppSettings = {
   "terminal.backgroundOpacity": number;
   "terminal.backgroundBlur": number;
   "ai.enabled": boolean;
-  "ai.provider": "openai" | "anthropic";
+  "ai.provider": "openai" | "anthropic" | "volcengine";
   "ai.openai.baseUrl": string;
   "ai.openai.apiKey": string;
   "ai.anthropic.baseUrl": string;
   "ai.anthropic.apiKey": string;
+  "ai.volcengine.baseUrl": string;
+  "ai.volcengine.apiKey": string;
   "ai.model": string;
   "ai.models": string[];
   "ai.agentMode": "suggest_only" | "confirm_then_execute";
@@ -68,9 +71,47 @@ export type AppSettings = {
 const isWindowsPlatform = () =>
   typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent || navigator.platform);
 
+export const TERMINAL_ICON_FONT_FALLBACKS = [
+  "Symbols Nerd Font Mono",
+  "Symbols Nerd Font",
+  "Nerd Font Symbols",
+  "Font Awesome 6 Free",
+  "Font Awesome 5 Free",
+  "FontAwesome",
+  "Material Symbols Rounded",
+  "Material Symbols Outlined",
+  "Material Icons",
+  "Apple Color Emoji",
+  "Segoe UI Emoji",
+] as const;
+
+const quoteFontFamily = (family: string) => `"${family.replace(/"/g, '\\"')}"`;
+
+export const TERMINAL_ICON_FONT_FALLBACK_STACK =
+  TERMINAL_ICON_FONT_FALLBACKS.map(quoteFontFamily).join(", ");
+
+export function withTerminalIconFontFallback(fontFamily: string) {
+  const base = (fontFamily || "").trim();
+  const baseWithoutGeneric = base
+    .replace(/,\s*monospace\s*$/i, "")
+    .replace(/\bmonospace\s*$/i, "")
+    .trim()
+    .replace(/,\s*$/, "");
+  const normalized = baseWithoutGeneric.toLowerCase();
+  const iconFallbacks = TERMINAL_ICON_FONT_FALLBACKS.filter(
+    (family) => !normalized.includes(family.toLowerCase()),
+  )
+    .map(quoteFontFamily)
+    .join(", ");
+
+  if (!baseWithoutGeneric) return `${TERMINAL_ICON_FONT_FALLBACK_STACK}, monospace`;
+  if (!iconFallbacks) return `${baseWithoutGeneric}, monospace`;
+  return `${baseWithoutGeneric}, ${iconFallbacks}, monospace`;
+}
+
 export const DEFAULT_TERMINAL_FONT_FAMILY = isWindowsPlatform()
-  ? '"Cascadia Code", Consolas, "Courier New", monospace'
-  : '"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace';
+  ? withTerminalIconFontFallback('"Cascadia Code", Consolas, "Courier New", monospace')
+  : withTerminalIconFontFallback('"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace');
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   "i18n.locale": "zh-CN",
@@ -103,6 +144,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "ai.openai.apiKey": "",
   "ai.anthropic.baseUrl": "https://api.anthropic.com",
   "ai.anthropic.apiKey": "",
+  "ai.volcengine.baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+  "ai.volcengine.apiKey": "",
   "ai.model": "claude-sonnet-4-5-20250929",
   "ai.models": [],
   "ai.agentMode": "suggest_only",

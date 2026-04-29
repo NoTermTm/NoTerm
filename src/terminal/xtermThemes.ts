@@ -7,6 +7,7 @@ export const TERMINAL_THEME_OPTIONS: Array<{
   label: string;
 }> = [
   { value: "light", label: "Light" },
+  { value: "paper", label: "Paper" },
   { value: "dark", label: "Dark" },
   { value: "monokai", label: "Monokai" },
   { value: "solarized", label: "Solarized" },
@@ -19,6 +20,30 @@ export const TERMINAL_THEME_OPTIONS: Array<{
 
 export function getXtermTheme(name: TerminalThemeName): ITheme {
   switch (name) {
+    case "paper":
+      return {
+        background: "#fffaf0",
+        foreground: "#2f2a23",
+        cursor: "#7c4d00",
+        cursorAccent: "#fffaf0",
+        selectionBackground: "rgba(178, 113, 8, 0.2)",
+        black: "#2f2a23",
+        red: "#b3261e",
+        green: "#2f7d32",
+        yellow: "#9a5b00",
+        blue: "#1f6f9f",
+        magenta: "#8a4f9e",
+        cyan: "#00796b",
+        white: "#eee3d0",
+        brightBlack: "#7d7468",
+        brightRed: "#d94135",
+        brightGreen: "#3f9b4f",
+        brightYellow: "#c88719",
+        brightBlue: "#2f8fc8",
+        brightMagenta: "#a669bb",
+        brightCyan: "#149284",
+        brightWhite: "#fffdf7",
+      };
     case "dark":
       return {
         background: "#0f111a",
@@ -240,4 +265,3 @@ export function getXtermTheme(name: TerminalThemeName): ITheme {
       };
   }
 }
-

@@ -14,14 +14,16 @@
 }
 
 .keys-header-left h1 {
-    font-size: 18px;
-    font-weight: 700;
+    font-size: var(--type-subhead);
+    font-weight: var(--weight-bold);
+    line-height: var(--leading-tight);
     color: var(--text-primary);
     margin-bottom: 6px;
 }
 
 .keys-subtitle {
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-ui);
     color: var(--text-tertiary);
 }
 
@@ -37,7 +39,7 @@
     gap: 8px;
     height: 32px;
     padding: 0 10px;
-    border-radius: 10px;
+    border-radius: 8px;
     border: 1px solid var(--border-light);
     background: var(--bg-tertiary);
     transition:
@@ -59,7 +61,8 @@
     border: none;
     background: transparent;
     outline: none;
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-tight);
     color: var(--text-primary);
     min-width: 220px;
 }
@@ -82,11 +85,7 @@
     padding: 14px 14px 14px 16px;
     border: 1px solid var(--border-color);
     background: var(--bg-secondary);
-    border-radius: 6px;
-    -webkit-border-radius: 6px;
-    -moz-border-radius: 6px;
-    -ms-border-radius: 6px;
-    -o-border-radius: 6px;
+    border-radius: 8px;
 }
 
 .keys-item-main {
@@ -103,8 +102,9 @@
 }
 
 .keys-item-name {
-    font-size: 13px;
-    font-weight: 650;
+    font-size: var(--type-ui);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
     color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
@@ -113,7 +113,8 @@
 
 .keys-item-badge {
     flex: 0 0 auto;
-    font-size: 11px;
+    font-size: var(--type-caption);
+    line-height: var(--leading-tight);
     padding: 3px 8px;
     border-radius: 999px;
     color: var(--text-secondary);
@@ -133,11 +134,12 @@
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    border-radius: 10px;
+    border-radius: 4px;
     background: var(--bg-primary);
     border: 1px solid var(--border-color);
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--type-meta);
+    line-height: var(--leading-tight);
     min-width: 0;
 }
 
@@ -165,8 +167,7 @@
 
 .keys-form-actions .btn {
     padding: 8px 16px;
-    font-size: 13px;
-    border-radius: 4px;
+    font-size: var(--type-ui);
 }
 
 .keys-pk-mode {
@@ -183,11 +184,12 @@
     height: 30px;
     padding: 0 12px;
     border: none;
-    border-radius: 10px;
+    border-radius: 8px;
     background: transparent;
     color: var(--text-secondary);
-    font-size: 12px;
-    font-weight: 600;
+    font-size: var(--type-meta);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
     transition:
         background-color 0.15s ease,
         color 0.15s ease;
@@ -229,7 +231,7 @@
     min-height: 200px;
     padding: 12px;
     border: 1px solid var(--border-light);
-    border-radius: 10px;
+    border-radius: 8px;
     background: var(--bg-secondary);
     color: var(--text-primary);
     font-family:
@@ -240,7 +242,7 @@
         Consolas,
         "Courier New",
         monospace;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.6;
     resize: vertical;
     outline: none;
@@ -261,7 +263,7 @@
 
 .keys-hint {
     margin-top: 10px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-tertiary);
     line-height: 1.6;
 }
@@ -280,7 +282,7 @@
         Consolas,
         "Courier New",
         monospace;
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 4px;
     background: var(--bg-secondary);
     border-radius: 3px;
@@ -294,7 +296,7 @@
     margin-top: 8px;
     padding: 8px 12px;
     border-radius: 8px;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
 }
 
@@ -312,11 +314,11 @@
 
 .keys-error {
     padding: 10px 12px;
-    border-radius: 10px;
+    border-radius: 8px;
     border: 1px solid rgba(229, 20, 0, 0.2);
     background: rgba(229, 20, 0, 0.08);
     color: var(--danger);
-    font-size: 12px;
+    font-size: 13px;
 }
 
 .keys-pubkey {
@@ -336,7 +338,7 @@
 }
 
 .keys-pubkey-title {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 700;
     color: var(--text-primary);
 }
@@ -345,13 +347,13 @@
     width: 100%;
     min-height: 88px;
     resize: vertical;
-    border-radius: 12px;
+    border-radius: 8px;
     border: 1px solid var(--border-color);
     background: var(--bg-primary);
     color: var(--text-primary);
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
         "Courier New", monospace;
-    font-size: 12px;
+    font-size: 13px;
     padding: 10px;
     outline: none;
     box-sizing: border-box;
@@ -405,7 +407,7 @@
 
 .keys-delete-warning {
     color: #d67f1b;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
     background: rgba(214, 127, 27, 0.12);
     border: 1px solid rgba(214, 127, 27, 0.28);

@@ -13,7 +13,7 @@
     width: min(720px, calc(100vw - 48px));
     max-height: calc(100vh - 96px);
     overflow: hidden;
-    border-radius: 14px;
+    border-radius: 16px;
     background: var(--bg-primary);
     border: 1px solid var(--border-light);
     box-shadow: 0 20px 60px rgba(15, 15, 45, 0.28);
@@ -36,8 +36,9 @@
 }
 
 .modal-title {
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--type-ui);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
     color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;

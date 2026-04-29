@@ -7,11 +7,14 @@ import { SettingsPage } from "./pages/Settings";
 import { I18nProvider, useI18n } from "./i18n";
 import "./icons/materialSymbols";
 import "./index.css";
+import { installInputAssistanceDisabler } from "./utils/inputAssistance";
 
 const Placeholder = ({ messageKey }: { messageKey: string }) => {
   const { t } = useI18n();
   return <div style={{ padding: "24px" }}>{t(messageKey)}</div>;
 };
+
+installInputAssistanceDisabler();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

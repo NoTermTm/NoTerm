@@ -103,8 +103,9 @@
 }
 
 .title-bar-title {
-    font-size: 13px;
-    font-weight: 500;
+    font-size: var(--type-ui);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
     color: var(--text-secondary);
 }
 
@@ -240,7 +241,7 @@
     gap: 8px;
     padding: 4px 12px;
     background: transparent;
-    border-radius: 4px;
+    border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s ease, border-color 0.2s ease;
     border: none;
@@ -248,10 +249,6 @@
     max-width: 180px;
     flex: 0 0 auto;
     -webkit-app-region: no-drag;
-    -webkit-border-radius: 4px;
-    -moz-border-radius: 4px;
-    -ms-border-radius: 4px;
-    -o-border-radius: 4px;
 }
 
 .new-tab-btn {
@@ -289,8 +286,9 @@
 }
 
 .tab-title {
-    font-size: 12px;
-    font-weight: 500;
+    font-size: var(--type-meta);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
     color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
@@ -298,7 +296,8 @@
 }
 
 .tab-subtitle {
-    font-size: 10px;
+    font-size: var(--type-caption);
+    line-height: var(--leading-tight);
     color: var(--text-tertiary);
     white-space: nowrap;
     overflow: hidden;

@@ -21,7 +21,7 @@
 - Multi-tab sessions and split terminals
 - Quick auth profiles and connection presets
 - Master key encryption + auto-lock
-- Built-in AI assistant (OpenAI/Anthropic) with model selection
+- Built-in AI assistant (OpenAI/Anthropic/Volcengine Ark) with model selection
 - Script snippets library and one‑click send
 - Update checker via GitHub Releases (Tauri updater)
 - i18n: English + Simplified Chinese
@@ -223,7 +223,7 @@ NoTerm 是基于 Tauri + React 的现代终端应用，支持 SSH/RDP、多标�
 - 多标签会话与分屏
 - 快速认证配置与连接预设
 - 主密钥加密与自动锁屏
-- 内置 AI 助手（OpenAI/Anthropic）及模型选择
+- 内置 AI 助手（OpenAI/Anthropic/Volcengine Ark）及模型选择
 - 脚本片段库，一键发送
 - GitHub Releases 更新检测（Tauri updater）
 - 中英文双语

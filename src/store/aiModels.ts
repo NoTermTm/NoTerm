@@ -6,6 +6,7 @@ export type AiModelsCache = Record<AiProvider, string[]>;
 export const DEFAULT_AI_MODELS: AiModelsCache = {
   openai: [],
   anthropic: [],
+  volcengine: [],
 };
 
 const STORE_PATH = "ai-models.json";
@@ -33,9 +34,14 @@ export async function readAllAiModels() {
   const openai = (await store.get<string[]>("openai")) ?? DEFAULT_AI_MODELS.openai;
   const anthropic =
     (await store.get<string[]>("anthropic")) ?? DEFAULT_AI_MODELS.anthropic;
+  const volcengine =
+    (await store.get<string[]>("volcengine")) ?? DEFAULT_AI_MODELS.volcengine;
   return {
     openai: Array.isArray(openai) ? openai : DEFAULT_AI_MODELS.openai,
     anthropic: Array.isArray(anthropic) ? anthropic : DEFAULT_AI_MODELS.anthropic,
+    volcengine: Array.isArray(volcengine)
+      ? volcengine
+      : DEFAULT_AI_MODELS.volcengine,
   } as AiModelsCache;
 }
 

@@ -5,10 +5,12 @@ import {
   writeAppSetting,
   getAppSettingsStore,
   DEFAULT_TERMINAL_FONT_FAMILY,
+  withTerminalIconFontFallback,
 } from "../store/appSettings";
 import { load } from "@tauri-apps/plugin-store";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { mkdir, readFile, readTextFile, remove, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { BaseDirectory } from "@tauri-apps/api/path";
 import { TERMINAL_THEME_OPTIONS, getXtermTheme } from "../terminal/xtermThemes";
 import { sendAiChat, type AiMessage, type AiProvider } from "../api/ai";
@@ -40,18 +42,18 @@ import { readAllAiModels, writeAiModels } from "../store/aiModels";
 import "./Settings.css";
 
 const TERMINAL_FONT_CANDIDATES = [
-  { label: "SF Mono", family: "SF Mono", value: '"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace' },
-  { label: "JetBrains Mono", family: "JetBrains Mono", value: '"JetBrains Mono", "SF Mono", Menlo, monospace' },
-  { label: "Fira Code", family: "Fira Code", value: '"Fira Code", "SF Mono", Menlo, monospace' },
-  { label: "Hack", family: "Hack", value: 'Hack, "SF Mono", Menlo, monospace' },
-  { label: "Source Code Pro", family: "Source Code Pro", value: '"Source Code Pro", "SF Mono", Menlo, monospace' },
-  { label: "Ubuntu Mono", family: "Ubuntu Mono", value: '"Ubuntu Mono", "SF Mono", Menlo, monospace' },
-  { label: "Menlo", family: "Menlo", value: 'Menlo, "SF Mono", monospace' },
-  { label: "Consolas", family: "Consolas", value: 'Consolas, "Courier New", monospace' },
-  { label: "Cascadia Mono", family: "Cascadia Mono", value: '"Cascadia Mono", Consolas, "Courier New", monospace' },
-  { label: "Cascadia Code", family: "Cascadia Code", value: '"Cascadia Code", Consolas, "Courier New", monospace' },
-  { label: "Lucida Console", family: "Lucida Console", value: '"Lucida Console", Consolas, monospace' },
-  { label: "Courier New", family: "Courier New", value: '"Courier New", Consolas, monospace' },
+  { label: "SF Mono", family: "SF Mono", value: withTerminalIconFontFallback('"SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace') },
+  { label: "JetBrains Mono", family: "JetBrains Mono", value: withTerminalIconFontFallback('"JetBrains Mono", "SF Mono", Menlo, monospace') },
+  { label: "Fira Code", family: "Fira Code", value: withTerminalIconFontFallback('"Fira Code", "SF Mono", Menlo, monospace') },
+  { label: "Hack", family: "Hack", value: withTerminalIconFontFallback('Hack, "SF Mono", Menlo, monospace') },
+  { label: "Source Code Pro", family: "Source Code Pro", value: withTerminalIconFontFallback('"Source Code Pro", "SF Mono", Menlo, monospace') },
+  { label: "Ubuntu Mono", family: "Ubuntu Mono", value: withTerminalIconFontFallback('"Ubuntu Mono", "SF Mono", Menlo, monospace') },
+  { label: "Menlo", family: "Menlo", value: withTerminalIconFontFallback('Menlo, "SF Mono", monospace') },
+  { label: "Consolas", family: "Consolas", value: withTerminalIconFontFallback('Consolas, "Courier New", monospace') },
+  { label: "Cascadia Mono", family: "Cascadia Mono", value: withTerminalIconFontFallback('"Cascadia Mono", Consolas, "Courier New", monospace') },
+  { label: "Cascadia Code", family: "Cascadia Code", value: withTerminalIconFontFallback('"Cascadia Code", Consolas, "Courier New", monospace') },
+  { label: "Lucida Console", family: "Lucida Console", value: withTerminalIconFontFallback('"Lucida Console", Consolas, monospace') },
+  { label: "Courier New", family: "Courier New", value: withTerminalIconFontFallback('"Courier New", Consolas, monospace') },
 ];
 
 const TERMINAL_FONT_WEIGHT_OPTIONS = [
@@ -98,6 +100,69 @@ const normalizeBaseUrl = (value: string) => {
   const trimmed = value.trim();
   if (!trimmed) return "";
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+};
+
+const getAiProviderBaseUrl = (settings: AppSettings, provider: AiProvider) =>
+  provider === "openai"
+    ? settings["ai.openai.baseUrl"]
+    : provider === "anthropic"
+      ? settings["ai.anthropic.baseUrl"]
+      : settings["ai.volcengine.baseUrl"];
+
+const getAiProviderApiKey = (settings: AppSettings, provider: AiProvider) =>
+  provider === "openai"
+    ? settings["ai.openai.apiKey"]
+    : provider === "anthropic"
+      ? settings["ai.anthropic.apiKey"]
+      : settings["ai.volcengine.apiKey"];
+
+const getAiProviderUrlErrorKey = (provider: AiProvider) =>
+  provider === "openai"
+    ? "settings.ai.error.openaiUrl"
+    : provider === "anthropic"
+      ? "settings.ai.error.anthropicUrl"
+      : "settings.ai.error.volcengineUrl";
+
+const getAiProviderKeyErrorKey = (provider: AiProvider) =>
+  provider === "openai"
+    ? "settings.ai.error.openaiKey"
+    : provider === "anthropic"
+      ? "settings.ai.error.anthropicKey"
+      : "settings.ai.error.volcengineKey";
+
+const getAiProviderLabel = (provider: AiProvider) =>
+  provider === "openai"
+    ? "OpenAI"
+    : provider === "anthropic"
+      ? "Anthropic"
+      : "Volcengine Ark";
+
+const getAiProviderModelListUrl = (provider: AiProvider, normalizedBase: string) =>
+  provider === "volcengine" ? `${normalizedBase}/models` : `${normalizedBase}/v1/models`;
+
+const getAiProviderHeaders = (provider: AiProvider, apiKey: string) => {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (provider === "anthropic") {
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+  } else {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+  return headers;
+};
+
+const normalizeAiRefreshError = (
+  provider: AiProvider,
+  error: unknown,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+) => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (provider === "volcengine" && /load failed|failed to fetch/i.test(message)) {
+    return t("settings.ai.model.refresh.volcengineHint");
+  }
+  return message || t("settings.ai.model.refresh.fail");
 };
 
 const NON_CHAT_MODEL_KEYWORDS = [
@@ -147,18 +212,22 @@ export function SettingsPage() {
   const [aiModels, setAiModels] = useState<Record<AiProvider, string[]>>({
     openai: [],
     anthropic: [],
+    volcengine: [],
   });
   const [aiModelStatus, setAiModelStatus] = useState<Record<AiProvider, AiModelStatus>>({
     openai: "idle",
     anthropic: "idle",
+    volcengine: "idle",
   });
   const [aiModelMessage, setAiModelMessage] = useState<Record<AiProvider, string | null>>({
     openai: null,
     anthropic: null,
+    volcengine: null,
   });
   const aiModelAutoSignatureRef = useRef<Record<AiProvider, string>>({
     openai: "",
     anthropic: "",
+    volcengine: "",
   });
   const [aiModelSearch, setAiModelSearch] = useState("");
   const [aiModelCustomInput, setAiModelCustomInput] = useState("");
@@ -236,7 +305,7 @@ export function SettingsPage() {
     const current = settings["terminal.fontFamily"];
     if (current && !next.some((opt) => opt.value === current)) {
       const first = current.split(",")[0]?.trim().replace(/^"|"$/g, "") || "Custom";
-      next.unshift({ label: first, value: current });
+      next.unshift({ label: first, value: withTerminalIconFontFallback(current) });
     }
     setTerminalFontOptions(next);
   }, [settings["terminal.fontFamily"]]);
@@ -336,6 +405,12 @@ export function SettingsPage() {
         "ai.anthropic.apiKey":
           (await store.get<string>("ai.anthropic.apiKey")) ??
           DEFAULT_APP_SETTINGS["ai.anthropic.apiKey"],
+        "ai.volcengine.baseUrl":
+          (await store.get<string>("ai.volcengine.baseUrl")) ??
+          DEFAULT_APP_SETTINGS["ai.volcengine.baseUrl"],
+        "ai.volcengine.apiKey":
+          (await store.get<string>("ai.volcengine.apiKey")) ??
+          DEFAULT_APP_SETTINGS["ai.volcengine.apiKey"],
         "ai.model":
           (await store.get<string>("ai.model")) ??
           DEFAULT_APP_SETTINGS["ai.model"],
@@ -566,6 +641,8 @@ export function SettingsPage() {
     settings["ai.openai.apiKey"],
     settings["ai.anthropic.baseUrl"],
     settings["ai.anthropic.apiKey"],
+    settings["ai.volcengine.baseUrl"],
+    settings["ai.volcengine.apiKey"],
     settings["ai.model"],
   ]);
 
@@ -808,6 +885,7 @@ export function SettingsPage() {
         "security.masterKeyEncSalt",
         "ai.openai.apiKey",
         "ai.anthropic.apiKey",
+        "ai.volcengine.apiKey",
       ]);
 
       const next = { ...current } as Record<
@@ -1082,10 +1160,8 @@ export function SettingsPage() {
     const models = aiModels[provider];
     if (!force && models.length > 0) return;
 
-    const baseUrl =
-      provider === "openai" ? settings["ai.openai.baseUrl"] : settings["ai.anthropic.baseUrl"];
-    const apiKey =
-      provider === "openai" ? settings["ai.openai.apiKey"] : settings["ai.anthropic.apiKey"];
+    const baseUrl = getAiProviderBaseUrl(settings, provider);
+    const apiKey = getAiProviderApiKey(settings, provider);
     const normalizedBase = normalizeBaseUrl(baseUrl);
     const signature = `${normalizedBase}|${apiKey.trim()}`;
     if (force) {
@@ -1096,10 +1172,7 @@ export function SettingsPage() {
       setAiModelStatus((prev) => ({ ...prev, [provider]: "error" }));
       setAiModelMessage((prev) => ({
         ...prev,
-        [provider]:
-          provider === "openai"
-            ? t("settings.ai.error.openaiUrl")
-            : t("settings.ai.error.anthropicUrl"),
+        [provider]: t(getAiProviderUrlErrorKey(provider)),
       }));
       return;
     }
@@ -1108,10 +1181,7 @@ export function SettingsPage() {
       setAiModelStatus((prev) => ({ ...prev, [provider]: "error" }));
       setAiModelMessage((prev) => ({
         ...prev,
-        [provider]:
-          provider === "openai"
-            ? t("settings.ai.error.openaiKey")
-            : t("settings.ai.error.anthropicKey"),
+        [provider]: t(getAiProviderKeyErrorKey(provider)),
       }));
       return;
     }
@@ -1123,22 +1193,10 @@ export function SettingsPage() {
     }));
 
     try {
-      const apiRoot = normalizedBase.endsWith("/v1")
-        ? normalizedBase
-        : `${normalizedBase}/v1`;
-      const url = `${apiRoot}/models`;
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
+      const url = getAiProviderModelListUrl(provider, normalizedBase);
+      const headers = getAiProviderHeaders(provider, apiKey.trim());
 
-      if (provider === "openai") {
-        headers.Authorization = `Bearer ${apiKey.trim()}`;
-      } else {
-        headers["x-api-key"] = apiKey.trim();
-        headers["anthropic-version"] = "2023-06-01";
-      }
-
-      const resp = await fetch(url, { headers, method: "GET" });
+      const resp = await tauriFetch(url, { headers, method: "GET" });
       if (!resp.ok) {
         throw new Error(`${resp.status} ${resp.statusText}`.trim());
       }
@@ -1162,11 +1220,11 @@ export function SettingsPage() {
             : t("settings.ai.model.refresh.empty"),
       }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = normalizeAiRefreshError(provider, error, t);
       setAiModelStatus((prev) => ({ ...prev, [provider]: "error" }));
       setAiModelMessage((prev) => ({
         ...prev,
-        [provider]: message || t("settings.ai.model.refresh.fail"),
+        [provider]: message,
       }));
     }
   };
@@ -1208,10 +1266,8 @@ export function SettingsPage() {
     const provider = settings["ai.provider"];
     if (!settings["ai.enabled"]) return;
     const cached = aiModels[provider];
-    const baseUrl =
-      provider === "openai" ? settings["ai.openai.baseUrl"] : settings["ai.anthropic.baseUrl"];
-    const apiKey =
-      provider === "openai" ? settings["ai.openai.apiKey"] : settings["ai.anthropic.apiKey"];
+    const baseUrl = getAiProviderBaseUrl(settings, provider);
+    const apiKey = getAiProviderApiKey(settings, provider);
     const signature = `${normalizeBaseUrl(baseUrl)}|${apiKey.trim()}`;
 
     if (cached.length > 0) return;
@@ -1228,6 +1284,8 @@ export function SettingsPage() {
     settings["ai.enabled"],
     settings["ai.openai.apiKey"],
     settings["ai.openai.baseUrl"],
+    settings["ai.volcengine.apiKey"],
+    settings["ai.volcengine.baseUrl"],
     settings["ai.provider"],
   ]);
 
@@ -1265,6 +1323,7 @@ export function SettingsPage() {
         "security.masterKeySalt": "",
         "ai.openai.apiKey": "",
         "ai.anthropic.apiKey": "",
+        "ai.volcengine.apiKey": "",
       } as AppSettings;
 
       const connectionStore = await load("connections.json");
@@ -1328,28 +1387,15 @@ export function SettingsPage() {
       return;
     }
 
-    if (settings["ai.provider"] === "openai") {
-      if (!settings["ai.openai.baseUrl"].trim()) {
-        setAiTestStatus("error");
-        setAiTestMessage(t("settings.ai.error.openaiUrl"));
-        return;
-      }
-      if (!settings["ai.openai.apiKey"].trim()) {
-        setAiTestStatus("error");
-        setAiTestMessage(t("settings.ai.error.openaiKey"));
-        return;
-      }
-    } else {
-      if (!settings["ai.anthropic.baseUrl"].trim()) {
-        setAiTestStatus("error");
-        setAiTestMessage(t("settings.ai.error.anthropicUrl"));
-        return;
-      }
-      if (!settings["ai.anthropic.apiKey"].trim()) {
-        setAiTestStatus("error");
-        setAiTestMessage(t("settings.ai.error.anthropicKey"));
-        return;
-      }
+    if (!getAiProviderBaseUrl(settings, settings["ai.provider"]).trim()) {
+      setAiTestStatus("error");
+      setAiTestMessage(t(getAiProviderUrlErrorKey(settings["ai.provider"])));
+      return;
+    }
+    if (!getAiProviderApiKey(settings, settings["ai.provider"]).trim()) {
+      setAiTestStatus("error");
+      setAiTestMessage(t(getAiProviderKeyErrorKey(settings["ai.provider"])));
+      return;
     }
 
     setAiTestStatus("testing");
@@ -1373,6 +1419,10 @@ export function SettingsPage() {
           anthropic: {
             baseUrl: settings["ai.anthropic.baseUrl"],
             apiKey: settings["ai.anthropic.apiKey"],
+          },
+          volcengine: {
+            baseUrl: settings["ai.volcengine.baseUrl"],
+            apiKey: settings["ai.volcengine.apiKey"],
           },
         },
         messages,
@@ -1535,7 +1585,7 @@ export function SettingsPage() {
     : mergedModels;
   const aiModelStatusValue = aiModelStatus[currentProvider];
   const aiModelMessageValue = aiModelMessage[currentProvider];
-  const currentProviderLabel = currentProvider === "openai" ? "OpenAI" : "Anthropic";
+  const currentProviderLabel = getAiProviderLabel(currentProvider);
   const previewedModels = selectedModels.slice(0, 6);
   const extraModelsCount = Math.max(0, selectedModels.length - previewedModels.length);
 
@@ -2079,7 +2129,7 @@ export function SettingsPage() {
                 <pre
                   className={`settings-preview-content${terminalBackgroundUrl ? " settings-preview-content--bg" : ""}`}
                   style={{
-                    fontFamily: settings["terminal.fontFamily"],
+                    fontFamily: withTerminalIconFontFallback(settings["terminal.fontFamily"]),
                     fontSize: settings["terminal.fontSize"],
                     fontWeight: settings["terminal.fontWeight"],
                     ...previewBackgroundStyle,
@@ -2186,6 +2236,7 @@ export function SettingsPage() {
               options={[
                 { value: "openai", label: "OpenAI" },
                 { value: "anthropic", label: "Anthropic" },
+                { value: "volcengine", label: "Volcengine Ark" },
               ]}
             />
           </div>
@@ -2218,6 +2269,39 @@ export function SettingsPage() {
                   className="settings-input"
                   value={settings["ai.openai.apiKey"]}
                   onChange={(e) => updateSetting("ai.openai.apiKey", e.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                />
+              </div>
+            </div>
+          </>
+        ) : settings["ai.provider"] === "volcengine" ? (
+          <>
+            <div className="settings-item">
+              <div className="settings-item-info">
+                <div className="settings-item-label">{t("settings.ai.apiUrl")}</div>
+                <div className="settings-item-description">{t("settings.ai.volcengine.desc")}</div>
+              </div>
+              <div className="settings-item-control">
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={settings["ai.volcengine.baseUrl"]}
+                  onChange={(e) => updateSetting("ai.volcengine.baseUrl", e.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                />
+              </div>
+            </div>
+            <div className="settings-item">
+              <div className="settings-item-info">
+                <div className="settings-item-label">{t("settings.ai.apiKey")}</div>
+                <div className="settings-item-description">{t("settings.ai.apiKey.desc")}</div>
+              </div>
+              <div className="settings-item-control">
+                <input
+                  type="password"
+                  className="settings-input"
+                  value={settings["ai.volcengine.apiKey"]}
+                  onChange={(e) => updateSetting("ai.volcengine.apiKey", e.target.value)}
                   disabled={!settings["ai.enabled"]}
                 />
               </div>

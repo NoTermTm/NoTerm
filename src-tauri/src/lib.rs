@@ -787,11 +787,13 @@ async fn ssh_sftp_upload_file(
     local_path: String,
     remote_path: String,
     transfer_id: Option<String>,
+    use_temp_file: Option<bool>,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
     let transfer_id = transfer_id.unwrap_or_else(|| format!("upload:{}", local_path));
+    let use_temp_file = use_temp_file.unwrap_or(true);
     tokio::task::spawn_blocking(move || {
-        manager.sftp_upload_file(&session_id, &local_path, &remote_path, |transferred, total| {
+        manager.sftp_upload_file(&session_id, &local_path, &remote_path, use_temp_file, |transferred, total| {
             let percent = if total > 0 {
                 (transferred as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
             } else {
