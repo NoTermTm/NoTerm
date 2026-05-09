@@ -146,7 +146,7 @@ const deserializeConnection = async (
   ctx: SecurityContext,
   fallbackName: string,
 ): Promise<SshConnectionConfig | null> => {
-  if (!conn || conn.kind === "rdp") return null;
+  if (!conn || conn.kind !== "ssh") return null;
   const ssh = { ...conn };
   if (ssh.auth_type?.type === "Password") {
     ssh.auth_type = {
@@ -225,7 +225,7 @@ export function ForwardingPage() {
     const lockedIds = new Set<string>();
     if (!ctx.masterKey) {
       for (const conn of saved) {
-        if (!conn || conn.kind === "rdp") continue;
+        if (!conn || conn.kind !== "ssh") continue;
         const auth = conn.auth_type;
         const hasEncryptedAuth =
           (auth?.type === "Password" &&

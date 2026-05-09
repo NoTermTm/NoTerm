@@ -1,33 +1,10 @@
 import type { SshConnection } from "./ssh";
 
-export type ConnectionKind = "ssh" | "rdp";
+export type ConnectionKind = "ssh";
 
 export interface SshConnectionConfig extends SshConnection {
   kind: "ssh";
   osType?: "windows" | "macos" | "linux" | "unknown";
 }
 
-export interface RdpConnectionConfig {
-  kind: "rdp";
-  id: string;
-  name: string;
-  tags?: string[];
-  color?: string;
-  host: string;
-  port: number;
-  username: string;
-  password?: string;
-  gatewayHost?: string;
-  gatewayUsername?: string;
-  gatewayPassword?: string;
-  gatewayDomain?: string;
-  resolutionWidth?: number;
-  resolutionHeight?: number;
-  colorDepth?: 16 | 24 | 32;
-  certPolicy?: "default" | "ignore";
-  redirectClipboard?: boolean;
-  redirectAudio?: boolean;
-  redirectDrives?: boolean;
-}
-
-export type ConnectionConfig = SshConnectionConfig | RdpConnectionConfig;
+export type ConnectionConfig = SshConnectionConfig;

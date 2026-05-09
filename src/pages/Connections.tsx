@@ -9,10 +9,8 @@ import { createPortal } from "react-dom";
 import { AppIcon } from "../components/AppIcon";
 import { Select } from "../components/Select";
 import { sshApi } from "../api/ssh";
-import { rdpApi } from "../api/rdp";
 import type {
   ConnectionConfig,
-  RdpConnectionConfig,
   SshConnectionConfig,
 } from "../types/connection";
 import { load } from "@tauri-apps/plugin-store";
@@ -43,7 +41,6 @@ const ENCODING_OPTIONS = [
   { value: "euc-kr", label: "EUC-KR" },
 ];
 
-const RDP_COLOR_DEPTHS: Array<RdpConnectionConfig["colorDepth"]> = [16, 24, 32];
 const DEFAULT_CONNECTION_COLOR = "#ffb347";
 const CONNECTION_COLOR_OPTIONS = [
   "#ffb347",
@@ -58,15 +55,41 @@ const CONNECTION_COLOR_OPTIONS = [
 
 type OsType = "windows" | "macos" | "linux" | "unknown";
 
-const normalizeTags = (tags?: string[]) =>
-  Array.from(
-    new Set(
-      (tags ?? [])
-        .map((tag) => tag.trim())
-        .filter(Boolean)
-        .slice(0, 8),
-    ),
-  );
+const extractTagCandidates = (tags?: string[] | string | null) => {
+  if (typeof tags === "string") {
+    return tags
+      .split(/[，,]/g)
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(tags)) {
+    return tags.flatMap((tag) =>
+      typeof tag === "string"
+        ? tag
+            .split(/[，,]/g)
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : [],
+    );
+  }
+  return [];
+};
+
+const normalizeTags = (tags?: string[] | string | null) =>
+  Array.from(new Set(extractTagCandidates(tags))).slice(0, 8);
+
+const normalizeSingleTag = (value?: string | null) =>
+  (value ?? "")
+    .split(/[，,]/g)[0]
+    ?.trim() ?? "";
+
+const normalizeEditableTags = (value?: string | null) => {
+  const tag = normalizeSingleTag(value);
+  return tag ? [tag] : [];
+};
+
+const getPrimaryTag = (tags?: string[] | string | null) =>
+  normalizeTags(tags)[0] ?? "";
 
 const normalizeColor = (color?: string) =>
   color && color.trim() ? color.trim() : DEFAULT_CONNECTION_COLOR;
@@ -86,35 +109,6 @@ const normalizeOsType = (value?: string): OsType | undefined => {
 };
 
 const SETTINGS_TAB_ID = "__settings__";
-
-const parseColorToRgb = (color: string): [number, number, number] | null => {
-  const normalized = color.trim();
-  const shortHex = normalized.match(/^#([0-9a-fA-F]{3})$/);
-  if (shortHex) {
-    const chars = shortHex[1];
-    return [
-      parseInt(chars[0] + chars[0], 16),
-      parseInt(chars[1] + chars[1], 16),
-      parseInt(chars[2] + chars[2], 16),
-    ];
-  }
-  const longHex = normalized.match(/^#([0-9a-fA-F]{6})$/);
-  if (longHex) {
-    const hex = longHex[1];
-    return [
-      parseInt(hex.slice(0, 2), 16),
-      parseInt(hex.slice(2, 4), 16),
-      parseInt(hex.slice(4, 6), 16),
-    ];
-  }
-  const rgb = normalized.match(
-    /^rgb\(\s*([01]?\d?\d|2[0-4]\d|25[0-5])\s*,\s*([01]?\d?\d|2[0-4]\d|25[0-5])\s*,\s*([01]?\d?\d|2[0-4]\d|25[0-5])\s*\)$/,
-  );
-  if (rgb) {
-    return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
-  }
-  return null;
-};
 
 const inferOsTypeFromText = (value: string): OsType | null => {
   const text = value.trim().toLowerCase();
@@ -169,9 +163,6 @@ const detectRemoteOsType = async (sessionId: string): Promise<OsType> => {
 };
 
 const getConnectionIcon = (conn: ConnectionConfig): string => {
-  if (conn.kind === "rdp") {
-    return "material-symbols:desktop-windows-rounded";
-  }
   // 对于 SSH 连接，如果明确了系统类型，则展示对应的图标；如果系统类型未知，则展示通用的终端图标
   if (conn.osType === "windows") {
     return "simple-icons:windows";
@@ -186,18 +177,6 @@ const getConnectionIcon = (conn: ConnectionConfig): string => {
   return "material-symbols:dns";
 };
 
-
-const getTagStyle = (color: string) => {
-  const rgb = parseColorToRgb(color);
-  if (!rgb) return undefined;
-  const [r, g, b] = rgb;
-  return {
-    background: `rgba(${r}, ${g}, ${b}, 0.16)`,
-    borderColor: `rgba(${r}, ${g}, ${b}, 0.42)`,
-    color: `rgb(${r}, ${g}, ${b})`,
-  } as CSSProperties;
-};
-
 const createDefaultSshConnection = (name: string): SshConnectionConfig => ({
   kind: "ssh",
   id: crypto.randomUUID(),
@@ -209,29 +188,6 @@ const createDefaultSshConnection = (name: string): SshConnectionConfig => ({
   username: "",
   auth_type: { type: "Password", password: "" },
   encoding: "utf-8",
-});
-
-const createDefaultRdpConnection = (name: string): RdpConnectionConfig => ({
-  kind: "rdp",
-  id: crypto.randomUUID(),
-  name,
-  tags: [],
-  color: DEFAULT_CONNECTION_COLOR,
-  host: "",
-  port: 3389,
-  username: "",
-  password: "",
-  gatewayHost: "",
-  gatewayUsername: "",
-  gatewayPassword: "",
-  gatewayDomain: "",
-  resolutionWidth: undefined,
-  resolutionHeight: undefined,
-  colorDepth: 32,
-  certPolicy: "default",
-  redirectClipboard: true,
-  redirectAudio: false,
-  redirectDrives: false,
 });
 
 const trimValue = (value: string | undefined | null) => (value ?? "").trim();
@@ -269,44 +225,14 @@ const normalizeSshConnection = (
   osType: normalizeOsType(conn.osType),
 });
 
-const normalizeRdpConnection = (
-  conn: Partial<RdpConnectionConfig>,
-  fallbackName: string,
-): RdpConnectionConfig => ({
-  kind: "rdp",
-  id: conn.id ?? crypto.randomUUID(),
-  name: trimValue(conn.name) || fallbackName,
-  tags: normalizeTags(conn.tags),
-  color: normalizeColor(conn.color),
-  host: trimValue(conn.host),
-  port: Number.isFinite(conn.port as number) ? (conn.port as number) : 3389,
-  username: trimValue(conn.username),
-  password: conn.password ?? "",
-  gatewayHost: trimValue(conn.gatewayHost),
-  gatewayUsername: trimValue(conn.gatewayUsername),
-  gatewayPassword: conn.gatewayPassword ?? "",
-  gatewayDomain: trimValue(conn.gatewayDomain),
-  resolutionWidth: conn.resolutionWidth,
-  resolutionHeight: conn.resolutionHeight,
-  colorDepth: conn.colorDepth ?? 32,
-  certPolicy: conn.certPolicy ?? "default",
-  redirectClipboard: conn.redirectClipboard ?? true,
-  redirectAudio: conn.redirectAudio ?? false,
-  redirectDrives: conn.redirectDrives ?? false,
-});
-
 const normalizeConnection = (
   conn: any,
   fallbackSshName: string,
-  fallbackRdpName: string,
-): ConnectionConfig => {
-  if (conn?.kind === "rdp") return normalizeRdpConnection(conn, fallbackRdpName);
-  return normalizeSshConnection(conn, fallbackSshName);
-};
+): ConnectionConfig => normalizeSshConnection(conn, fallbackSshName);
 
 const isSshConnection = (
   conn: ConnectionConfig | null | undefined,
-): conn is SshConnectionConfig => !!conn && conn.kind !== "rdp";
+): conn is SshConnectionConfig => !!conn && conn.kind === "ssh";
 
 // 验证 PEM 私钥格式
 function validatePemKey(
@@ -445,14 +371,9 @@ const encryptMaybe = async (
 const deserializeConnection = async (
   conn: any,
   ctx: SecurityContext,
-  fallbackNames: { ssh: string; rdp: string },
+  fallbackName: string,
 ) => {
-  if (conn?.kind === "rdp") {
-    const rdp = { ...conn };
-    rdp.password = await decryptMaybe(rdp.password, ctx);
-    rdp.gatewayPassword = await decryptMaybe(rdp.gatewayPassword, ctx);
-    return normalizeConnection(rdp, fallbackNames.ssh, fallbackNames.rdp);
-  }
+  if (!conn || conn.kind !== "ssh") return null;
   const ssh = { ...conn };
   if (ssh.auth_type?.type === "Password") {
     ssh.auth_type = {
@@ -467,17 +388,10 @@ const deserializeConnection = async (
       passphrase: await decryptMaybe(ssh.auth_type.passphrase, ctx),
     };
   }
-  return normalizeConnection(ssh, fallbackNames.ssh, fallbackNames.rdp);
+  return normalizeConnection(ssh, fallbackName);
 };
 
 const serializeConnection = async (conn: ConnectionConfig, ctx: SecurityContext) => {
-  if (conn.kind === "rdp") {
-    return {
-      ...conn,
-      password: await encryptMaybe(conn.password, ctx),
-      gatewayPassword: await encryptMaybe(conn.gatewayPassword, ctx),
-    };
-  }
   if (conn.auth_type.type === "Password") {
     return {
       ...conn,
@@ -505,15 +419,6 @@ const mergeStoredConnectionSecrets = (
   stored: ConnectionConfig | undefined,
 ) => {
   if (!stored) return conn;
-  if (conn.kind === "rdp") {
-    if (stored.kind !== "rdp") return conn;
-    return {
-      ...conn,
-      password: stored.password ?? "",
-      gatewayPassword: stored.gatewayPassword ?? "",
-    };
-  }
-  if (stored.kind === "rdp") return conn;
   if (conn.auth_type.type === "Password") {
     if (stored.auth_type?.type !== "Password") return conn;
     return {
@@ -674,6 +579,13 @@ interface SplitLayout {
 const formatSessionEndpoint = (connection: SshConnectionConfig) =>
   `${connection.username ? `${connection.username}@` : ""}${connection.host}`;
 
+const formatConnectionEndpoint = (connection: ConnectionConfig) => {
+  const host = connection.host || "localhost";
+  const port = connection.port ? `:${connection.port}` : "";
+  const user = connection.username ? `${connection.username}@` : "";
+  return `${user}${host}${port}`;
+};
+
 const buildSessionTab = (
   sessionId: string,
   session: ActiveSession,
@@ -698,7 +610,6 @@ export function ConnectionsPage({
   const { t } = useI18n();
   const fallbackNames = {
     ssh: t("connections.defaultName"),
-    rdp: t("connections.rdpDefaultName"),
   };
   const [connections, setConnections] = useState<ConnectionConfig[]>([]);
   const [selectedConnection, setSelectedConnection] =
@@ -738,8 +649,8 @@ export function ConnectionsPage({
   >("idle");
   const [testMessage, setTestMessage] = useState<string | null>(null);
   const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
-  const [tagFilter, setTagFilter] = useState<string>("all");
   const [colorFilter, setColorFilter] = useState<string>("all");
+  const [expandedTagGroups, setExpandedTagGroups] = useState<Record<string, boolean>>({});
   const [actionMenu, setActionMenu] = useState<{
     id: string;
     x: number;
@@ -896,9 +807,11 @@ export function ConnectionsPage({
     const saved = await s.get<ConnectionConfig[]>("connections");
     if (saved) {
       const ctx = await getSecurityContext();
-      const normalized = await Promise.all(
-        saved.map((conn) => deserializeConnection(conn, ctx, fallbackNames)),
-      );
+      const normalized = (
+        await Promise.all(
+          saved.map((conn) => deserializeConnection(conn, ctx, fallbackNames.ssh)),
+        )
+      ).filter((conn): conn is ConnectionConfig => !!conn);
       setConnections(normalized);
     }
   };
@@ -1073,7 +986,6 @@ export function ConnectionsPage({
     const normalizedEditing = normalizeConnection(
       editingConnection,
       fallbackNames.ssh,
-      fallbackNames.rdp,
     );
 
     const existingIndex = connections.findIndex(
@@ -1239,10 +1151,6 @@ export function ConnectionsPage({
   };
 
   const handleConnect = async (connection: ConnectionConfig) => {
-    if (connection.kind === "rdp") {
-      await rdpApi.open(connection);
-      return;
-    }
     createSession(connection, true, true);
   };
 
@@ -1521,64 +1429,32 @@ export function ConnectionsPage({
   const renderConnectionForm = () => {
     if (!editingConnection) return null;
 
-    const isRdp = editingConnection.kind === "rdp";
-    const authType = isSshConnection(editingConnection)
-      ? editingConnection.auth_type.type
-      : "Password";
-
-    // 初始化 pkMode：如果有 key_content 则为 manual，否则为 path
+    const authType = editingConnection.auth_type.type;
     const currentPkMode =
-      isSshConnection(editingConnection) &&
-      editingConnection.auth_type.type === "PrivateKey" &&
-      editingConnection.auth_type.key_content
+      authType === "PrivateKey" && editingConnection.auth_type.key_content
         ? "manual"
         : pkMode;
     const tags = normalizeTags(editingConnection.tags);
+    const primaryTag = tags[0] ?? "";
+    const tagOptions = Array.from(
+      new Set([
+        "",
+        ...availableTags,
+        ...(primaryTag && !availableTags.includes(primaryTag) ? [primaryTag] : []),
+      ]),
+    ).map((tag) => ({
+      value: tag,
+      label: tag || t("connections.field.tagEmpty"),
+    }));
     const color = normalizeColor(editingConnection.color);
     const moreConfigSummary = [
       editingConnection.name?.trim() || t("connections.unnamed"),
-      tags.length > 0 ? `#${tags.join(" #")}` : t("connections.tags.none"),
+      primaryTag ? `#${primaryTag}` : t("connections.tags.none"),
       color,
     ].join(" / ");
 
-    const handleKindChange = (nextKind: "ssh" | "rdp") => {
-      setEditingConnection((prev) => {
-        if (!prev) return prev;
-        if (prev.kind === nextKind) return prev;
-        if (nextKind === "ssh") {
-          const defaults = createDefaultSshConnection(fallbackNames.ssh);
-          return normalizeSshConnection(
-            {
-              ...defaults,
-              id: prev.id,
-              name: prev.name,
-              tags: normalizeTags(prev.tags),
-              color: normalizeColor(prev.color),
-              host: prev.host,
-              username: prev.username,
-            },
-            fallbackNames.ssh,
-          );
-        }
-        const defaults = createDefaultRdpConnection(fallbackNames.rdp);
-        return normalizeRdpConnection(
-          {
-            ...defaults,
-            id: prev.id,
-            name: prev.name,
-            tags: normalizeTags(prev.tags),
-            color: normalizeColor(prev.color),
-            host: prev.host,
-            username: prev.username,
-          },
-          fallbackNames.rdp,
-        );
-      });
-      setAuthProfileId("");
-      setPkMode("path");
-    };
-
     return (
+      <>
       <div className="connection-form connection-form-layout">
         <div className="connection-form-section">
           <div className="connection-form-section-title">
@@ -1602,19 +1478,8 @@ export function ConnectionsPage({
             <div className="form-group">
               <label>{t("connections.field.protocol")}</label>
               <div className="connection-type-switch">
-                <button
-                  type="button"
-                  className={`connection-type-switch-btn ${editingConnection.kind === "ssh" ? "active" : ""}`}
-                  onClick={() => handleKindChange("ssh")}
-                >
+                <button type="button" className="connection-type-switch-btn active">
                   {t("connections.protocol.ssh")}
-                </button>
-                <button
-                  type="button"
-                  className={`connection-type-switch-btn ${editingConnection.kind === "rdp" ? "active" : ""}`}
-                  onClick={() => handleKindChange("rdp")}
-                >
-                  {t("connections.protocol.rdp")}
                 </button>
               </div>
             </div>
@@ -1641,52 +1506,49 @@ export function ConnectionsPage({
           <div className="connection-form-section-title">
             {t("connections.section.auth")}
           </div>
-          {!isRdp && (
-            <div className="form-group">
-              <label>{t("connections.quickAuth.label")}</label>
-              <div className="quick-auth-row">
-                <Select
-                  className="quick-auth-select"
-                  wrapperClassName="quick-auth-select-wrapper"
-                  value={authProfileId}
-                  onChange={(nextValue) => setAuthProfileId(nextValue)}
-                  options={[
-                    { value: "", label: t("connections.quickAuth.none") },
-                    ...authProfiles.map((profile) => ({
-                      value: profile.id,
-                      label: (
-                        <>
-                          {profile.name}（{profile.username} /{" "}
-                          {profile.auth_type.type === "Password"
-                            ? t("connections.quickAuth.password")
-                            : t("connections.quickAuth.key")}
-                          ）
-                        </>
-                      ),
-                    })),
-                  ]}
-                />
-                <button
-                  className="btn btn-secondary btn-sm"
-                  type="button"
-                  onClick={() => void saveEditingAuthToProfiles()}
-                  disabled={!canSaveAuthProfileFromEditing}
-                  title={t("connections.quickAuth.saveTitle")}
-                >
-                  <AppIcon icon="material-symbols:save-rounded" size={16} />
-                  {t("connections.quickAuth.save")}
-                </button>
-              </div>
-              <div className="quick-auth-hint">
-                {t("connections.quickAuth.hint")}
-              </div>
+
+          <div className="form-group">
+            <label>{t("connections.quickAuth.label")}</label>
+            <div className="quick-auth-row">
+              <Select
+                className="quick-auth-select"
+                wrapperClassName="quick-auth-select-wrapper"
+                value={authProfileId}
+                onChange={(nextValue) => setAuthProfileId(nextValue)}
+                options={[
+                  { value: "", label: t("connections.quickAuth.none") },
+                  ...authProfiles.map((profile) => ({
+                    value: profile.id,
+                    label: (
+                      <>
+                        {profile.name}（{profile.username} /{" "}
+                        {profile.auth_type.type === "Password"
+                          ? t("connections.quickAuth.password")
+                          : t("connections.quickAuth.key")}
+                        ）
+                      </>
+                    ),
+                  })),
+                ]}
+              />
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                onClick={() => void saveEditingAuthToProfiles()}
+                disabled={!canSaveAuthProfileFromEditing}
+                title={t("connections.quickAuth.saveTitle")}
+              >
+                <AppIcon icon="material-symbols:save-rounded" size={16} />
+                {t("connections.quickAuth.save")}
+              </button>
             </div>
-          )}
+            <div className="quick-auth-hint">{t("connections.quickAuth.hint")}</div>
+          </div>
 
           <div className="connection-form-grid">
             <div className="form-group">
               <label>
-                {!isRdp && authType === "PrivateKey"
+                {authType === "PrivateKey"
                   ? t("connections.username.optional")
                   : t("connections.username")}
               </label>
@@ -1700,353 +1562,275 @@ export function ConnectionsPage({
                   })
                 }
                 placeholder={
-                  !isRdp && authType === "PrivateKey"
+                  authType === "PrivateKey"
                     ? t("connections.username.placeholderPrivateKey")
-                    : isRdp
-                      ? "Administrator"
-                      : "root"
+                    : "root"
                 }
               />
             </div>
-
-            {isRdp && (
-              <div className="form-group">
-                <label>{t("connections.password")}</label>
-                <div className="password-input-wrapper">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    value={
-                      (editingConnection as RdpConnectionConfig).password || ""
-                    }
-                    onChange={(e) =>
-                      setEditingConnection({
-                        ...(editingConnection as RdpConnectionConfig),
-                        password: e.target.value,
-                      })
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="password-toggle-btn"
-                    onClick={() => setShowPassword(!showPassword)}
-                    title={
-                      showPassword
-                        ? t("connections.password.hide")
-                        : t("connections.password.show")
-                    }
-                  >
-                    <AppIcon
-                      icon={
-                        showPassword
-                          ? "material-symbols:visibility-off-rounded"
-                          : "material-symbols:visibility-rounded"
-                      }
-                      size={20}
-                    />
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
 
-          {!isRdp && (
+          <div className="form-group">
+            <label>{t("connections.authType.label")}</label>
+            <div className="auth-type-selector">
+              <button
+                type="button"
+                className={`auth-type-btn ${authType === "Password" ? "active" : ""}`}
+                onClick={() => {
+                  setAuthProfileId("");
+                  setEditingConnection({
+                    ...editingConnection,
+                    auth_profile_id: undefined,
+                    auth_type: { type: "Password", password: "" },
+                  });
+                }}
+              >
+                {t("connections.authType.password")}
+              </button>
+              <button
+                type="button"
+                className={`auth-type-btn ${authType === "PrivateKey" ? "active" : ""}`}
+                onClick={() => {
+                  setAuthProfileId("");
+                  setEditingConnection({
+                    ...editingConnection,
+                    auth_profile_id: undefined,
+                    auth_type: {
+                      type: "PrivateKey",
+                      key_path: "",
+                      passphrase: "",
+                    },
+                  });
+                  setPkMode("path");
+                }}
+              >
+                {t("connections.authType.key")}
+              </button>
+            </div>
+          </div>
+
+          {authType === "Password" && (
+            <div className="form-group">
+              <label>{t("connections.password")}</label>
+              <div className="password-input-wrapper">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={(editingConnection.auth_type as any).password || ""}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...editingConnection,
+                      auth_type: {
+                        type: "Password",
+                        password: e.target.value,
+                      },
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className="password-toggle-btn"
+                  onClick={() => setShowPassword(!showPassword)}
+                  title={
+                    showPassword
+                      ? t("connections.password.hide")
+                      : t("connections.password.show")
+                  }
+                >
+                  <AppIcon
+                    icon={
+                      showPassword
+                        ? "material-symbols:visibility-off-rounded"
+                        : "material-symbols:visibility-rounded"
+                    }
+                    size={20}
+                  />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {authType === "PrivateKey" && (
             <>
-              <div className="form-group">
-                <label>{t("connections.authType.label")}</label>
-                <div className="auth-type-selector">
-                  <button
-                    type="button"
-                    className={`auth-type-btn ${authType === "Password" ? "active" : ""}`}
-                    onClick={() => {
-                      setAuthProfileId("");
-                      setEditingConnection({
-                        ...(editingConnection as SshConnectionConfig),
-                        auth_profile_id: undefined,
-                        auth_type: { type: "Password", password: "" },
-                      });
-                    }}
-                  >
-                    {t("connections.authType.password")}
-                  </button>
-                  <button
-                    type="button"
-                    className={`auth-type-btn ${authType === "PrivateKey" ? "active" : ""}`}
-                    onClick={() => {
-                      setAuthProfileId("");
-                      setEditingConnection({
-                        ...(editingConnection as SshConnectionConfig),
-                        auth_profile_id: undefined,
-                        auth_type: {
-                          type: "PrivateKey",
-                          key_path: "",
-                          passphrase: "",
-                        },
-                      });
-                    }}
-                  >
-                    {t("connections.authType.key")}
-                  </button>
-                </div>
+              <div className="keys-pk-mode">
+                <button
+                  type="button"
+                  className={`keys-pk-mode-btn ${currentPkMode === "path" ? "active" : ""}`}
+                  onClick={() => setPkMode("path")}
+                >
+                  {t("connections.pkMode.path")}
+                </button>
+                <button
+                  type="button"
+                  className={`keys-pk-mode-btn ${currentPkMode === "manual" ? "active" : ""}`}
+                  onClick={() => setPkMode("manual")}
+                >
+                  {t("connections.pkMode.manual")}
+                </button>
               </div>
 
-              {authType === "Password" && (
-                <div className="form-group">
-                  <label>{t("connections.password")}</label>
-                  <div className="password-input-wrapper">
+              {currentPkMode === "path" && (
+                <>
+                  <div className="form-group">
+                    <label>{t("connections.pk.path")}</label>
                     <input
-                      type={showPassword ? "text" : "password"}
-                      value={
-                        (
-                          (editingConnection as SshConnectionConfig)
-                            .auth_type as any
-                        ).password || ""
-                      }
+                      type="text"
+                      value={(editingConnection.auth_type as any).key_path || ""}
                       onChange={(e) =>
                         setEditingConnection({
-                          ...(editingConnection as SshConnectionConfig),
+                          ...editingConnection,
                           auth_type: {
-                            type: "Password",
-                            password: e.target.value,
+                            ...(editingConnection.auth_type as any),
+                            type: "PrivateKey",
+                            key_path: e.target.value,
+                            key_content: undefined,
                           },
                         })
                       }
+                      placeholder="/home/user/.ssh/id_rsa"
                     />
-                    <button
-                      type="button"
-                      className="password-toggle-btn"
-                      onClick={() => setShowPassword(!showPassword)}
-                      title={
-                        showPassword
-                          ? t("connections.password.hide")
-                          : t("connections.password.show")
-                      }
-                    >
-                      <AppIcon
-                        icon={
-                          showPassword
-                            ? "material-symbols:visibility-off-rounded"
-                            : "material-symbols:visibility-rounded"
-                        }
-                        size={20}
-                      />
-                    </button>
                   </div>
-                </div>
+                  <div className="form-group">
+                    <label>{t("connections.pk.passphraseOptional")}</label>
+                    <div className="password-input-wrapper">
+                      <input
+                        type={showPassphrase ? "text" : "password"}
+                        value={(editingConnection.auth_type as any).passphrase || ""}
+                        onChange={(e) =>
+                          setEditingConnection({
+                            ...editingConnection,
+                            auth_type: {
+                              ...(editingConnection.auth_type as any),
+                              type: "PrivateKey",
+                              passphrase: e.target.value,
+                            },
+                          })
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="password-toggle-btn"
+                        onClick={() => setShowPassphrase(!showPassphrase)}
+                        title={
+                          showPassphrase
+                            ? t("connections.password.hide")
+                            : t("connections.password.show")
+                        }
+                      >
+                        <AppIcon
+                          icon={
+                            showPassphrase
+                              ? "material-symbols:visibility-off-rounded"
+                              : "material-symbols:visibility-rounded"
+                          }
+                          size={20}
+                        />
+                      </button>
+                    </div>
+                  </div>
+                </>
               )}
 
-              {authType === "PrivateKey" && (
-                <>
-                  <div className="keys-pk-mode">
-                    <button
-                      type="button"
-                      className={`keys-pk-mode-btn ${currentPkMode === "path" ? "active" : ""}`}
-                      onClick={() => setPkMode("path")}
-                    >
-                      {t("connections.pkMode.path")}
-                    </button>
-                    <button
-                      type="button"
-                      className={`keys-pk-mode-btn ${currentPkMode === "manual" ? "active" : ""}`}
-                      onClick={() => setPkMode("manual")}
-                    >
-                      {t("connections.pkMode.manual")}
-                    </button>
+              {currentPkMode === "manual" && (
+                <div className="keys-manual">
+                  <div className="form-group">
+                    <label>{t("connections.pk.content")}</label>
+                    <textarea
+                      className="keys-pem-textarea"
+                      value={(editingConnection.auth_type as any).key_content || ""}
+                      onChange={(e) => {
+                        const content = e.target.value;
+                        setEditingConnection({
+                          ...editingConnection,
+                          auth_type: {
+                            ...(editingConnection.auth_type as any),
+                            type: "PrivateKey",
+                            key_path: "",
+                            key_content: content,
+                          },
+                        });
+                        if (content.trim()) {
+                          setPemValidation(validatePemKey(content, t));
+                        } else {
+                          setPemValidation(null);
+                        }
+                      }}
+                      onBlur={(e) => {
+                        const content = e.target.value;
+                        if (content.trim()) {
+                          setPemValidation(validatePemKey(content, t));
+                        }
+                      }}
+                      placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEpAIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
+                      rows={12}
+                    />
+                    {pemValidation && (
+                      <div
+                        className={`keys-validation ${pemValidation.valid ? "valid" : "invalid"}`}
+                      >
+                        <AppIcon
+                          icon={
+                            pemValidation.valid
+                              ? "material-symbols:check-circle-rounded"
+                              : "material-symbols:error-rounded"
+                          }
+                          size={16}
+                        />
+                        {pemValidation.message}
+                      </div>
+                    )}
+                    <div className="keys-hint">
+                      <strong>{t("connections.pk.hint.title")}</strong>
+                      {t("connections.pk.hint.desc")}
+                      <br />• <code>-----BEGIN RSA PRIVATE KEY-----</code>{" "}
+                      (OpenSSH RSA)
+                      <br />• <code>-----BEGIN OPENSSH PRIVATE KEY-----</code>{" "}
+                      ({t("connections.pk.hint.opensshNew")})
+                      <br />• <code>-----BEGIN EC PRIVATE KEY-----</code>{" "}
+                      (ECDSA)
+                      <br />• {t("connections.pk.hint.ensureFull")}
+                    </div>
                   </div>
 
-                  {currentPkMode === "path" && (
-                    <>
-                      <div className="form-group">
-                        <label>{t("connections.pk.path")}</label>
-                        <input
-                          type="text"
-                          value={
-                            (
-                              (editingConnection as SshConnectionConfig)
-                                .auth_type as any
-                            ).key_path || ""
+                  <div className="form-group">
+                    <label>{t("connections.pk.passphraseOptional")}</label>
+                    <div className="password-input-wrapper">
+                      <input
+                        type={showPassphrase ? "text" : "password"}
+                        value={(editingConnection.auth_type as any).passphrase || ""}
+                        onChange={(e) =>
+                          setEditingConnection({
+                            ...editingConnection,
+                            auth_type: {
+                              ...(editingConnection.auth_type as any),
+                              type: "PrivateKey",
+                              passphrase: e.target.value,
+                            },
+                          })
+                        }
+                        placeholder={t("connections.pk.passphrasePlaceholder")}
+                      />
+                      <button
+                        type="button"
+                        className="password-toggle-btn"
+                        onClick={() => setShowPassphrase(!showPassphrase)}
+                        title={
+                          showPassphrase
+                            ? t("connections.password.hide")
+                            : t("connections.password.show")
+                        }
+                      >
+                        <AppIcon
+                          icon={
+                            showPassphrase
+                              ? "material-symbols:visibility-off-rounded"
+                              : "material-symbols:visibility-rounded"
                           }
-                          onChange={(e) =>
-                            setEditingConnection({
-                              ...(editingConnection as SshConnectionConfig),
-                              auth_type: {
-                                ...((editingConnection as SshConnectionConfig)
-                                  .auth_type as any),
-                                type: "PrivateKey",
-                                key_path: e.target.value,
-                                key_content: undefined,
-                              },
-                            })
-                          }
-                          placeholder="/home/user/.ssh/id_rsa"
+                          size={20}
                         />
-                      </div>
-                      <div className="form-group">
-                        <label>{t("connections.pk.passphraseOptional")}</label>
-                        <div className="password-input-wrapper">
-                          <input
-                            type={showPassphrase ? "text" : "password"}
-                            value={
-                              (
-                                (editingConnection as SshConnectionConfig)
-                                  .auth_type as any
-                              ).passphrase || ""
-                            }
-                            onChange={(e) =>
-                              setEditingConnection({
-                                ...(editingConnection as SshConnectionConfig),
-                                auth_type: {
-                                  ...((editingConnection as SshConnectionConfig)
-                                    .auth_type as any),
-                                  type: "PrivateKey",
-                                  passphrase: e.target.value,
-                                },
-                              })
-                            }
-                          />
-                          <button
-                            type="button"
-                            className="password-toggle-btn"
-                            onClick={() => setShowPassphrase(!showPassphrase)}
-                            title={
-                              showPassphrase
-                                ? t("connections.password.hide")
-                                : t("connections.password.show")
-                            }
-                          >
-                            <AppIcon
-                              icon={
-                                showPassphrase
-                                  ? "material-symbols:visibility-off-rounded"
-                                  : "material-symbols:visibility-rounded"
-                              }
-                              size={20}
-                            />
-                          </button>
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  {currentPkMode === "manual" && (
-                    <div className="keys-manual">
-                      <div className="form-group">
-                        <label>{t("connections.pk.content")}</label>
-                        <textarea
-                          className="keys-pem-textarea"
-                          value={
-                            (
-                              (editingConnection as SshConnectionConfig)
-                                .auth_type as any
-                            ).key_content || ""
-                          }
-                          onChange={(e) => {
-                            const content = e.target.value;
-                            setEditingConnection({
-                              ...(editingConnection as SshConnectionConfig),
-                              auth_type: {
-                                ...((editingConnection as SshConnectionConfig)
-                                  .auth_type as any),
-                                type: "PrivateKey",
-                                key_path: "",
-                                key_content: content,
-                              },
-                            });
-                            if (content.trim()) {
-                              setPemValidation(validatePemKey(content, t));
-                            } else {
-                              setPemValidation(null);
-                            }
-                          }}
-                          onBlur={(e) => {
-                            const content = e.target.value;
-                            if (content.trim()) {
-                              setPemValidation(validatePemKey(content, t));
-                            }
-                          }}
-                          placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEpAIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
-                          rows={12}
-                        />
-                        {pemValidation && (
-                          <div
-                            className={`keys-validation ${pemValidation.valid ? "valid" : "invalid"}`}
-                          >
-                            <AppIcon
-                              icon={
-                                pemValidation.valid
-                                  ? "material-symbols:check-circle-rounded"
-                                  : "material-symbols:error-rounded"
-                              }
-                              size={16}
-                            />
-                            {pemValidation.message}
-                          </div>
-                        )}
-                        <div className="keys-hint">
-                          <strong>{t("connections.pk.hint.title")}</strong>
-                          {t("connections.pk.hint.desc")}
-                          <br />• <code>
-                            -----BEGIN RSA PRIVATE KEY-----
-                          </code>{" "}
-                          (OpenSSH RSA)
-                          <br />•{" "}
-                          <code>-----BEGIN OPENSSH PRIVATE KEY-----</code>{" "}
-                          ({t("connections.pk.hint.opensshNew")})
-                          <br />• <code>
-                            -----BEGIN EC PRIVATE KEY-----
-                          </code>{" "}
-                          (ECDSA)
-                          <br />• {t("connections.pk.hint.ensureFull")}
-                        </div>
-                      </div>
-
-                      <div className="form-group">
-                        <label>{t("connections.pk.passphraseOptional")}</label>
-                        <div className="password-input-wrapper">
-                          <input
-                            type={showPassphrase ? "text" : "password"}
-                            value={
-                              (
-                                (editingConnection as SshConnectionConfig)
-                                  .auth_type as any
-                              ).passphrase || ""
-                            }
-                            onChange={(e) =>
-                              setEditingConnection({
-                                ...(editingConnection as SshConnectionConfig),
-                                auth_type: {
-                                  ...((editingConnection as SshConnectionConfig)
-                                    .auth_type as any),
-                                  type: "PrivateKey",
-                                  passphrase: e.target.value,
-                                },
-                              })
-                            }
-                            placeholder={t("connections.pk.passphrasePlaceholder")}
-                          />
-                          <button
-                            type="button"
-                            className="password-toggle-btn"
-                            onClick={() => setShowPassphrase(!showPassphrase)}
-                            title={
-                              showPassphrase
-                                ? t("connections.password.hide")
-                                : t("connections.password.show")
-                            }
-                          >
-                            <AppIcon
-                              icon={
-                                showPassphrase
-                                  ? "material-symbols:visibility-off-rounded"
-                                  : "material-symbols:visibility-rounded"
-                              }
-                              size={20}
-                            />
-                          </button>
-                        </div>
-                      </div>
+                      </button>
                     </div>
-                  )}
-                </>
+                  </div>
+                </div>
               )}
             </>
           )}
@@ -2058,9 +1842,7 @@ export function ConnectionsPage({
             className="connection-more-toggle"
             onClick={() => setShowAdvancedConfig((prev) => !prev)}
           >
-            <span className="connection-more-label">
-              {t("connections.more.label")}
-            </span>
+            <span className="connection-more-label">{t("connections.more.label")}</span>
             <span className="connection-more-summary">{moreConfigSummary}</span>
             <AppIcon
               icon={
@@ -2090,16 +1872,16 @@ export function ConnectionsPage({
                 </div>
                 <div className="form-group">
                   <label>{t("connections.field.tags")}</label>
-                  <input
-                    type="text"
-                    value={tags.join(", ")}
-                    onChange={(e) =>
+                  <Select
+                    value={primaryTag}
+                    onChange={(nextValue) =>
                       setEditingConnection({
                         ...editingConnection,
-                        tags: normalizeTags(e.target.value.split(/[，,]/g)),
+                        tags: normalizeEditableTags(nextValue),
                       })
                     }
-                    placeholder={t("connections.field.tagsPlaceholder")}
+                    options={tagOptions}
+                    ariaLabel={t("connections.field.tags")}
                   />
                 </div>
               </div>
@@ -2141,255 +1923,22 @@ export function ConnectionsPage({
                 </div>
               </div>
 
-              {!isRdp && (
-                <div className="form-group">
-                  <label>{t("connections.field.encoding")}</label>
-                  <Select
-                    value={
-                      (editingConnection as SshConnectionConfig).encoding ||
-                      "utf-8"
-                    }
-                    onChange={(nextValue) =>
-                      setEditingConnection({
-                        ...(editingConnection as SshConnectionConfig),
-                        encoding: nextValue,
-                      })
-                    }
-                    options={ENCODING_OPTIONS.map((item) => ({
-                      value: item.value,
-                      label: item.label,
-                    }))}
-                  />
-                </div>
-              )}
-
-              {isRdp && (
-                <>
-                  <div className="form-group">
-                    <label>{t("connections.rdp.gatewayHost")}</label>
-                    <input
-                      type="text"
-                      value={
-                        (editingConnection as RdpConnectionConfig)
-                          .gatewayHost || ""
-                      }
-                      onChange={(e) =>
-                        setEditingConnection({
-                          ...(editingConnection as RdpConnectionConfig),
-                          gatewayHost: e.target.value,
-                        })
-                      }
-                      placeholder="rdp-gateway.example.com"
-                    />
-                  </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>{t("connections.rdp.gatewayUser")}</label>
-                      <input
-                        type="text"
-                        value={
-                          (editingConnection as RdpConnectionConfig)
-                            .gatewayUsername || ""
-                        }
-                        onChange={(e) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            gatewayUsername: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>{t("connections.rdp.gatewayPassword")}</label>
-                      <input
-                        type="password"
-                        value={
-                          (editingConnection as RdpConnectionConfig)
-                            .gatewayPassword || ""
-                        }
-                        onChange={(e) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            gatewayPassword: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                  </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>{t("connections.rdp.gatewayDomain")}</label>
-                      <input
-                        type="text"
-                        value={
-                          (editingConnection as RdpConnectionConfig)
-                            .gatewayDomain || ""
-                        }
-                        onChange={(e) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            gatewayDomain: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>{t("connections.rdp.certPolicy")}</label>
-                      <Select
-                        value={
-                          (editingConnection as RdpConnectionConfig)
-                            .certPolicy || "default"
-                        }
-                        onChange={(nextValue) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            certPolicy:
-                              nextValue as RdpConnectionConfig["certPolicy"],
-                          })
-                        }
-                        options={[
-                          {
-                            value: "default",
-                            label: t("connections.rdp.certPolicy.default"),
-                          },
-                          {
-                            value: "ignore",
-                            label: t("connections.rdp.certPolicy.ignore"),
-                          },
-                        ]}
-                      />
-                    </div>
-                  </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>{t("connections.rdp.resolutionWidth")}</label>
-                      <input
-                        type="number"
-                        value={
-                          (editingConnection as RdpConnectionConfig)
-                            .resolutionWidth ?? ""
-                        }
-                        onChange={(e) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            resolutionWidth: e.target.value
-                              ? Number(e.target.value)
-                              : undefined,
-                          })
-                        }
-                        placeholder={t("connections.rdp.resolutionWidthPlaceholder")}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>{t("connections.rdp.resolutionHeight")}</label>
-                      <input
-                        type="number"
-                        value={
-                          (editingConnection as RdpConnectionConfig)
-                            .resolutionHeight ?? ""
-                        }
-                        onChange={(e) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            resolutionHeight: e.target.value
-                              ? Number(e.target.value)
-                              : undefined,
-                          })
-                        }
-                        placeholder={t("connections.rdp.resolutionHeightPlaceholder")}
-                      />
-                    </div>
-                  </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>{t("connections.rdp.colorDepth")}</label>
-                      <Select
-                        value={String(
-                          (editingConnection as RdpConnectionConfig)
-                            .colorDepth ?? 32,
-                        )}
-                        onChange={(nextValue) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            colorDepth: Number(
-                              nextValue,
-                            ) as RdpConnectionConfig["colorDepth"],
-                          })
-                        }
-                        options={RDP_COLOR_DEPTHS.map((depth) => ({
-                          value: String(depth),
-                          label: t("connections.rdp.colorDepthBits", { depth }),
-                        }))}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>{t("connections.rdp.clipboard")}</label>
-                      <Select
-                        value={
-                          (editingConnection as RdpConnectionConfig)
-                            .redirectClipboard
-                            ? "on"
-                            : "off"
-                        }
-                        onChange={(nextValue) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            redirectClipboard: nextValue === "on",
-                          })
-                        }
-                        options={[
-                          { value: "on", label: t("connections.option.on") },
-                          { value: "off", label: t("connections.option.off") },
-                        ]}
-                      />
-                    </div>
-                  </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>{t("connections.rdp.audio")}</label>
-                      <Select
-                        value={
-                          (editingConnection as RdpConnectionConfig)
-                            .redirectAudio
-                            ? "on"
-                            : "off"
-                        }
-                        onChange={(nextValue) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            redirectAudio: nextValue === "on",
-                          })
-                        }
-                        options={[
-                          { value: "on", label: t("connections.option.on") },
-                          { value: "off", label: t("connections.option.off") },
-                        ]}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>{t("connections.rdp.drives")}</label>
-                      <Select
-                        value={
-                          (editingConnection as RdpConnectionConfig)
-                            .redirectDrives
-                            ? "on"
-                            : "off"
-                        }
-                        onChange={(nextValue) =>
-                          setEditingConnection({
-                            ...(editingConnection as RdpConnectionConfig),
-                            redirectDrives: nextValue === "on",
-                          })
-                        }
-                        options={[
-                          { value: "on", label: t("connections.option.on") },
-                          { value: "off", label: t("connections.option.off") },
-                        ]}
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
+              <div className="form-group">
+                <label>{t("connections.field.encoding")}</label>
+                <Select
+                  value={editingConnection.encoding || "utf-8"}
+                  onChange={(nextValue) =>
+                    setEditingConnection({
+                      ...editingConnection,
+                      encoding: nextValue,
+                    })
+                  }
+                  options={ENCODING_OPTIONS.map((item) => ({
+                    value: item.value,
+                    label: item.label,
+                  }))}
+                />
+              </div>
             </div>
           )}
         </div>
@@ -2408,36 +1957,30 @@ export function ConnectionsPage({
           <button className="btn btn-secondary" onClick={handleSaveConnection}>
             {t("common.save")}
           </button>
-          {!isRdp && (
-            <button
-              className="btn btn-secondary"
-              type="button"
-              onClick={() => void handleTestConnection()}
-              disabled={testStatus === "testing"}
-            >
-              {testStatus === "testing"
-                ? t("connections.test.testing")
-                : t("connections.test.action")}
-            </button>
-          )}
+          <button
+            className="btn btn-secondary"
+            type="button"
+            onClick={() => void handleTestConnection()}
+            disabled={testStatus === "testing"}
+          >
+            {testStatus === "testing"
+              ? t("connections.test.testing")
+              : t("connections.test.action")}
+          </button>
           <button
             className="btn btn-primary"
             onClick={async () => {
-              const connectionToConnect =
-                normalizeConnection(
-                  editingConnection,
-                  fallbackNames.ssh,
-                  fallbackNames.rdp,
-                );
+              const connectionToConnect = normalizeConnection(
+                editingConnection,
+                fallbackNames.ssh,
+              );
               await handleSaveConnection();
               await handleConnect(connectionToConnect);
             }}
           >
-            {isRdp
-              ? t("connections.action.saveAndOpen")
-              : t("connections.action.connectAndSave")}
+            {t("connections.action.connectAndSave")}
           </button>
-          {!isRdp && testMessage && (
+          {testMessage && (
             <span
               className={`connection-test-status connection-test-status--${testStatus}`}
             >
@@ -2446,6 +1989,7 @@ export function ConnectionsPage({
           )}
         </div>
       </div>
+      </>
     );
   };
 
@@ -2625,36 +2169,6 @@ export function ConnectionsPage({
       return <>{connectedTerminals}</>;
     }
 
-    if (selectedConnection?.kind === "rdp") {
-      const rdp = selectedConnection as RdpConnectionConfig;
-      return (
-        <div className="empty-state">
-          <span className="empty-state-icon" aria-hidden="true">
-            <AppIcon
-              icon="material-symbols:desktop-windows-rounded"
-              size={64}
-            />
-          </span>
-          <div>
-            <h3>{t("connections.empty.rdp.title")}</h3>
-            <p style={{ marginTop: 12 }}>
-              {t("connections.empty.rdp.target", {
-                target: `${rdp.username}@${rdp.host}:${rdp.port}`,
-              })}
-            </p>
-            <div style={{ marginTop: 16 }}>
-              <button
-                className="btn btn-primary"
-                onClick={() => void rdpApi.open(rdp)}
-              >
-                {t("connections.action.openRdp")}
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
     return (
       <div className="connections-welcome">
         <div className="connections-welcome-hero">
@@ -2742,12 +2256,6 @@ export function ConnectionsPage({
   }, [connections]);
 
   useEffect(() => {
-    if (tagFilter !== "all" && !availableTags.includes(tagFilter)) {
-      setTagFilter("all");
-    }
-  }, [availableTags, tagFilter]);
-
-  useEffect(() => {
     if (colorFilter !== "all" && !availableColors.includes(colorFilter)) {
       setColorFilter("all");
     }
@@ -2764,11 +2272,41 @@ export function ConnectionsPage({
       conn.host.toLowerCase().includes(normalizedQuery) ||
       conn.username.toLowerCase().includes(normalizedQuery) ||
       tags.some((tag) => tag.toLowerCase().includes(normalizedQuery));
-    const matchesTag = tagFilter === "all" || tags.includes(tagFilter);
     const matchesColor = colorFilter === "all" || connColor === colorFilter;
 
-    return matchesQuery && matchesTag && matchesColor;
+    return matchesQuery && matchesColor;
   });
+
+  const groupedConnections = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        key: string;
+        label: string;
+        connections: ConnectionConfig[];
+      }
+    >();
+
+    for (const conn of filteredConnections) {
+      const primaryTag = getPrimaryTag(conn.tags);
+      const key = primaryTag || "__untagged__";
+      const label = primaryTag || t("connections.tags.none");
+      const current = groups.get(key);
+      if (current) {
+        current.connections.push(conn);
+      } else {
+        groups.set(key, {
+          key,
+          label,
+          connections: [conn],
+        });
+      }
+    }
+
+    return Array.from(groups.values()).sort((left, right) =>
+      left.label.localeCompare(right.label, "zh-Hans-CN"),
+    );
+  }, [filteredConnections, t]);
 
   const connectPickerResults = useMemo(() => {
     const query = connectPickerQuery.trim().toLowerCase();
@@ -2802,6 +2340,81 @@ export function ConnectionsPage({
     });
   }, [connectPickerOpen, connectPickerResults]);
 
+  const renderConnectionListItem = (conn: ConnectionConfig) => {
+    const connColor = normalizeColor(conn.color);
+
+    return (
+      <div
+        key={conn.id}
+        className={`connection-item ${selectedConnection?.id === conn.id ? "active" : ""}`}
+        style={
+          {
+            "--conn-color": connColor,
+          } as CSSProperties
+        }
+        onClick={() => {
+          setSelectedConnection(conn);
+        }}
+        onDoubleClick={() => {
+          void handleConnect(conn);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          void handleConnect(conn);
+        }}
+        tabIndex={0}
+      >
+        <div className="connection-item-top">
+          <span className="connection-icon" aria-hidden="true">
+            <span className="connection-icon-tile">
+              <AppIcon icon={getConnectionIcon(conn)} size={18} />
+            </span>
+          </span>
+          <div className="connection-info">
+            <div className="connection-name-row">
+              <div className="connection-name">{conn.name}</div>
+            </div>
+            <div className="connection-details">{formatConnectionEndpoint(conn)}</div>
+          </div>
+          <div
+            className={`connection-actions ${actionMenu?.id === conn.id ? "open" : ""}`}
+          >
+            <button
+              type="button"
+              className="connection-menu-btn"
+              title={t("connections.menu.more")}
+              aria-haspopup="menu"
+              aria-expanded={actionMenu?.id === conn.id}
+              onClick={(event) => {
+                event.stopPropagation();
+                const rect = (
+                  event.currentTarget as HTMLButtonElement
+                ).getBoundingClientRect();
+                setActionMenu((prev) => {
+                  if (prev?.id === conn.id) return null;
+                  const menuWidth = 168;
+                  const padding = 12;
+                  const left = Math.min(
+                    Math.max(padding, rect.right - menuWidth),
+                    window.innerWidth - padding - menuWidth,
+                  );
+                  const top = Math.min(
+                    rect.bottom + 8,
+                    window.innerHeight - padding - 160,
+                  );
+                  return { id: conn.id, x: left, y: top };
+                });
+              }}
+            >
+              <AppIcon icon="material-symbols:more-horiz" size={18} />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
       <div
@@ -2828,26 +2441,6 @@ export function ConnectionsPage({
               </span>
             </div>
             <div className="connection-filters">
-              <div className="connection-filter-row">
-                <span className="connection-filter-label">
-                  {t("connections.filter.tags")}
-                </span>
-                <div className="connection-filter-options connection-filter-options--select">
-                  <Select
-                    className="connection-filter-select"
-                    value={tagFilter}
-                    onChange={(nextValue) => setTagFilter(nextValue)}
-                    disabled={availableTags.length === 0}
-                    options={[
-                      { value: "all", label: t("connections.filter.all") },
-                      ...availableTags.map((tag) => ({
-                        value: tag,
-                        label: tag,
-                      })),
-                    ]}
-                  />
-                </div>
-              </div>
               <div className="connection-filter-row">
                 <span className="connection-filter-label">
                   {t("connections.filter.colors")}
@@ -2904,93 +2497,39 @@ export function ConnectionsPage({
                 </div>
               )
             )}
-            {filteredConnections.map((conn) => {
-              const connColor = normalizeColor(conn.color);
-              const tagStyle = getTagStyle(connColor);
+            {groupedConnections.map((group) => {
+              const expanded = normalizedQuery ? true : Boolean(expandedTagGroups[group.key]);
               return (
-                <div
-                  key={conn.id}
-                  className={`connection-item ${selectedConnection?.id === conn.id ? "active" : ""}`}
-                  style={
-                    {
-                      "--conn-color": connColor,
-                    } as CSSProperties
-                  }
-                  onClick={() => {
-                    setSelectedConnection(conn);
-                    void handleConnect(conn);
-                  }}
-                >
-                  <div className="connection-item-top">
-                    {/* 图标*/}
-                    <span className="connection-icon" aria-hidden="true">
-                      <span
-                        className="connection-icon-tile"
-                      >
-                        <AppIcon
-                          icon={getConnectionIcon(conn)}
-                          size={18}
-                        />
-                      </span>
-                    </span>
-                  {/* 基础信息 */}
-                  <div className="connection-info">
-                    <div className="connection-name-row">
-                      <div className="connection-name">{conn.name}</div>
-                    </div>
-                    <div className="connection-details">
-                      {conn.username ? `${conn.username}` : ""}
-                    </div>
-                  </div>
-                  <div
-                    className={`connection-actions ${
-                      actionMenu?.id === conn.id ? "open" : ""
-                    }`}
+                <div key={group.key} className="connection-group">
+                  <button
+                    type="button"
+                    className={`connection-group-toggle ${expanded ? "expanded" : ""}`}
+                    onClick={() =>
+                      setExpandedTagGroups((prev) => ({
+                        ...prev,
+                        [group.key]: !expanded,
+                      }))
+                    }
+                    aria-expanded={expanded}
                   >
-                    <button
-                      type="button"
-                      className="connection-menu-btn"
-                      title={t("connections.menu.more")}
-                      aria-haspopup="menu"
-                      aria-expanded={actionMenu?.id === conn.id}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        const rect = (
-                          event.currentTarget as HTMLButtonElement
-                        ).getBoundingClientRect();
-                        setActionMenu((prev) => {
-                          if (prev?.id === conn.id) return null;
-                          const menuWidth = 168;
-                          const padding = 12;
-                          const left = Math.min(
-                            Math.max(padding, rect.right - menuWidth),
-                            window.innerWidth - padding - menuWidth,
-                          );
-                          const top = Math.min(
-                            rect.bottom + 8,
-                            window.innerHeight - padding - 160,
-                          );
-                          return { id: conn.id, x: left, y: top };
-                        });
-                      }}
-                    >
-                      <AppIcon icon="material-symbols:more-horiz" size={18} />
-                    </button>
-                  </div>
-                </div>
-                {(conn.tags ?? []).length > 0 && (
-                  <div className="connection-tags">
-                    {(conn.tags ?? []).slice(0, 3).map((tag) => (
-                      <span
-                        key={`${conn.id}-${tag}`}
-                        className="connection-tag"
-                        style={tagStyle}
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                    <span className="connection-group-toggle-icon" aria-hidden="true">
+                      <AppIcon
+                        icon={
+                          expanded
+                            ? "material-symbols:expand-more-rounded"
+                            : "material-symbols:chevron-right-rounded"
+                        }
+                        size={18}
+                      />
+                    </span>
+                    <span className="connection-group-label">{group.label}</span>
+                    <span className="connection-group-count">{group.connections.length}</span>
+                  </button>
+                  {expanded && (
+                    <div className="connection-group-items">
+                      {group.connections.map((conn) => renderConnectionListItem(conn))}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -3040,7 +2579,10 @@ export function ConnectionsPage({
                       onClick={() => {
                         setActionMenu(null);
                         setSelectedConnection(conn);
-                        setEditingConnection(conn);
+                        setEditingConnection({
+                          ...conn,
+                          tags: normalizeEditableTags(getPrimaryTag(conn.tags)),
+                        });
                         setAuthProfileId(
                           isSshConnection(conn) ? conn.auth_profile_id ?? "" : "",
                         );

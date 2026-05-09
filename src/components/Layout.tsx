@@ -1247,8 +1247,7 @@ export function Layout() {
         </div>
 
         <div className="main-content">
-          {/* 使用 display 控制显示，避免组件卸载导致状态丢失 */}
-          <div style={{ display: location.pathname === "/connections" ? "block" : "none", height: "100%" }}>
+          {location.pathname === "/connections" && (
             <ConnectionsPage
               activePanel={activePanel}
               setActivePanel={setActivePanel}
@@ -1260,17 +1259,17 @@ export function Layout() {
               onTabClose={handleTabClose}
               onNewTab={handleNewTab}
             />
-          </div>
-          <div style={{ display: location.pathname === "/keys" ? "block" : "none", height: "100%" }}>
+          )}
+          {location.pathname === "/keys" && (
             <KeysPage />
-          </div>
-          <div style={{ display: location.pathname === "/settings" ? "block" : "none", height: "100%" }}>
+          )}
+          {location.pathname === "/settings" && (
             <SettingsPage />
-          </div>
-          <div style={{ display: location.pathname === "/forwarding" ? "block" : "none", height: "100%" }}>
+          )}
+          {location.pathname === "/forwarding" && (
             <ForwardingPage />
-          </div>
-          <div style={{ display: location.pathname === "/space" ? "block" : "none", height: "100%" }}>
+          )}
+          {location.pathname === "/space" && (
             <SpacePage
               tabs={tabs}
               setTabs={setTabs}
@@ -1278,7 +1277,7 @@ export function Layout() {
               onOpenScriptTab={handleOpenScriptTab}
               onCloseTab={handleTabClose}
             />
-          </div>
+          )}
           {location.pathname === "/files" && (
             <div style={{ padding: "24px" }}>{t("placeholder.sftp")}</div>
           )}

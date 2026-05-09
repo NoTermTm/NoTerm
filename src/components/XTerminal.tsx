@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { mkdir, stat, watch, type UnwatchFn } from "@tauri-apps/plugin-fs";
+import { mkdir, remove, stat, watch, type UnwatchFn } from "@tauri-apps/plugin-fs";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { sshApi } from "../api/ssh";
 import type { SftpEntry } from "../types/ssh";
@@ -80,13 +80,14 @@ interface XTerminalProps {
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
 type TransferTaskDirection = "upload" | "download";
-type TransferTaskStatus = "running" | "success" | "failed";
+type TransferTaskStatus = "running" | "paused" | "success" | "failed";
 type AppMessageTone = "info" | "success" | "error";
 type AiChatMessage = AiMessage & {
   createdAt: number;
   id: string;
   agentPlan?: AgentPlanRuntime;
   agentPlanRaw?: AgentPlan;
+  agentPlanning?: boolean;
 };
 
 interface TransferTask {
@@ -347,6 +348,12 @@ const TERMINAL_BG_SIZE_MAP: Record<TerminalBackgroundFit, string> = {
   stretch: "100% 100%",
 };
 
+const isTransferTaskStatus = (value: unknown): value is TransferTaskStatus =>
+  value === "running" ||
+  value === "paused" ||
+  value === "success" ||
+  value === "failed";
+
 export function XTerminal({
   sessionId,
   host,
@@ -440,6 +447,8 @@ export function XTerminal({
   const [scriptPanelOpen, setScriptPanelOpen] = useState(false);
   const [transferPanelOpen, setTransferPanelOpen] = useState(false);
   const [transferTasks, setTransferTasks] = useState<TransferTask[]>([]);
+  const transferTasksRef = useRef<TransferTask[]>([]);
+  const transferHistoryLoadedRef = useRef(false);
   const transferRateRef = useRef<
     Record<string, { transferred: number; ts: number; speedBps: number }>
   >({});
@@ -527,6 +536,12 @@ export function XTerminal({
       ? [aiModel, ...modelOptions]
       : modelOptions;
   const aiHistoryKey = `ai.history.${sessionId}`;
+  const transferHistoryKey = useMemo(() => {
+    const scope = isLocal
+      ? "local"
+      : `${host.trim().toLowerCase()}:${port}`;
+    return `noterm.transfer.history.${createStableHash(scope)}`;
+  }, [host, isLocal, port]);
   const aiHistoryLoadedRef = useRef(false);
   const transferStatusLabel = (status: TransferTaskStatus) =>
     t(`terminal.transfer.status.${status}`);
@@ -611,6 +626,81 @@ export function XTerminal({
     const nextDraft = normalized.startsWith("#") ? normalized.slice(0, 160) : "";
     setTerminalQuickDraftState(nextDraft);
   };
+
+  const normalizeTransferTask = useCallback((value: unknown): TransferTask | null => {
+    if (!value || typeof value !== "object") return null;
+    const task = value as Partial<TransferTask>;
+    if (typeof task.id !== "string" || !task.id.trim()) return null;
+    if (task.direction !== "upload" && task.direction !== "download") return null;
+    if (typeof task.name !== "string") return null;
+    if (typeof task.sourcePath !== "string" || typeof task.targetPath !== "string") {
+      return null;
+    }
+    if (!isTransferTaskStatus(task.status)) return null;
+    const startedAt = Number(task.startedAt);
+    if (!Number.isFinite(startedAt) || startedAt <= 0) return null;
+    const progressRaw = Number(task.progress);
+    const progress = Number.isFinite(progressRaw)
+      ? Math.max(0, Math.min(100, Math.round(progressRaw)))
+      : 0;
+    const finishedAtRaw = task.finishedAt;
+    const finishedAt =
+      typeof finishedAtRaw === "number" && Number.isFinite(finishedAtRaw) && finishedAtRaw > 0
+        ? finishedAtRaw
+        : undefined;
+    const speedBpsRaw = task.speedBps;
+    const speedBps =
+      typeof speedBpsRaw === "number" && Number.isFinite(speedBpsRaw) && speedBpsRaw > 0
+        ? speedBpsRaw
+        : undefined;
+    return {
+      id: task.id,
+      direction: task.direction,
+      name: task.name,
+      sourcePath: task.sourcePath,
+      targetPath: task.targetPath,
+      status: task.status,
+      progress,
+      detail: typeof task.detail === "string" ? task.detail : undefined,
+      speedBps,
+      startedAt,
+      finishedAt,
+    };
+  }, []);
+
+  const persistTransferTasks = useCallback(
+    (tasks: TransferTask[]) => {
+      if (typeof window === "undefined") return;
+      if (tasks.length === 0) {
+        window.localStorage.removeItem(transferHistoryKey);
+        return;
+      }
+      window.localStorage.setItem(
+        transferHistoryKey,
+        JSON.stringify(tasks.slice(0, MAX_TRANSFER_TASKS)),
+      );
+    },
+    [transferHistoryKey],
+  );
+
+  const markRunningTransfersInterrupted = useCallback(
+    (tasks: TransferTask[]) => {
+      const now = Date.now();
+      return tasks.map((task) =>
+        task.status === "running"
+          ? {
+              ...task,
+              status: "failed" as const,
+              finishedAt: task.finishedAt ?? now,
+              speedBps: undefined,
+              detail:
+                t("terminal.transfer.interrupted.detail"),
+            }
+          : task,
+      );
+    },
+    [t],
+  );
 
   const scheduleLogSummaryUpdate = () => {
     if (logSummaryTimerRef.current) return;
@@ -1469,6 +1559,43 @@ export function XTerminal({
     void persist();
   }, [aiHistoryKey, aiMessages]);
 
+  useEffect(() => {
+    transferTasksRef.current = transferTasks;
+  }, [transferTasks]);
+
+  useEffect(() => {
+    transferHistoryLoadedRef.current = false;
+    if (typeof window === "undefined") {
+      setTransferTasks([]);
+      transferHistoryLoadedRef.current = true;
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(transferHistoryKey);
+      if (!raw) {
+        setTransferTasks([]);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      const normalized = Array.isArray(parsed)
+        ? parsed
+            .map((item) => normalizeTransferTask(item))
+            .filter((item): item is TransferTask => Boolean(item))
+            .slice(0, MAX_TRANSFER_TASKS)
+        : [];
+      setTransferTasks(markRunningTransfersInterrupted(normalized));
+    } catch {
+      setTransferTasks([]);
+    } finally {
+      transferHistoryLoadedRef.current = true;
+    }
+  }, [markRunningTransfersInterrupted, normalizeTransferTask, transferHistoryKey]);
+
+  useEffect(() => {
+    if (!transferHistoryLoadedRef.current) return;
+    persistTransferTasks(transferTasks);
+  }, [persistTransferTasks, transferTasks]);
+
   const normalizeBackendErrorMessage = (message: string) => {
     const text = message.trim();
     if (!text) return text;
@@ -1689,7 +1816,7 @@ export function XTerminal({
         window.clearTimeout(uiState.timer);
       }
       delete transferUiProgressRef.current[id];
-      if (!patch.finishedAt) {
+      if (patch.status !== "paused" && !patch.finishedAt) {
         patch = { ...patch, finishedAt: Date.now() };
       }
     }
@@ -1698,10 +1825,105 @@ export function XTerminal({
     );
   };
 
+  const isTransferCancelledError = (error: unknown) =>
+    formatError(error).includes("transfer_cancelled");
+
+  const resetTransferRate = (id: string) => {
+    transferRateRef.current[id] = {
+      transferred: 0,
+      ts: Date.now(),
+      speedBps: 0,
+    };
+  };
+
+  const handlePauseTransferTask = async (task: TransferTask) => {
+    if (task.direction !== "download" || task.status !== "running") return;
+    updateTransferTask(task.id, {
+      status: "paused",
+      detail: t("terminal.transfer.paused.detail"),
+    });
+    try {
+      await sshApi.cancelTransfer(task.id);
+    } catch (error) {
+      updateTransferTask(task.id, {
+        status: "failed",
+        progress: task.progress,
+        detail: formatError(error),
+      });
+    }
+  };
+
+  const handleResumeTransferTask = async (task: TransferTask) => {
+    if (task.direction !== "download" || task.status !== "paused") return;
+    resetTransferRate(task.id);
+    updateTransferTask(task.id, {
+      status: "running",
+      detail: t("terminal.transfer.resuming"),
+      startedAt: Date.now(),
+      finishedAt: undefined,
+    });
+    try {
+      await sshApi.downloadFile(sessionId, task.sourcePath, task.targetPath, task.id);
+      updateTransferTask(task.id, {
+        status: "success",
+        progress: 100,
+        detail: t("terminal.sftp.download.done"),
+        finishedAt: Date.now(),
+      });
+    } catch (error) {
+      if (isTransferCancelledError(error)) {
+        updateTransferTask(task.id, {
+          status: "paused",
+          detail: t("terminal.transfer.paused.detail"),
+        });
+        return;
+      }
+      const message = formatError(error);
+      showSftpNotice(t("terminal.sftp.download.fail", { message }));
+      updateTransferTask(task.id, {
+        status: "failed",
+        progress: task.progress,
+        detail: message,
+        finishedAt: Date.now(),
+      });
+    }
+  };
+
+  const removeTransferRuntimeState = (id: string) => {
+    delete transferRateRef.current[id];
+    const uiState = transferUiProgressRef.current[id];
+    if (uiState?.timer) {
+      window.clearTimeout(uiState.timer);
+    }
+    delete transferUiProgressRef.current[id];
+  };
+
+  const handleDeleteTransferTask = async (task: TransferTask) => {
+    if (task.direction === "download" && task.status === "running") {
+      try {
+        await sshApi.cancelTransfer(task.id);
+      } catch {
+        // The worker may already have completed; removal below is still valid.
+      }
+    }
+    removeTransferRuntimeState(task.id);
+    setTransferTasks((prev) => prev.filter((item) => item.id !== task.id));
+
+    if (task.direction === "download" && task.status !== "success" && task.targetPath) {
+      try {
+        await remove(task.targetPath);
+      } catch {
+        // Missing partial files are expected after failed or cancelled downloads.
+      }
+    }
+  };
+
   const clearTransferHistory = () => {
     setTransferTasks((prev) => {
-      const running = prev.filter((task) => task.status === "running");
-      const keep = new Set(running.map((task) => task.id));
+      const active = prev.filter(
+        (task) => task.status === "running" || task.status === "paused",
+      );
+      const keep = new Set(active.map((task) => task.id));
       for (const [id, state] of Object.entries(transferUiProgressRef.current)) {
         if (!keep.has(id) && state.timer) {
           window.clearTimeout(state.timer);
@@ -1713,7 +1935,7 @@ export function XTerminal({
       transferUiProgressRef.current = Object.fromEntries(
         Object.entries(transferUiProgressRef.current).filter(([id]) => keep.has(id)),
       );
-      return running;
+      return active;
     });
   };
 
@@ -1725,8 +1947,13 @@ export function XTerminal({
         }
       }
       transferUiProgressRef.current = {};
+      if (transferHistoryLoadedRef.current) {
+        persistTransferTasks(
+          markRunningTransfersInterrupted(transferTasksRef.current),
+        );
+      }
     },
-    [],
+    [markRunningTransfersInterrupted, persistTransferTasks],
   );
 
   // Auto-remove completed/failed transfers older than 5 minutes
@@ -1736,11 +1963,19 @@ export function XTerminal({
       const now = Date.now();
       setTransferTasks((prev) => {
         const hasStale = prev.some(
-          (t) => t.status !== "running" && t.finishedAt && now - t.finishedAt > COMPLETED_TTL_MS,
+          (t) =>
+            t.status !== "running" &&
+            t.status !== "paused" &&
+            t.finishedAt &&
+            now - t.finishedAt > COMPLETED_TTL_MS,
         );
         if (!hasStale) return prev;
         return prev.filter(
-          (t) => t.status === "running" || !t.finishedAt || now - t.finishedAt <= COMPLETED_TTL_MS,
+          (t) =>
+            t.status === "running" ||
+            t.status === "paused" ||
+            !t.finishedAt ||
+            now - t.finishedAt <= COMPLETED_TTL_MS,
         );
       });
     }, COMPLETED_TTL_MS);
@@ -2136,6 +2371,13 @@ export function XTerminal({
         store: false,
       });
     } catch (error) {
+      if (taskId && isTransferCancelledError(error)) {
+        updateTransferTask(taskId, {
+          status: "paused",
+          detail: t("terminal.transfer.paused.detail"),
+        });
+        return;
+      }
       const message = formatError(error);
       disposeSftpEditSession(remotePath);
       showSftpNotice(t("terminal.sftp.edit.open.fail", { message }));
@@ -2586,6 +2828,14 @@ export function XTerminal({
       }
       setUploadProgress(null);
     } catch (error) {
+      if (taskId && isTransferCancelledError(error)) {
+        updateTransferTask(taskId, {
+          status: "paused",
+          detail: t("terminal.transfer.paused.detail"),
+        });
+        setUploadProgress(null);
+        return;
+      }
       const message = formatError(error);
       showSftpNotice(t("terminal.sftp.download.fail", { message }));
       if (taskId) {
@@ -3734,6 +3984,7 @@ export function XTerminal({
     setAiError(null);
     setAiBusy(true);
 
+    const useAgentMode = agentMode === "confirm_then_execute";
     const userMessage: AiChatMessage = {
       id: createMessageId(),
       role: "user",
@@ -3746,6 +3997,7 @@ export function XTerminal({
       role: "assistant",
       content: "",
       createdAt: Date.now(),
+      agentPlanning: useAgentMode,
     };
     const requestAbortController = new AbortController();
     aiStreamAbortRef.current = requestAbortController;
@@ -3757,7 +4009,6 @@ export function XTerminal({
       const settings = await readAiSettings();
       const selectedModel = aiModel.trim() || settings.model;
       const nextSettings = selectedModel ? { ...settings, model: selectedModel } : settings;
-      const useAgentMode = agentMode === "confirm_then_execute";
       const terminalContextForPrompt = getTerminalContext(60);
       const baseSystemPrompt = useAgentMode
         ? buildAgentSystemPrompt(terminalContextForPrompt)
@@ -3773,6 +4024,7 @@ export function XTerminal({
         [systemMessage, ...nextMessages.map(({ role, content }) => ({ role, content }))],
         (delta) => {
           if (!delta) return;
+          if (useAgentMode) return;
           setAiMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantId ? { ...msg, content: msg.content + delta } : msg,
@@ -3797,6 +4049,7 @@ export function XTerminal({
               ? {
                   ...msg,
                   content: parsed.note || finalContent,
+                  agentPlanning: false,
                 }
               : msg,
           ),
@@ -3822,6 +4075,7 @@ export function XTerminal({
                 content: assistantContent,
                 agentPlan: runtimePlan,
                 agentPlanRaw: parsed.plan || undefined,
+                agentPlanning: false,
               }
             : msg,
         ),
@@ -4363,7 +4617,7 @@ export function XTerminal({
       autoCopyRef.current = autoCopy;
       reconnectWriteFailuresRef.current = Math.max(
         1,
-        Math.min(10, reconnectWriteFailures),
+        Math.min(15, reconnectWriteFailures),
       );
 
       term = new Terminal({
@@ -4814,7 +5068,7 @@ export function XTerminal({
         (v) => {
           if (disposed) return;
           const next = v ?? DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"];
-          reconnectWriteFailuresRef.current = Math.max(1, Math.min(10, next));
+          reconnectWriteFailuresRef.current = Math.max(1, Math.min(15, next));
         },
       );
       unlistenBackgroundImage = await store.onKeyChange<string>(
@@ -4903,6 +5157,11 @@ export function XTerminal({
     // Cleanup
     return () => {
       disposed = true;
+      if (transferHistoryLoadedRef.current) {
+        persistTransferTasks(
+          markRunningTransfersInterrupted(transferTasksRef.current),
+        );
+      }
       cleanupResizeListener?.();
       resizeObserver?.disconnect();
       disposable?.dispose();
@@ -5996,7 +6255,11 @@ export function XTerminal({
                         {showThinking ? (
                           <div className="xterminal-ai-thinking">
                             <span className="xterminal-ai-thinking-dot" aria-hidden="true" />
-                            <span>{t("terminal.ai.thinking")}</span>
+                            <span>
+                              {msg.agentPlanning
+                                ? t("terminal.agent.planning")
+                                : t("terminal.ai.thinking")}
+                            </span>
                           </div>
                         ) : (
                           <AiRenderer content={msg.content} sessionId={sessionId} useLocal={isLocal} role={msg.role} />
@@ -6512,6 +6775,26 @@ export function XTerminal({
                       <div className="xterminal-transfer-detail">{task.detail}</div>
                     )}
                     <div className="xterminal-transfer-item-actions">
+                      {task.direction === "download" && task.status === "running" && (
+                        <button
+                          type="button"
+                          className="xterminal-script-link"
+                          onClick={() => void handlePauseTransferTask(task)}
+                        >
+                          <AppIcon icon="material-symbols:pause-rounded" size={16} />
+                          {t("terminal.transfer.pause")}
+                        </button>
+                      )}
+                      {task.direction === "download" && task.status === "paused" && (
+                        <button
+                          type="button"
+                          className="xterminal-script-link"
+                          onClick={() => void handleResumeTransferTask(task)}
+                        >
+                          <AppIcon icon="material-symbols:play-arrow-rounded" size={16} />
+                          {t("terminal.transfer.resume")}
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="xterminal-script-link"
@@ -6519,6 +6802,14 @@ export function XTerminal({
                       >
                         <AppIcon icon="material-symbols:folder-open-rounded" size={16} />
                         {t("terminal.transfer.openFolder")}
+                      </button>
+                      <button
+                        type="button"
+                        className="xterminal-script-link xterminal-transfer-delete"
+                        onClick={() => void handleDeleteTransferTask(task)}
+                      >
+                        <AppIcon icon="material-symbols:close-rounded" size={16} />
+                        {t("terminal.transfer.delete")}
                       </button>
                     </div>
                   </div>

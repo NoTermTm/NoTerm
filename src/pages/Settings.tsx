@@ -1739,7 +1739,7 @@ export function SettingsPage() {
                   Math.max(
                     1,
                     Math.min(
-                      10,
+                      15,
                       parseInt(nextValue, 10) ||
                         DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"],
                     ),
@@ -1752,6 +1752,11 @@ export function SettingsPage() {
                 { value: "3", label: "3" },
                 { value: "4", label: "4" },
                 { value: "5", label: "5" },
+                { value: "6", label: "6" },
+                { value: "8", label: "8" },
+                { value: "10", label: "10" },
+                { value: "12", label: "12" },
+                { value: "15", label: "15" },
               ]}
             />
           </div>

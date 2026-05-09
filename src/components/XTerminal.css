@@ -1080,6 +1080,11 @@
     border-color: color-mix(in srgb, var(--accent) 35%, var(--bg-primary) 65%);
 }
 
+.xterminal-transfer-item--paused {
+    border-color: color-mix(in srgb, var(--warning) 28%, var(--border-light) 72%);
+    background: color-mix(in srgb, var(--warning) 5%, var(--bg-primary) 95%);
+}
+
 .xterminal-transfer-row {
     display: flex;
     align-items: center;
@@ -1125,6 +1130,11 @@
     background: color-mix(in srgb, var(--danger) 12%, var(--bg-primary) 88%);
 }
 
+.xterminal-transfer-status--paused {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 14%, var(--bg-primary) 86%);
+}
+
 .xterminal-transfer-meta {
     color: var(--text-tertiary);
     font-size: var(--type-caption);
@@ -1167,6 +1177,10 @@
     background: var(--success);
 }
 
+.xterminal-transfer-progressvalue--paused {
+    background: var(--warning);
+}
+
 .xterminal-transfer-detail {
     color: var(--text-secondary);
     font-size: var(--type-caption);
@@ -1174,7 +1188,15 @@
 
 .xterminal-transfer-item-actions {
     display: flex;
+    align-items: center;
+    gap: 8px;
     justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.xterminal-transfer-delete:hover {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
 @keyframes xterminal-transfer-running {

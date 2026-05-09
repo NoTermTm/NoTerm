@@ -115,6 +115,7 @@ pub struct SshManager {
     sftp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>, // 独立的 SFTP 会话
     connections: Arc<Mutex<HashMap<String, SshConnection>>>, // 存储连接信息
     forwards: Arc<Mutex<HashMap<String, ForwardHandle>>>, // 端口转发
+    transfer_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl SshManager {
@@ -153,6 +154,35 @@ impl SshManager {
             sftp_sessions: Arc::new(Mutex::new(HashMap::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
             forwards: Arc::new(Mutex::new(HashMap::new())),
+            transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn start_transfer(&self, transfer_id: &str) -> Arc<AtomicBool> {
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        self.transfer_cancels
+            .lock()
+            .unwrap()
+            .insert(transfer_id.to_string(), cancel_token.clone());
+        cancel_token
+    }
+
+    pub fn cancel_transfer(&self, transfer_id: &str) -> bool {
+        let transfers = self.transfer_cancels.lock().unwrap();
+        if let Some(cancel_token) = transfers.get(transfer_id) {
+            cancel_token.store(true, Ordering::SeqCst);
+            return true;
+        }
+        false
+    }
+
+    pub fn finish_transfer(&self, transfer_id: &str, cancel_token: &Arc<AtomicBool>) {
+        let mut transfers = self.transfer_cancels.lock().unwrap();
+        let should_remove = transfers
+            .get(transfer_id)
+            .is_some_and(|active_token| Arc::ptr_eq(active_token, cancel_token));
+        if should_remove {
+            transfers.remove(transfer_id);
         }
     }
 
@@ -882,6 +912,7 @@ impl SshManager {
         session_id: &str,
         remote_path: &str,
         local_path: &str,
+        cancel_token: Option<Arc<AtomicBool>>,
         mut on_progress: F,
     ) -> anyhow::Result<()>
     where
@@ -924,11 +955,23 @@ impl SshManager {
 
         on_progress(transferred, total);
         loop {
+            if cancel_token
+                .as_ref()
+                .is_some_and(|token| token.load(Ordering::SeqCst))
+            {
+                return Err(anyhow::anyhow!("transfer_cancelled"));
+            }
             let read = remote_file
                 .read(&mut buf)
                 .map_err(|e| anyhow::anyhow!("Failed to read remote file '{}': {}", remote_path, e))?;
             if read == 0 {
                 break;
+            }
+            if cancel_token
+                .as_ref()
+                .is_some_and(|token| token.load(Ordering::SeqCst))
+            {
+                return Err(anyhow::anyhow!("transfer_cancelled"));
             }
             local_file
                 .write_all(&buf[..read])

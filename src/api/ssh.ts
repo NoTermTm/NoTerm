@@ -97,6 +97,10 @@ export const sshApi = {
     return await invoke('ssh_sftp_download_file', { sessionId, remotePath, localPath, transferId });
   },
 
+  cancelTransfer: async (transferId: string): Promise<boolean> => {
+    return await invoke('ssh_sftp_cancel_transfer', { transferId });
+  },
+
   uploadFile: async (
     sessionId: string,
     localPath: string,

@@ -45,29 +45,6 @@ struct SftpTransferProgress {
     percent: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-struct RdpConnection {
-    id: String,
-    name: String,
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    gateway_host: Option<String>,
-    gateway_username: Option<String>,
-    gateway_password: Option<String>,
-    gateway_domain: Option<String>,
-    resolution_width: Option<u32>,
-    resolution_height: Option<u32>,
-    color_depth: Option<u32>,
-    cert_policy: Option<String>,
-    redirect_clipboard: Option<bool>,
-    redirect_audio: Option<bool>,
-    redirect_drives: Option<bool>,
-}
-
 fn command_exists(cmd: &str) -> bool {
     let checker = if cfg!(target_os = "windows") { "where" } else { "which" };
     Command::new(checker)
@@ -75,162 +52,6 @@ fn command_exists(cmd: &str) -> bool {
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
-}
-
-fn build_rdp_content(conn: &RdpConnection) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("full address:s:{}:{}", conn.host, conn.port));
-    if !conn.username.is_empty() {
-        lines.push(format!("username:s:{}", conn.username));
-    }
-
-    let prompt = conn.password.as_deref().unwrap_or("").is_empty();
-    lines.push(format!("prompt for credentials:i:{}", if prompt { 1 } else { 0 }));
-    lines.push("promptcredentialonce:i:1".to_string());
-
-    if let (Some(w), Some(h)) = (conn.resolution_width, conn.resolution_height) {
-        lines.push(format!("desktopwidth:i:{}", w));
-        lines.push(format!("desktopheight:i:{}", h));
-        lines.push("screen mode id:i:1".to_string());
-    } else {
-        lines.push("screen mode id:i:2".to_string());
-    }
-
-    if let Some(depth) = conn.color_depth {
-        lines.push(format!("session bpp:i:{}", depth));
-    }
-
-    if conn.cert_policy.as_deref() == Some("ignore") {
-        lines.push("authentication level:i:0".to_string());
-    } else {
-        lines.push("authentication level:i:2".to_string());
-    }
-
-    let redirect_clipboard = conn.redirect_clipboard.unwrap_or(true);
-    lines.push(format!("redirectclipboard:i:{}", if redirect_clipboard { 1 } else { 0 }));
-
-    let redirect_audio = conn.redirect_audio.unwrap_or(false);
-    lines.push(format!("audiomode:i:{}", if redirect_audio { 0 } else { 2 }));
-
-    let redirect_drives = conn.redirect_drives.unwrap_or(false);
-    lines.push(format!("drivestoredirect:s:{}", if redirect_drives { "*" } else { "" }));
-
-    if let Some(gateway) = conn.gateway_host.as_deref() {
-        if !gateway.is_empty() {
-            lines.push(format!("gatewayhostname:s:{}", gateway));
-            lines.push("gatewayusagemethod:i:1".to_string());
-            let gw_user = conn.gateway_username.as_deref().unwrap_or("").to_string();
-            let gw_domain = conn.gateway_domain.as_deref().unwrap_or("").to_string();
-            if !gw_user.is_empty() {
-                let full_user = if gw_domain.is_empty() {
-                    gw_user
-                } else {
-                    format!("{}\\{}", gw_domain, gw_user)
-                };
-                lines.push(format!("gatewayusername:s:{}", full_user));
-                lines.push("gatewaycredentialssource:i:4".to_string());
-            }
-        }
-    }
-
-    lines.join("\n")
-}
-
-#[tauri::command]
-async fn rdp_open(app_handle: AppHandle, connection: RdpConnection) -> Result<(), String> {
-    let base = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    let rdp_dir = base.join("rdp");
-    fs::create_dir_all(&rdp_dir).map_err(|e| e.to_string())?;
-    let rdp_path = rdp_dir.join(format!("{}.rdp", connection.id));
-    let content = build_rdp_content(&connection);
-    fs::write(&rdp_path, content).map_err(|e| e.to_string())?;
-
-    if command_exists("xfreerdp") {
-        let mut cmd = Command::new("xfreerdp");
-        cmd.arg(format!("/v:{}:{}", connection.host, connection.port));
-        if !connection.username.is_empty() {
-            cmd.arg(format!("/u:{}", connection.username));
-        }
-        if let Some(pass) = connection.password.as_deref() {
-            if !pass.is_empty() {
-                cmd.arg(format!("/p:{}", pass));
-            }
-        }
-        if connection.cert_policy.as_deref() == Some("ignore") {
-            cmd.arg("/cert:ignore");
-        }
-        if let (Some(w), Some(h)) = (connection.resolution_width, connection.resolution_height) {
-            cmd.arg(format!("/size:{}x{}", w, h));
-        }
-        if let Some(depth) = connection.color_depth {
-            cmd.arg(format!("/bpp:{}", depth));
-        }
-        if connection.redirect_clipboard.unwrap_or(true) {
-            cmd.arg("+clipboard");
-        } else {
-            cmd.arg("-clipboard");
-        }
-        if let Some(gateway) = connection.gateway_host.as_deref() {
-            if !gateway.is_empty() {
-                cmd.arg(format!("/g:{}", gateway));
-            }
-        }
-        if let Some(user) = connection.gateway_username.as_deref() {
-            if !user.is_empty() {
-                cmd.arg(format!("/gu:{}", user));
-            }
-        }
-        if let Some(pass) = connection.gateway_password.as_deref() {
-            if !pass.is_empty() {
-                cmd.arg(format!("/gp:{}", pass));
-            }
-        }
-        if let Some(domain) = connection.gateway_domain.as_deref() {
-            if !domain.is_empty() {
-                cmd.arg(format!("/gd:{}", domain));
-            }
-        }
-        cmd.spawn().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    if cfg!(target_os = "windows") {
-        if let Some(pass) = connection.password.as_deref() {
-            if !pass.is_empty() {
-                let target = format!("TERMSRV/{}", connection.host);
-                let _ = Command::new("cmdkey")
-                    .args([
-                        format!("/generic:{}", target),
-                        format!("/user:{}", connection.username),
-                        format!("/pass:{}", pass),
-                    ])
-                    .status();
-            }
-        }
-        Command::new("mstsc")
-            .arg(&rdp_path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    if cfg!(target_os = "macos") {
-        Command::new("open")
-            .arg(&rdp_path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    Command::new("xdg-open")
-        .arg(&rdp_path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -754,29 +575,50 @@ async fn ssh_sftp_download_file(
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
     let transfer_id = transfer_id.unwrap_or_else(|| format!("download:{}", remote_path));
+    let cancel_token = manager.start_transfer(&transfer_id);
+    let cleanup_cancel_token = cancel_token.clone();
+    let cleanup_manager = manager.clone();
+    let cleanup_transfer_id = transfer_id.clone();
     tokio::task::spawn_blocking(move || {
-        manager.sftp_download_file(&session_id, &remote_path, &local_path, |transferred, total| {
-            let percent = if total > 0 {
-                (transferred as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
-            } else {
-                0.0
-            };
-            let _ = app.emit(
-                "sftp-transfer-progress",
-                SftpTransferProgress {
-                    session_id: session_id.clone(),
-                    transfer_id: transfer_id.clone(),
-                    direction: "download".to_string(),
-                    transferred,
-                    total,
-                    percent,
-                },
-            );
-        })
+        let result = manager.sftp_download_file(
+            &session_id,
+            &remote_path,
+            &local_path,
+            Some(cancel_token),
+            |transferred, total| {
+                let percent = if total > 0 {
+                    (transferred as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+                } else {
+                    0.0
+                };
+                let _ = app.emit(
+                    "sftp-transfer-progress",
+                    SftpTransferProgress {
+                        session_id: session_id.clone(),
+                        transfer_id: transfer_id.clone(),
+                        direction: "download".to_string(),
+                        transferred,
+                        total,
+                        percent,
+                    },
+                );
+            },
+        );
+        cleanup_manager.finish_transfer(&cleanup_transfer_id, &cleanup_cancel_token);
+        result
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn ssh_sftp_cancel_transfer(
+    state: State<'_, AppState>,
+    transfer_id: String,
+) -> bool {
+    let manager = state.ssh_manager.lock().unwrap();
+    manager.cancel_transfer(&transfer_id)
 }
 
 #[tauri::command]
@@ -899,7 +741,6 @@ pub fn run() {
             clipboard_write_text,
             ssh_check_endpoint,
             ssh_generate_keypair,
-            rdp_open,
             ssh_connect,
             ssh_open_shell,
             ssh_write_to_shell,
@@ -919,6 +760,7 @@ pub fn run() {
             ssh_forward_list,
             ssh_sftp_list_dir,
             ssh_sftp_download_file,
+            ssh_sftp_cancel_transfer,
             ssh_sftp_upload_file,
             ssh_sftp_rename,
             ssh_sftp_chmod,

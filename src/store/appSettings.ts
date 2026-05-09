@@ -10,7 +10,11 @@ export type TerminalThemeName =
   | "dracula"
   | "gruvbox"
   | "tokyo"
-  | "catppuccin";
+  | "catppuccin"
+  | "onedark"
+  | "kanagawa"
+  | "rosepine"
+  | "ayu";
 
 export type TerminalBackgroundFit = "cover" | "contain" | "stretch";
 
