@@ -9,9 +9,11 @@ import { createPortal } from "react-dom";
 import { AppIcon } from "../components/AppIcon";
 import { Select } from "../components/Select";
 import { sshApi } from "../api/ssh";
+import { telnetApi } from "../api/telnet";
 import type {
   ConnectionConfig,
   SshConnectionConfig,
+  TelnetConnectionConfig,
 } from "../types/connection";
 import { load } from "@tauri-apps/plugin-store";
 import { useNavigate } from "react-router-dom";
@@ -163,6 +165,9 @@ const detectRemoteOsType = async (sessionId: string): Promise<OsType> => {
 };
 
 const getConnectionIcon = (conn: ConnectionConfig): string => {
+  if (conn.kind === "telnet") {
+    return "material-symbols:settings-ethernet-rounded";
+  }
   // 对于 SSH 连接，如果明确了系统类型，则展示对应的图标；如果系统类型未知，则展示通用的终端图标
   if (conn.osType === "windows") {
     return "simple-icons:windows";
@@ -225,14 +230,88 @@ const normalizeSshConnection = (
   osType: normalizeOsType(conn.osType),
 });
 
+const normalizeTelnetConnection = (
+  conn: Partial<TelnetConnectionConfig>,
+  fallbackName: string,
+): TelnetConnectionConfig => ({
+  kind: "telnet",
+  id: conn.id ?? crypto.randomUUID(),
+  name: trimValue(conn.name) || fallbackName,
+  tags: normalizeTags(conn.tags),
+  color: normalizeColor(conn.color),
+  host: trimValue(conn.host),
+  port: Number.isFinite(conn.port as number) ? (conn.port as number) : 23,
+  username: trimValue(conn.username),
+  password: conn.password ?? "",
+  encoding: conn.encoding ?? "utf-8",
+  osType: normalizeOsType(conn.osType),
+});
+
 const normalizeConnection = (
   conn: any,
-  fallbackSshName: string,
-): ConnectionConfig => normalizeSshConnection(conn, fallbackSshName);
+  fallbackName: string,
+): ConnectionConfig =>
+  conn?.kind === "telnet"
+    ? normalizeTelnetConnection(conn, fallbackName)
+    : normalizeSshConnection(conn, fallbackName);
 
 const isSshConnection = (
   conn: ConnectionConfig | null | undefined,
 ): conn is SshConnectionConfig => !!conn && conn.kind === "ssh";
+
+const isTelnetConnection = (
+  conn: ConnectionConfig | null | undefined,
+): conn is TelnetConnectionConfig => !!conn && conn.kind === "telnet";
+
+const convertConnectionKind = (
+  conn: ConnectionConfig,
+  nextKind: "ssh" | "telnet",
+  fallbackNames: { ssh: string; telnet: string },
+): ConnectionConfig => {
+  if (conn.kind === nextKind) return conn;
+
+  if (nextKind === "telnet") {
+    return normalizeTelnetConnection(
+      {
+        id: conn.id,
+        name: conn.name,
+        tags: conn.tags,
+        color: conn.color,
+        host: conn.host,
+        port: 23,
+        username: conn.username,
+        password:
+          conn.kind === "telnet"
+            ? conn.password
+            : conn.auth_type.type === "Password"
+              ? conn.auth_type.password
+              : "",
+        encoding: conn.encoding,
+        osType: conn.osType,
+      },
+      fallbackNames.telnet,
+    );
+  }
+
+  return normalizeSshConnection(
+    {
+      id: conn.id,
+      name: conn.name,
+      tags: conn.tags,
+      color: conn.color,
+      host: conn.host,
+      port: 22,
+      username: conn.username,
+      auth_type:
+        conn.kind === "ssh"
+          ? conn.auth_type
+          : { type: "Password", password: conn.password ?? "" },
+      encoding: conn.encoding,
+      osType: conn.osType,
+    },
+    fallbackNames.ssh,
+  );
+};
 
 // 验证 PEM 私钥格式
 function validatePemKey(
@@ -373,7 +452,16 @@ const deserializeConnection = async (
   ctx: SecurityContext,
   fallbackName: string,
 ) => {
-  if (!conn || conn.kind !== "ssh") return null;
+  if (!conn || (conn.kind !== "ssh" && conn.kind !== "telnet")) return null;
+  if (conn.kind === "telnet") {
+    return normalizeConnection(
+      {
+        ...conn,
+        password: await decryptMaybe(conn.password, ctx),
+      },
+      fallbackName,
+    );
+  }
   const ssh = { ...conn };
   if (ssh.auth_type?.type === "Password") {
     ssh.auth_type = {
@@ -392,6 +480,12 @@ const deserializeConnection = async (
 };
 
 const serializeConnection = async (conn: ConnectionConfig, ctx: SecurityContext) => {
+  if (conn.kind === "telnet") {
+    return {
+      ...conn,
+      password: await encryptMaybe(conn.password, ctx),
+    };
+  }
   if (conn.auth_type.type === "Password") {
     return {
       ...conn,
@@ -419,8 +513,16 @@ const mergeStoredConnectionSecrets = (
   stored: ConnectionConfig | undefined,
 ) => {
   if (!stored) return conn;
+  if (conn.kind === "telnet") {
+    if (stored.kind !== "telnet") return conn;
+    return {
+      ...conn,
+      password: stored.password ?? "",
+    };
+  }
+  if (stored.kind !== "ssh") return conn;
   if (conn.auth_type.type === "Password") {
-    if (stored.auth_type?.type !== "Password") return conn;
+    if (stored.auth_type.type !== "Password") return conn;
     return {
       ...conn,
       auth_type: {
@@ -430,7 +532,7 @@ const mergeStoredConnectionSecrets = (
     };
   }
   if (conn.auth_type.type === "PrivateKey") {
-    if (stored.auth_type?.type !== "PrivateKey") return conn;
+    if (stored.auth_type.type !== "PrivateKey") return conn;
     return {
       ...conn,
       auth_type: {
@@ -566,8 +668,8 @@ interface ConnectionsPageProps {
 interface ActiveSession {
   sessionId: string;
   connectionId: string;
-  connection: SshConnectionConfig;
-  kind: "ssh" | "local";
+  connection: ConnectionConfig;
+  kind: "ssh" | "telnet" | "local";
 }
 
 interface SplitLayout {
@@ -576,7 +678,7 @@ interface SplitLayout {
   ratio: number;
 }
 
-const formatSessionEndpoint = (connection: SshConnectionConfig) =>
+const formatSessionEndpoint = (connection: ConnectionConfig) =>
   `${connection.username ? `${connection.username}@` : ""}${connection.host}`;
 
 const formatConnectionEndpoint = (connection: ConnectionConfig) => {
@@ -595,7 +697,7 @@ const buildSessionTab = (
   id: sessionId,
   title: title ?? session.connection.name,
   subtitle: subtitle ?? formatSessionEndpoint(session.connection),
-  color: session.kind === "ssh" ? normalizeColor(session.connection.color) : undefined,
+  color: session.kind !== "local" ? normalizeColor(session.connection.color) : undefined,
 });
 
 export function ConnectionsPage({
@@ -610,6 +712,7 @@ export function ConnectionsPage({
   const { t } = useI18n();
   const fallbackNames = {
     ssh: t("connections.defaultName"),
+    telnet: t("connections.defaultName.telnet"),
   };
   const [connections, setConnections] = useState<ConnectionConfig[]>([]);
   const [selectedConnection, setSelectedConnection] =
@@ -809,7 +912,13 @@ export function ConnectionsPage({
       const ctx = await getSecurityContext();
       const normalized = (
         await Promise.all(
-          saved.map((conn) => deserializeConnection(conn, ctx, fallbackNames.ssh)),
+          saved.map((conn) =>
+            deserializeConnection(
+              conn,
+              ctx,
+              conn?.kind === "telnet" ? fallbackNames.telnet : fallbackNames.ssh,
+            ),
+          ),
         )
       ).filter((conn): conn is ConnectionConfig => !!conn);
       setConnections(normalized);
@@ -985,7 +1094,9 @@ export function ConnectionsPage({
 
     const normalizedEditing = normalizeConnection(
       editingConnection,
-      fallbackNames.ssh,
+      editingConnection.kind === "telnet"
+        ? fallbackNames.telnet
+        : fallbackNames.ssh,
     );
 
     const existingIndex = connections.findIndex(
@@ -1105,10 +1216,10 @@ export function ConnectionsPage({
   };
 
   const createSession = (
-    connection: SshConnectionConfig,
+    connection: ConnectionConfig,
     withTab: boolean,
     activateTab: boolean,
-    kind: "ssh" | "local" = "ssh",
+    kind: "ssh" | "telnet" | "local" = connection.kind,
   ) => {
     const sessionId = crypto.randomUUID();
     const sessionCount =
@@ -1163,7 +1274,7 @@ export function ConnectionsPage({
     setSplitPickerOpen(true);
   };
 
-  const handleCreateSplit = async (connection: SshConnectionConfig) => {
+  const handleCreateSplit = async (connection: ConnectionConfig) => {
     if (!splitPickerBaseSessionId) return;
 
     const existing = splitLayouts.get(splitPickerBaseSessionId);
@@ -1194,6 +1305,10 @@ export function ConnectionsPage({
     const session = activeSessions.get(targetSessionId);
     if (session?.kind === "local") {
       await sshApi.localDisconnect(targetSessionId);
+      return;
+    }
+    if (session?.kind === "telnet") {
+      await telnetApi.disconnect(targetSessionId);
       return;
     }
     await sshApi.disconnect(targetSessionId);
@@ -1353,14 +1468,15 @@ export function ConnectionsPage({
   }, [activeSessions, handleDisconnect, splitLayouts]);
 
   const handleTestConnection = async () => {
-    if (!isSshConnection(editingConnection)) return;
+    if (!editingConnection) return;
 
     const trimmedHost = editingConnection.host.trim();
     const trimmedUser = editingConnection.username.trim();
-    const isPrivateKeyAuth = editingConnection.auth_type.type === "PrivateKey";
     const port = Number.isFinite(editingConnection.port)
       ? editingConnection.port
-      : 22;
+      : editingConnection.kind === "telnet"
+        ? 23
+        : 22;
 
     if (!trimmedHost) {
       setTestStatus("error");
@@ -1368,6 +1484,41 @@ export function ConnectionsPage({
       return;
     }
 
+    if (editingConnection.kind === "telnet") {
+      setTestStatus("testing");
+      setTestMessage(t("connections.test.testing"));
+      try {
+        const sessionId = await telnetApi.connect({
+          ...editingConnection,
+          id: crypto.randomUUID(),
+          host: trimmedHost,
+          username: trimmedUser,
+          port,
+        });
+        await telnetApi.disconnect(sessionId);
+        setTestStatus("success");
+        setTestMessage(null);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("app-message", {
+              detail: {
+                title: t("connections.test.success"),
+                tone: "success",
+                toast: true,
+                store: false,
+              },
+            }),
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setTestStatus("error");
+        setTestMessage(message || t("connections.test.fail"));
+      }
+      return;
+    }
+
+    const isPrivateKeyAuth = editingConnection.auth_type.type === "PrivateKey";
     if (!trimmedUser && !isPrivateKeyAuth) {
       setTestStatus("error");
       setTestMessage(t("connections.test.requireUsername"));
@@ -1418,7 +1569,19 @@ export function ConnectionsPage({
       const sessionId = await sshApi.connect(testConnection);
       await sshApi.disconnect(sessionId);
       setTestStatus("success");
-      setTestMessage(t("connections.test.success"));
+      setTestMessage(null);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("connections.test.success"),
+              tone: "success",
+              toast: true,
+              store: false,
+            },
+          }),
+        );
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setTestStatus("error");
@@ -1429,9 +1592,13 @@ export function ConnectionsPage({
   const renderConnectionForm = () => {
     if (!editingConnection) return null;
 
-    const authType = editingConnection.auth_type.type;
+    const isSshEditing = isSshConnection(editingConnection);
+    const authType = isSshEditing ? editingConnection.auth_type.type : "Password";
     const currentPkMode =
-      authType === "PrivateKey" && editingConnection.auth_type.key_content
+      isSshEditing &&
+      authType === "PrivateKey" &&
+      editingConnection.auth_type.type === "PrivateKey" &&
+      editingConnection.auth_type.key_content
         ? "manual"
         : pkMode;
     const tags = normalizeTags(editingConnection.tags);
@@ -1449,12 +1616,14 @@ export function ConnectionsPage({
     const color = normalizeColor(editingConnection.color);
     const moreConfigSummary = [
       editingConnection.name?.trim() || t("connections.unnamed"),
+      editingConnection.kind === "telnet"
+        ? t("connections.protocol.telnet")
+        : t("connections.protocol.ssh"),
       primaryTag ? `#${primaryTag}` : t("connections.tags.none"),
       color,
     ].join(" / ");
 
     return (
-      <>
       <div className="connection-form connection-form-layout">
         <div className="connection-form-section">
           <div className="connection-form-section-title">
@@ -1478,8 +1647,38 @@ export function ConnectionsPage({
             <div className="form-group">
               <label>{t("connections.field.protocol")}</label>
               <div className="connection-type-switch">
-                <button type="button" className="connection-type-switch-btn active">
+                <button
+                  type="button"
+                  className={`connection-type-switch-btn ${
+                    editingConnection.kind === "ssh" ? "active" : ""
+                  }`}
+                  onClick={() => {
+                    setAuthProfileId("");
+                    setPkMode("path");
+                    setEditingConnection((prev) =>
+                      prev
+                        ? convertConnectionKind(prev, "ssh", fallbackNames)
+                        : prev,
+                    );
+                  }}
+                >
                   {t("connections.protocol.ssh")}
+                </button>
+                <button
+                  type="button"
+                  className={`connection-type-switch-btn ${
+                    editingConnection.kind === "telnet" ? "active" : ""
+                  }`}
+                  onClick={() => {
+                    setAuthProfileId("");
+                    setEditingConnection((prev) =>
+                      prev
+                        ? convertConnectionKind(prev, "telnet", fallbackNames)
+                        : prev,
+                    );
+                  }}
+                >
+                  {t("connections.protocol.telnet")}
                 </button>
               </div>
             </div>
@@ -1507,51 +1706,113 @@ export function ConnectionsPage({
             {t("connections.section.auth")}
           </div>
 
-          <div className="form-group">
-            <label>{t("connections.quickAuth.label")}</label>
-            <div className="quick-auth-row">
-              <Select
-                className="quick-auth-select"
-                wrapperClassName="quick-auth-select-wrapper"
-                value={authProfileId}
-                onChange={(nextValue) => setAuthProfileId(nextValue)}
-                options={[
-                  { value: "", label: t("connections.quickAuth.none") },
-                  ...authProfiles.map((profile) => ({
-                    value: profile.id,
-                    label: (
-                      <>
-                        {profile.name}（{profile.username} /{" "}
-                        {profile.auth_type.type === "Password"
-                          ? t("connections.quickAuth.password")
-                          : t("connections.quickAuth.key")}
-                        ）
-                      </>
-                    ),
-                  })),
-                ]}
-              />
-              <button
-                className="btn btn-secondary btn-sm"
-                type="button"
-                onClick={() => void saveEditingAuthToProfiles()}
-                disabled={!canSaveAuthProfileFromEditing}
-                title={t("connections.quickAuth.saveTitle")}
-              >
-                <AppIcon icon="material-symbols:save-rounded" size={16} />
-                {t("connections.quickAuth.save")}
-              </button>
-            </div>
-            <div className="quick-auth-hint">{t("connections.quickAuth.hint")}</div>
-          </div>
+          {isSshEditing ? (
+            <>
+              <div className="form-group">
+                <label>{t("connections.quickAuth.label")}</label>
+                <div className="quick-auth-row">
+                  <Select
+                    className="quick-auth-select"
+                    wrapperClassName="quick-auth-select-wrapper"
+                    value={authProfileId}
+                    onChange={(nextValue) => setAuthProfileId(nextValue)}
+                    options={[
+                      { value: "", label: t("connections.quickAuth.none") },
+                      ...authProfiles.map((profile) => ({
+                        value: profile.id,
+                        label: (
+                          <>
+                            {profile.name}（{profile.username} /{" "}
+                            {profile.auth_type.type === "Password"
+                              ? t("connections.quickAuth.password")
+                              : t("connections.quickAuth.key")}
+                            ）
+                          </>
+                        ),
+                      })),
+                    ]}
+                  />
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    type="button"
+                    onClick={() => void saveEditingAuthToProfiles()}
+                    disabled={!canSaveAuthProfileFromEditing}
+                    title={t("connections.quickAuth.saveTitle")}
+                  >
+                    <AppIcon icon="material-symbols:save-rounded" size={16} />
+                    {t("connections.quickAuth.save")}
+                  </button>
+                </div>
+                <div className="quick-auth-hint">{t("connections.quickAuth.hint")}</div>
+              </div>
 
-          <div className="connection-form-grid">
+              <div className="connection-form-grid">
+                <div className="form-group">
+                  <label>
+                    {authType === "PrivateKey"
+                      ? t("connections.username.optional")
+                      : t("connections.username")}
+                  </label>
+                  <input
+                    type="text"
+                    value={editingConnection.username}
+                    onChange={(e) =>
+                      setEditingConnection({
+                        ...editingConnection,
+                        username: e.target.value,
+                      })
+                    }
+                    placeholder={
+                      authType === "PrivateKey"
+                        ? t("connections.username.placeholderPrivateKey")
+                        : "root"
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>{t("connections.authType.label")}</label>
+                <div className="auth-type-selector">
+                  <button
+                    type="button"
+                    className={`auth-type-btn ${authType === "Password" ? "active" : ""}`}
+                    onClick={() => {
+                      setAuthProfileId("");
+                      setEditingConnection({
+                        ...editingConnection,
+                        auth_profile_id: undefined,
+                        auth_type: { type: "Password", password: "" },
+                      });
+                    }}
+                  >
+                    {t("connections.authType.password")}
+                  </button>
+                  <button
+                    type="button"
+                    className={`auth-type-btn ${authType === "PrivateKey" ? "active" : ""}`}
+                    onClick={() => {
+                      setAuthProfileId("");
+                      setEditingConnection({
+                        ...editingConnection,
+                        auth_profile_id: undefined,
+                        auth_type: {
+                          type: "PrivateKey",
+                          key_path: "",
+                          passphrase: "",
+                        },
+                      });
+                      setPkMode("path");
+                    }}
+                  >
+                    {t("connections.authType.key")}
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
             <div className="form-group">
-              <label>
-                {authType === "PrivateKey"
-                  ? t("connections.username.optional")
-                  : t("connections.username")}
-              </label>
+              <label>{t("connections.username")}</label>
               <input
                 type="text"
                 value={editingConnection.username}
@@ -1561,61 +1822,25 @@ export function ConnectionsPage({
                     username: e.target.value,
                   })
                 }
-                placeholder={
-                  authType === "PrivateKey"
-                    ? t("connections.username.placeholderPrivateKey")
-                    : "root"
-                }
+                placeholder="root"
               />
+              <div className="quick-auth-hint">
+                {t("connections.telnet.authHint")}
+              </div>
             </div>
-          </div>
+          )}
 
-          <div className="form-group">
-            <label>{t("connections.authType.label")}</label>
-            <div className="auth-type-selector">
-              <button
-                type="button"
-                className={`auth-type-btn ${authType === "Password" ? "active" : ""}`}
-                onClick={() => {
-                  setAuthProfileId("");
-                  setEditingConnection({
-                    ...editingConnection,
-                    auth_profile_id: undefined,
-                    auth_type: { type: "Password", password: "" },
-                  });
-                }}
-              >
-                {t("connections.authType.password")}
-              </button>
-              <button
-                type="button"
-                className={`auth-type-btn ${authType === "PrivateKey" ? "active" : ""}`}
-                onClick={() => {
-                  setAuthProfileId("");
-                  setEditingConnection({
-                    ...editingConnection,
-                    auth_profile_id: undefined,
-                    auth_type: {
-                      type: "PrivateKey",
-                      key_path: "",
-                      passphrase: "",
-                    },
-                  });
-                  setPkMode("path");
-                }}
-              >
-                {t("connections.authType.key")}
-              </button>
-            </div>
-          </div>
-
-          {authType === "Password" && (
+          {isSshEditing && authType === "Password" && (
             <div className="form-group">
               <label>{t("connections.password")}</label>
               <div className="password-input-wrapper">
                 <input
                   type={showPassword ? "text" : "password"}
-                  value={(editingConnection.auth_type as any).password || ""}
+                  value={
+                    editingConnection.auth_type.type === "Password"
+                      ? editingConnection.auth_type.password
+                      : ""
+                  }
                   onChange={(e) =>
                     setEditingConnection({
                       ...editingConnection,
@@ -1649,7 +1874,44 @@ export function ConnectionsPage({
             </div>
           )}
 
-          {authType === "PrivateKey" && (
+          {!isSshEditing && (
+            <div className="form-group">
+              <label>{t("connections.password")}</label>
+              <div className="password-input-wrapper">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={editingConnection.password || ""}
+                  onChange={(e) =>
+                    setEditingConnection({
+                      ...editingConnection,
+                      password: e.target.value,
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className="password-toggle-btn"
+                  onClick={() => setShowPassword(!showPassword)}
+                  title={
+                    showPassword
+                      ? t("connections.password.hide")
+                      : t("connections.password.show")
+                  }
+                >
+                  <AppIcon
+                    icon={
+                      showPassword
+                        ? "material-symbols:visibility-off-rounded"
+                        : "material-symbols:visibility-rounded"
+                    }
+                    size={20}
+                  />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {isSshEditing && authType === "PrivateKey" && (
             <>
               <div className="keys-pk-mode">
                 <button
@@ -1972,7 +2234,9 @@ export function ConnectionsPage({
             onClick={async () => {
               const connectionToConnect = normalizeConnection(
                 editingConnection,
-                fallbackNames.ssh,
+                editingConnection.kind === "telnet"
+                  ? fallbackNames.telnet
+                  : fallbackNames.ssh,
               );
               await handleSaveConnection();
               await handleConnect(connectionToConnect);
@@ -1980,7 +2244,7 @@ export function ConnectionsPage({
           >
             {t("connections.action.connectAndSave")}
           </button>
-          {testMessage && (
+          {testMessage && testStatus !== "success" && (
             <span
               className={`connection-test-status connection-test-status--${testStatus}`}
             >
@@ -1989,7 +2253,6 @@ export function ConnectionsPage({
           )}
         </div>
       </div>
-      </>
     );
   };
 
@@ -2010,6 +2273,9 @@ export function ConnectionsPage({
               if (targetSession?.kind === "local") {
                 return sshApi.localWriteToShell(id, content).catch(() => {});
               }
+              if (targetSession?.kind === "telnet") {
+                return telnetApi.writeToShell(id, content).catch(() => {});
+              }
               return sshApi.writeToShell(id, content).catch(() => {});
             }),
           );
@@ -2019,6 +2285,10 @@ export function ConnectionsPage({
           await sshApi.localWriteToShell(sessionId, content).catch(() => {});
           return;
         }
+        if (session.kind === "telnet") {
+          await telnetApi.writeToShell(sessionId, content).catch(() => {});
+          return;
+        }
         await sshApi.writeToShell(sessionId, content).catch(() => {});
       };
       const handleTerminalConnect = async () => {
@@ -2026,6 +2296,15 @@ export function ConnectionsPage({
           await sshApi.localOpenShell(sessionId);
           return;
         }
+        if (session.kind === "telnet" && isTelnetConnection(session.connection)) {
+          const backendSessionId = await telnetApi.connect({
+            ...session.connection,
+            id: sessionId,
+          });
+          await telnetApi.openShell(backendSessionId);
+          return;
+        }
+        if (!isSshConnection(session.connection)) return;
         const backendSessionId = await sshApi.connect({
           ...session.connection,
           id: sessionId,
@@ -2049,6 +2328,7 @@ export function ConnectionsPage({
           host={session.connection.host}
           port={session.connection.port}
           isLocal={session.kind === "local"}
+          sessionKind={session.kind}
           osType={session.connection.osType ?? "unknown"}
           onConnect={handleTerminalConnect}
           onRequestSplit={onRequestSplit}

@@ -19,6 +19,7 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import { mkdir, remove, stat, watch, type UnwatchFn } from "@tauri-apps/plugin-fs";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { sshApi } from "../api/ssh";
+import { telnetApi } from "../api/telnet";
 import type { SftpEntry } from "../types/ssh";
 import "@xterm/xterm/css/xterm.css";
 import "./XTerminal.css";
@@ -70,6 +71,7 @@ interface XTerminalProps {
   host: string;
   port: number;
   isLocal?: boolean;
+  sessionKind?: "ssh" | "telnet" | "local";
   osType?: "windows" | "macos" | "linux" | "unknown";
   onConnect?: () => Promise<void>;
   onRequestSplit?: (direction: "vertical" | "horizontal") => void;
@@ -359,6 +361,7 @@ export function XTerminal({
   host,
   port,
   isLocal = false,
+  sessionKind = isLocal ? "local" : "ssh",
   osType = "unknown",
   onConnect,
   onRequestSplit,
@@ -367,6 +370,8 @@ export function XTerminal({
   onSendScript,
 }: XTerminalProps) {
   const { t, locale } = useI18n();
+  const isTelnet = sessionKind === "telnet";
+  const supportsSftp = sessionKind === "ssh";
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminalInstance = useRef<Terminal | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
@@ -971,6 +976,9 @@ export function XTerminal({
     if (isLocal) {
       return sshApi.localWriteToShell(sessionId, data);
     }
+    if (isTelnet) {
+      return telnetApi.writeToShell(sessionId, data);
+    }
     return sshApi.writeToShell(sessionId, data);
   };
 
@@ -1021,7 +1029,7 @@ export function XTerminal({
   }, [locale]);
 
   const copyTerminalLog = async () => {
-    const header = `session=${sessionId} local=${isLocal} conn=${connStatus} sftp=${sftpOpen} ai=${aiOpen} lastInput=${lastInputAtRef.current} lastOutput=${lastOutputAtRef.current}`;
+    const header = `session=${sessionId} type=${sessionKind} conn=${connStatus} sftp=${sftpOpen} ai=${aiOpen} lastInput=${lastInputAtRef.current} lastOutput=${lastOutputAtRef.current}`;
     const lines = terminalLogRef.current.map(
       (item) => `${item.time} [${item.level}] ${item.message}`,
     );
@@ -1141,9 +1149,11 @@ export function XTerminal({
       let ok = false;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         try {
-          const connectedBeforeReconnect = await sshApi
-            .isConnected(sessionId)
-            .catch(() => false);
+          const connectedBeforeReconnect = await (
+            isTelnet
+              ? telnetApi.isConnected(sessionId)
+              : sshApi.isConnected(sessionId)
+          ).catch(() => false);
           if (connectedBeforeReconnect) {
             ok = true;
             pushTerminalLog("info", "reconnect skipped (session still alive)");
@@ -1152,7 +1162,9 @@ export function XTerminal({
 
           pushTerminalLog("info", `reconnect attempt ${attempt}`);
           await connectNow({ forceReset: attempt > 1 });
-          const connected = await sshApi.isConnected(sessionId);
+          const connected = isTelnet
+            ? await telnetApi.isConnected(sessionId)
+            : await sshApi.isConnected(sessionId);
           if (connected) {
             ok = true;
             pushTerminalLog("info", "reconnect ok");
@@ -1253,7 +1265,11 @@ export function XTerminal({
           !isLocal &&
           writeFailureCountRef.current >= reconnectWriteFailuresRef.current
         ) {
-          const stillConnected = await sshApi.isConnected(sessionId).catch(() => false);
+          const stillConnected = await (
+            isTelnet
+              ? telnetApi.isConnected(sessionId)
+              : sshApi.isConnected(sessionId)
+          ).catch(() => false);
           pushTerminalLog(
             stillConnected
               ? "warn"
@@ -1314,12 +1330,18 @@ export function XTerminal({
     if (isLocal) {
       return sshApi.localResizePty(sessionId, cols, rows);
     }
+    if (isTelnet) {
+      return telnetApi.resizePty(sessionId, cols, rows);
+    }
     return sshApi.resizePty(sessionId, cols, rows);
   };
 
   const disconnectShell = () => {
     if (isLocal) {
       return sshApi.localDisconnect(sessionId);
+    }
+    if (isTelnet) {
+      return telnetApi.disconnect(sessionId);
     }
     return sshApi.disconnect(sessionId);
   };
@@ -2007,6 +2029,7 @@ export function XTerminal({
   };
 
   const toggleTransferPanel = () => {
+    if (!supportsSftp) return;
     if (transferPanelOpen) {
       setTransferPanelOpen(false);
       return;
@@ -2027,6 +2050,12 @@ export function XTerminal({
   const endpointCopyLabel = endpointCopied
     ? t("terminal.toolbar.endpoint.copied")
     : t("terminal.toolbar.endpoint.copy");
+
+  useEffect(() => {
+    if (supportsSftp) return;
+    setSftpOpen(false);
+    setTransferPanelOpen(false);
+  }, [supportsSftp]);
 
   const latencyTone = useMemo(() => {
     if (latencyMs === null) return "unknown";
@@ -2101,7 +2130,11 @@ export function XTerminal({
         return;
       }
 
-      const connected = await sshApi.isConnected(sessionId).catch(() => false);
+      const connected = await (
+        isTelnet
+          ? telnetApi.isConnected(sessionId)
+          : sshApi.isConnected(sessionId)
+      ).catch(() => false);
       if (connected) {
         if (!mountedRef.current) return;
         setConnStatus("connected");
@@ -2125,6 +2158,7 @@ export function XTerminal({
   };
 
   const loadSftpEntries = async (path = sftpPath) => {
+    if (!supportsSftp) return;
     setSftpLoading(true);
     setSftpError(null);
     try {
@@ -3035,6 +3069,7 @@ export function XTerminal({
     }
     if (text.includes("linux")) return "linux";
     if (isLocal) return "local_unknown";
+    if (isTelnet) return "telnet_unknown";
     return "unknown";
   };
 
@@ -3045,7 +3080,7 @@ export function XTerminal({
     const lines = [
       "Terminal Facts:",
       `- session_id: ${sessionId}`,
-      `- connection_type: ${isLocal ? "local" : "ssh"}`,
+      `- connection_type: ${isLocal ? "local" : isTelnet ? "telnet" : "ssh"}`,
       `- target_host: ${host || "unknown"}`,
       `- target_port: ${isLocal ? "N/A" : port}`,
       `- endpoint_ip: ${endpointIp || "unknown"}`,
@@ -5398,20 +5433,22 @@ export function XTerminal({
               </button>
             </>
           )}
-          <button
-            className={`xterminal-topbar-btn ${sftpOpen ? "xterminal-topbar-btn--active" : ""}`}
-            type="button"
-            onClick={() => {
-              const nextOpen = !sftpOpen;
-              setSftpOpen(nextOpen);
-              if (nextOpen) {
-                void loadSftpEntries();
-              }
-            }}
-            title={t("terminal.sftp.open")}
-          >
-            <AppIcon icon="proicons:folder-multiple" size={18} />
-          </button>
+          {supportsSftp && (
+            <button
+              className={`xterminal-topbar-btn ${sftpOpen ? "xterminal-topbar-btn--active" : ""}`}
+              type="button"
+              onClick={() => {
+                const nextOpen = !sftpOpen;
+                setSftpOpen(nextOpen);
+                if (nextOpen) {
+                  void loadSftpEntries();
+                }
+              }}
+              title={t("terminal.sftp.open")}
+            >
+              <AppIcon icon="proicons:folder-multiple" size={18} />
+            </button>
+          )}
           <button
             className={`xterminal-topbar-btn ${aiOpen ? "xterminal-topbar-btn--active" : ""}`}
             type="button"
@@ -5602,7 +5639,7 @@ export function XTerminal({
               </section>
             )}
           </div>
-          {sftpOpen && (
+          {supportsSftp && sftpOpen && (
             <>
               <div
                 className={`xterminal-resize-handle ${
@@ -6624,24 +6661,26 @@ export function XTerminal({
             <AppIcon icon="proicons:terminal" size={16} />
             {t("terminal.toolbar.quickActions")}
           </button>
-          <button
-            type="button"
-            className={`xterminal-toolbar-btn ${transferPanelOpen ? "xterminal-toolbar-btn--active" : ""}`}
-            onClick={toggleTransferPanel}
-            title={t("terminal.transfer.title")}
-          >
-            <AppIcon icon="proicons:arrow-download" size={16} />
-            {t("terminal.transfer.title")}
-            {(runningTransferCount > 0 || failedTransferCount > 0) && (
-              <span
-                className={`xterminal-transfer-badge ${
-                  failedTransferCount > 0 ? "xterminal-transfer-badge--error" : ""
-                }`}
-              >
-                {failedTransferCount > 0 ? failedTransferCount : runningTransferCount}
-              </span>
-            )}
-          </button>
+          {supportsSftp && (
+            <button
+              type="button"
+              className={`xterminal-toolbar-btn ${transferPanelOpen ? "xterminal-toolbar-btn--active" : ""}`}
+              onClick={toggleTransferPanel}
+              title={t("terminal.transfer.title")}
+            >
+              <AppIcon icon="proicons:arrow-download" size={16} />
+              {t("terminal.transfer.title")}
+              {(runningTransferCount > 0 || failedTransferCount > 0) && (
+                <span
+                  className={`xterminal-transfer-badge ${
+                    failedTransferCount > 0 ? "xterminal-transfer-badge--error" : ""
+                  }`}
+                >
+                  {failedTransferCount > 0 ? failedTransferCount : runningTransferCount}
+                </span>
+              )}
+            </button>
+          )}
         </div>
 
         {scriptPanelOpen && (
@@ -6707,7 +6746,7 @@ export function XTerminal({
             </div>
           </div>
         )}
-        {transferPanelOpen && (
+        {supportsSftp && transferPanelOpen && (
           <div className="xterminal-transfer-panel">
             <div className="xterminal-transfer-header">
               <div className="xterminal-transfer-title">

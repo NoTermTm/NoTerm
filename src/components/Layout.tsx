@@ -1364,10 +1364,24 @@ export function Layout() {
                 key={toast.id}
                 className={`toast ${toast.tone ? `toast--${toast.tone}` : ""}`}
               >
-                <div className="toast-title">{toast.title}</div>
-                {toast.detail && (
-                  <div className="toast-detail">{toast.detail}</div>
-                )}
+                <div className="toast-badge" aria-hidden="true">
+                  <AppIcon
+                    icon={
+                      toast.tone === "success"
+                        ? "material-symbols:check-circle-rounded"
+                        : toast.tone === "error"
+                          ? "material-symbols:error-rounded"
+                          : "material-symbols:info-rounded"
+                    }
+                    size={16}
+                  />
+                </div>
+                <div className="toast-copy">
+                  <div className="toast-title">{toast.title}</div>
+                  {toast.detail && (
+                    <div className="toast-detail">{toast.detail}</div>
+                  )}
+                </div>
               </div>
             ))}
           </div>,

@@ -714,6 +714,7 @@ export function SettingsPage() {
             tone: status === "success" ? "success" : "error",
             toast: status === "success",
             autoOpen: status === "error",
+            store: status !== "success",
           },
         }),
       );
@@ -1428,7 +1429,19 @@ export function SettingsPage() {
         messages,
       );
       setAiTestStatus("success");
-      setAiTestMessage(t("settings.ai.test.success"));
+      setAiTestMessage(null);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("app-message", {
+            detail: {
+              title: t("settings.ai.test.success"),
+              tone: "success",
+              toast: true,
+              store: false,
+            },
+          }),
+        );
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setAiTestStatus("error");
@@ -2611,7 +2624,7 @@ export function SettingsPage() {
             >
               {aiTestStatus === "testing" ? t("settings.ai.test.testing") : t("settings.ai.test.action")}
             </button>
-            {aiTestMessage && (
+            {aiTestMessage && aiTestStatus !== "success" && (
               <span className={`settings-test-status settings-test-status--${aiTestStatus}`}>
                 {aiTestMessage}
               </span>
@@ -2979,12 +2992,10 @@ export function SettingsPage() {
                   : t("settings.sync.action.rollback")}
               </button>
             </div>
-            {cloudSyncMessage && (
+            {cloudSyncMessage && cloudSyncStatus !== "success" && (
               <span
                 className={`settings-test-status ${
-                  cloudSyncStatus === "success"
-                    ? "settings-test-status--success"
-                    : cloudSyncStatus === "error"
+                  cloudSyncStatus === "error"
                       ? "settings-test-status--error"
                       : ""
                 }`}

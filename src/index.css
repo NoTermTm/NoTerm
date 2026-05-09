@@ -80,6 +80,20 @@
     --loading-subtext: var(--text-secondary);
     --loading-canvas-clear: var(--bg-secondary);
     --loading-canvas-ink: var(--text-primary);
+    --toast-bg-start: color-mix(in srgb, var(--bg-primary) 96%, white 4%);
+    --toast-bg-end: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary) 8%);
+    --toast-border: color-mix(in srgb, var(--border-light) 92%, white 8%);
+    --toast-shadow: 0 14px 30px color-mix(in srgb, var(--text-primary) 12%, transparent);
+    --toast-inset-highlight: color-mix(in srgb, white 72%, transparent);
+    --toast-title: var(--text-primary);
+    --toast-detail: var(--text-secondary);
+    --toast-badge-bg: color-mix(in srgb, var(--bg-secondary) 82%, white 18%);
+    --toast-badge-fg: var(--accent);
+    --toast-badge-inset: color-mix(in srgb, white 72%, transparent);
+    --toast-badge-success-bg: rgba(70, 171, 113, 0.12);
+    --toast-badge-success-fg: #46ab71;
+    --toast-badge-error-bg: rgba(235, 87, 87, 0.1);
+    --toast-badge-error-fg: #d96a6a;
     --font-ui:
         -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI",
         "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
@@ -208,6 +222,20 @@
     --loading-subtext: #9da8bc;
     --loading-canvas-clear: #1a1d24;
     --loading-canvas-ink: #b6d2ff;
+    --toast-bg-start: color-mix(in srgb, var(--bg-secondary) 88%, #101211 12%);
+    --toast-bg-end: color-mix(in srgb, var(--bg-primary) 92%, #0c0e0d 8%);
+    --toast-border: color-mix(in srgb, var(--border-color) 72%, rgba(255, 255, 255, 0.04) 28%);
+    --toast-shadow: 0 14px 30px rgba(0, 0, 0, 0.34);
+    --toast-inset-highlight: color-mix(in srgb, white 8%, transparent);
+    --toast-title: rgba(255, 255, 255, 0.96);
+    --toast-detail: rgba(255, 255, 255, 0.66);
+    --toast-badge-bg: rgba(255, 255, 255, 0.08);
+    --toast-badge-fg: #7db8ff;
+    --toast-badge-inset: rgba(255, 255, 255, 0.05);
+    --toast-badge-success-bg: rgba(70, 171, 113, 0.14);
+    --toast-badge-success-fg: #58b97e;
+    --toast-badge-error-bg: rgba(235, 87, 87, 0.14);
+    --toast-badge-error-fg: #ff7a7a;
 }
 
 html,

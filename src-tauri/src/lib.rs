@@ -1,9 +1,11 @@
 mod local_pty;
 mod ssh_manager;
+mod telnet_manager;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use local_pty::LocalPtyManager;
 use ssh_manager::{ControlledCommandResult, ForwardConfig, SftpEntry, SshConnection, SshManager};
+use telnet_manager::{TelnetConnection, TelnetManager};
 use std::fs;
 use std::sync::Mutex;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -17,6 +19,7 @@ use tokio::process::Command as TokioCommand;
 
 struct AppState {
     ssh_manager: Mutex<SshManager>,
+    telnet_manager: Mutex<TelnetManager>,
     local_pty_manager: Mutex<LocalPtyManager>,
 }
 
@@ -338,6 +341,18 @@ async fn ssh_connect(
 }
 
 #[tauri::command]
+async fn telnet_connect(
+    state: State<'_, AppState>,
+    connection: TelnetConnection,
+) -> Result<String, String> {
+    let manager = state.telnet_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || manager.connect(&connection))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn ssh_open_shell(
     state: State<'_, AppState>,
     app_handle: AppHandle,
@@ -353,12 +368,37 @@ async fn ssh_open_shell(
 }
 
 #[tauri::command]
+async fn telnet_open_shell(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    let manager = state.telnet_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || manager.open_shell(&session_id, app_handle))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn ssh_write_to_shell(
     state: State<AppState>,
     session_id: String,
     data: String,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap();
+    manager
+        .write_to_shell(&session_id, &data)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn telnet_write_to_shell(
+    state: State<AppState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    let manager = state.telnet_manager.lock().unwrap();
     manager
         .write_to_shell(&session_id, &data)
         .map_err(|e| e.to_string())
@@ -372,6 +412,19 @@ fn ssh_resize_pty(
     rows: u32,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap();
+    manager
+        .resize_pty(&session_id, cols, rows)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn telnet_resize_pty(
+    state: State<AppState>,
+    session_id: String,
+    cols: u32,
+    rows: u32,
+) -> Result<(), String> {
+    let manager = state.telnet_manager.lock().unwrap();
     manager
         .resize_pty(&session_id, cols, rows)
         .map_err(|e| e.to_string())
@@ -419,6 +472,14 @@ fn local_resize_pty(
 #[tauri::command]
 fn local_disconnect(state: State<AppState>, session_id: String) -> Result<(), String> {
     let manager = state.local_pty_manager.lock().unwrap();
+    manager
+        .disconnect(&session_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn telnet_disconnect(state: State<AppState>, session_id: String) -> Result<(), String> {
+    let manager = state.telnet_manager.lock().unwrap();
     manager
         .disconnect(&session_id)
         .map_err(|e| e.to_string())
@@ -510,9 +571,21 @@ async fn local_execute_command_controlled(
 }
 
 #[tauri::command]
+fn telnet_is_connected(state: State<AppState>, session_id: String) -> bool {
+    let manager = state.telnet_manager.lock().unwrap();
+    manager.is_connected(&session_id)
+}
+
+#[tauri::command]
 fn ssh_is_connected(state: State<AppState>, session_id: String) -> bool {
     let manager = state.ssh_manager.lock().unwrap();
     manager.is_connected(&session_id)
+}
+
+#[tauri::command]
+fn telnet_list_sessions(state: State<AppState>) -> Vec<String> {
+    let manager = state.telnet_manager.lock().unwrap();
+    manager.list_sessions()
 }
 
 #[tauri::command]
@@ -733,6 +806,7 @@ pub fn run() {
         })
         .manage(AppState {
             ssh_manager: Mutex::new(SshManager::new()),
+            telnet_manager: Mutex::new(TelnetManager::new()),
             local_pty_manager: Mutex::new(LocalPtyManager::new()),
         })
         .invoke_handler(tauri::generate_handler![
@@ -742,10 +816,15 @@ pub fn run() {
             ssh_check_endpoint,
             ssh_generate_keypair,
             ssh_connect,
+            telnet_connect,
             ssh_open_shell,
+            telnet_open_shell,
             ssh_write_to_shell,
+            telnet_write_to_shell,
             ssh_resize_pty,
+            telnet_resize_pty,
             ssh_disconnect,
+            telnet_disconnect,
             local_open_shell,
             local_write_to_shell,
             local_resize_pty,
@@ -754,7 +833,9 @@ pub fn run() {
             ssh_execute_command_controlled,
             local_execute_command_controlled,
             ssh_is_connected,
+            telnet_is_connected,
             ssh_list_sessions,
+            telnet_list_sessions,
             ssh_forward_start,
             ssh_forward_stop,
             ssh_forward_list,
