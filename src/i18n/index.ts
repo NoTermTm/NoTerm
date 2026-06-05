@@ -228,6 +228,10 @@ const MESSAGES: Messages = {
     "zh-CN": "填写火山方舟 Ark 的 OpenAI 兼容接口地址",
     "en-US": "OpenAI-compatible endpoint for Volcengine Ark.",
   },
+  "settings.ai.deepseek.desc": {
+    "zh-CN": "填写 DeepSeek API 基础地址，默认使用官方兼容接口",
+    "en-US": "Base URL for DeepSeek. The official OpenAI-compatible endpoint is used by default.",
+  },
   "settings.ai.model": { "zh-CN": "模型", "en-US": "Model" },
   "settings.ai.model.desc": { "zh-CN": "选择终端助手可使用的对话模型，可启用多个", "en-US": "Choose the chat models available to the terminal assistant." },
   "settings.ai.model.current": { "zh-CN": "当前模型", "en-US": "Current model" },
@@ -287,6 +291,14 @@ const MESSAGES: Messages = {
   "settings.ai.error.volcengineKey": {
     "zh-CN": "请填写火山方舟 API 密钥",
     "en-US": "Please enter Volcengine Ark API key",
+  },
+  "settings.ai.error.deepseekUrl": {
+    "zh-CN": "请填写 DeepSeek API 地址",
+    "en-US": "Please enter DeepSeek API URL",
+  },
+  "settings.ai.error.deepseekKey": {
+    "zh-CN": "请填写 DeepSeek API 密钥",
+    "en-US": "Please enter DeepSeek API key",
   },
   "settings.ai.test.success": { "zh-CN": "连接成功", "en-US": "Connected" },
   "settings.ai.test.fail": { "zh-CN": "连接失败。请检查 API 地址、密钥和模型名称。", "en-US": "Connection failed. Check the API URL, key, and model name." },
@@ -472,6 +484,22 @@ const MESSAGES: Messages = {
   "ai.error.volcengineEmpty": {
     "zh-CN": "火山方舟返回内容为空",
     "en-US": "Volcengine Ark returned empty content",
+  },
+  "ai.error.deepseekUrl": {
+    "zh-CN": "未配置 DeepSeek API 地址",
+    "en-US": "DeepSeek API URL not set",
+  },
+  "ai.error.deepseekKey": {
+    "zh-CN": "未配置 DeepSeek API 密钥",
+    "en-US": "DeepSeek API key not set",
+  },
+  "ai.error.deepseekRequestFail": {
+    "zh-CN": "DeepSeek 请求失败",
+    "en-US": "DeepSeek request failed",
+  },
+  "ai.error.deepseekEmpty": {
+    "zh-CN": "DeepSeek 返回内容为空",
+    "en-US": "DeepSeek returned empty content",
   },
 
   "space.root": { "zh-CN": "根目录", "en-US": "Root" },

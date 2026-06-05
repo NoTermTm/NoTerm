@@ -7,6 +7,7 @@ export const DEFAULT_AI_MODELS: AiModelsCache = {
   openai: [],
   anthropic: [],
   volcengine: [],
+  deepseek: [],
 };
 
 const STORE_PATH = "ai-models.json";
@@ -36,12 +37,15 @@ export async function readAllAiModels() {
     (await store.get<string[]>("anthropic")) ?? DEFAULT_AI_MODELS.anthropic;
   const volcengine =
     (await store.get<string[]>("volcengine")) ?? DEFAULT_AI_MODELS.volcengine;
+  const deepseek =
+    (await store.get<string[]>("deepseek")) ?? DEFAULT_AI_MODELS.deepseek;
   return {
     openai: Array.isArray(openai) ? openai : DEFAULT_AI_MODELS.openai,
     anthropic: Array.isArray(anthropic) ? anthropic : DEFAULT_AI_MODELS.anthropic,
     volcengine: Array.isArray(volcengine)
       ? volcengine
       : DEFAULT_AI_MODELS.volcengine,
+    deepseek: Array.isArray(deepseek) ? deepseek : DEFAULT_AI_MODELS.deepseek,
   } as AiModelsCache;
 }
 

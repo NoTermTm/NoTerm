@@ -3,6 +3,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js";
 import "highlight.js/styles/github.css";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { sshApi } from "../api/ssh";
 import { useI18n } from "../i18n";
 
@@ -84,6 +85,19 @@ const AiRenderer2: React.FC<AiRendererProps> = ({ content, sessionId, useLocal, 
     const handleClick = async (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
       if (!target) return;
+      const anchor = target.closest<HTMLAnchorElement>("a[href]");
+      if (anchor) {
+        const href = anchor.getAttribute("href")?.trim();
+        if (href) {
+          event.preventDefault();
+          try {
+            await openPath(href);
+          } catch (e) {
+            console.error("open external link failed", e);
+          }
+        }
+        return;
+      }
       const button = target.closest<HTMLButtonElement>(".ai-send-btn, .ai-copy-btn");
       if (!button) return;
       const code = decodeURIComponent(button.dataset.code || "");

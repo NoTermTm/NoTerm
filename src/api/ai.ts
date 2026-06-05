@@ -1,7 +1,7 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getTranslator } from "../i18n";
 
-export type AiProvider = "openai" | "anthropic" | "volcengine";
+export type AiProvider = "openai" | "anthropic" | "volcengine" | "deepseek";
 
 export type AiMessagePart =
   | {
@@ -35,6 +35,10 @@ export type AiSettings = {
     baseUrl: string;
     apiKey: string;
   };
+  deepseek: {
+    baseUrl: string;
+    apiKey: string;
+  };
 };
 
 export type AiStreamHandler = (delta: string) => void;
@@ -47,27 +51,34 @@ const normalizeBaseUrl = (value: string) => {
 
 const isOpenAiCompatibleProvider = (
   provider: AiProvider,
-): provider is "openai" | "volcengine" =>
-  provider === "openai" || provider === "volcengine";
+): provider is "openai" | "volcengine" | "deepseek" =>
+  provider === "openai" || provider === "volcengine" || provider === "deepseek";
 
 const getOpenAiCompatibleConfig = (
   settings: AiSettings,
-  provider: "openai" | "volcengine",
+  provider: "openai" | "volcengine" | "deepseek",
 ) =>
   provider === "openai"
     ? settings.openai
-    : settings.volcengine;
+    : provider === "volcengine"
+      ? settings.volcengine
+      : settings.deepseek;
 
 const getOpenAiCompatibleErrorKey = (
-  provider: "openai" | "volcengine",
+  provider: "openai" | "volcengine" | "deepseek",
   type: "url" | "key" | "requestFail" | "empty",
 ) => {
-  const prefix = provider === "openai" ? "openai" : "volcengine";
+  const prefix =
+    provider === "openai"
+      ? "openai"
+      : provider === "volcengine"
+        ? "volcengine"
+        : "deepseek";
   return `ai.error.${prefix}${type[0].toUpperCase()}${type.slice(1)}`;
 };
 
 const getOpenAiCompatibleChatUrl = (
-  provider: "openai" | "volcengine",
+  provider: "openai" | "volcengine" | "deepseek",
   baseUrl: string,
 ) =>
   provider === "openai"
@@ -160,6 +171,55 @@ const readSseStream = async (
   parseSseEvents(decoder.decode(), bufferRef, onEvent);
 };
 
+type OpenAiCompatibleContentPart =
+  | string
+  | {
+      type?: string;
+      text?: string;
+    };
+
+const extractOpenAiCompatibleText = (
+  value: string | OpenAiCompatibleContentPart[] | null | undefined,
+) => {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part?.type === "text" && typeof part.text === "string") return part.text;
+      if (typeof part?.text === "string") return part.text;
+      return "";
+    })
+    .join("");
+};
+
+const resolveOpenAiCompatibleMessageContent = (message: {
+  content?: string | OpenAiCompatibleContentPart[] | null;
+  reasoning_content?: string | null;
+  reasoning?: string | OpenAiCompatibleContentPart[] | null;
+} | null | undefined) => {
+  const content = extractOpenAiCompatibleText(message?.content).trim();
+  if (content) return content;
+  const reasoningContent = (message?.reasoning_content || "").trim();
+  if (reasoningContent) return reasoningContent;
+  const reasoning = extractOpenAiCompatibleText(message?.reasoning).trim();
+  if (reasoning) return reasoning;
+  return "";
+};
+
+const resolveOpenAiCompatibleDeltaContent = (delta: {
+  content?: string | OpenAiCompatibleContentPart[] | null;
+  reasoning_content?: string | null;
+  reasoning?: string | OpenAiCompatibleContentPart[] | null;
+} | null | undefined) => {
+  const content = extractOpenAiCompatibleText(delta?.content);
+  if (content) return content;
+  if (typeof delta?.reasoning_content === "string" && delta.reasoning_content) {
+    return delta.reasoning_content;
+  }
+  return extractOpenAiCompatibleText(delta?.reasoning);
+};
+
 export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
   const t = await getTranslator();
   if (!settings.enabled) {
@@ -200,10 +260,16 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
     }
 
     const data = (await resp.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{
+        message?: {
+          content?: string | OpenAiCompatibleContentPart[] | null;
+          reasoning_content?: string | null;
+          reasoning?: string | OpenAiCompatibleContentPart[] | null;
+        };
+      }>;
     };
 
-    const content = data.choices?.[0]?.message?.content?.trim();
+    const content = resolveOpenAiCompatibleMessageContent(data.choices?.[0]?.message);
     if (!content) {
       throw new Error(t(getOpenAiCompatibleErrorKey(provider, "empty")));
     }
@@ -307,9 +373,15 @@ export async function sendAiChatStream(
       if (event.data === "[DONE]") return;
       try {
         const data = JSON.parse(event.data) as {
-          choices?: Array<{ delta?: { content?: string } }>;
+          choices?: Array<{
+            delta?: {
+              content?: string | OpenAiCompatibleContentPart[] | null;
+              reasoning_content?: string | null;
+              reasoning?: string | OpenAiCompatibleContentPart[] | null;
+            };
+          }>;
         };
-        const chunk = data.choices?.[0]?.delta?.content;
+        const chunk = resolveOpenAiCompatibleDeltaContent(data.choices?.[0]?.delta);
         if (chunk) {
           final += chunk;
           onDelta(chunk);

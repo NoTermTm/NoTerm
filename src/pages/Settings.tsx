@@ -108,38 +108,92 @@ const getAiProviderBaseUrl = (settings: AppSettings, provider: AiProvider) =>
     ? settings["ai.openai.baseUrl"]
     : provider === "anthropic"
       ? settings["ai.anthropic.baseUrl"]
-      : settings["ai.volcengine.baseUrl"];
+      : provider === "volcengine"
+        ? settings["ai.volcengine.baseUrl"]
+        : settings["ai.deepseek.baseUrl"];
 
 const getAiProviderApiKey = (settings: AppSettings, provider: AiProvider) =>
   provider === "openai"
     ? settings["ai.openai.apiKey"]
     : provider === "anthropic"
       ? settings["ai.anthropic.apiKey"]
-      : settings["ai.volcengine.apiKey"];
+      : provider === "volcengine"
+        ? settings["ai.volcengine.apiKey"]
+        : settings["ai.deepseek.apiKey"];
 
 const getAiProviderUrlErrorKey = (provider: AiProvider) =>
   provider === "openai"
     ? "settings.ai.error.openaiUrl"
     : provider === "anthropic"
       ? "settings.ai.error.anthropicUrl"
-      : "settings.ai.error.volcengineUrl";
+      : provider === "volcengine"
+        ? "settings.ai.error.volcengineUrl"
+        : "settings.ai.error.deepseekUrl";
 
 const getAiProviderKeyErrorKey = (provider: AiProvider) =>
   provider === "openai"
     ? "settings.ai.error.openaiKey"
     : provider === "anthropic"
       ? "settings.ai.error.anthropicKey"
-      : "settings.ai.error.volcengineKey";
+      : provider === "volcengine"
+        ? "settings.ai.error.volcengineKey"
+        : "settings.ai.error.deepseekKey";
 
 const getAiProviderLabel = (provider: AiProvider) =>
   provider === "openai"
     ? "OpenAI"
     : provider === "anthropic"
       ? "Anthropic"
-      : "Volcengine Ark";
+      : provider === "volcengine"
+        ? "Volcengine Ark"
+        : "DeepSeek";
+
+const getAiProviderModelKey = (provider: AiProvider): keyof AppSettings =>
+  provider === "openai"
+    ? "ai.openai.model"
+    : provider === "anthropic"
+      ? "ai.anthropic.model"
+      : provider === "volcengine"
+        ? "ai.volcengine.model"
+        : "ai.deepseek.model";
+
+const getAiProviderModelsKey = (provider: AiProvider): keyof AppSettings =>
+  provider === "openai"
+    ? "ai.openai.models"
+    : provider === "anthropic"
+      ? "ai.anthropic.models"
+      : provider === "volcengine"
+        ? "ai.volcengine.models"
+        : "ai.deepseek.models";
+
+const getAiProviderCurrentModel = (settings: AppSettings, provider: AiProvider) => {
+  const providerModel = settings[getAiProviderModelKey(provider)];
+  if (typeof providerModel === "string" && providerModel.trim()) {
+    return providerModel;
+  }
+  return provider === settings["ai.provider"] ? settings["ai.model"] : "";
+};
+
+const getAiProviderSelectedModels = (settings: AppSettings, provider: AiProvider) => {
+  const providerModels = settings[getAiProviderModelsKey(provider)];
+  if (Array.isArray(providerModels) && providerModels.length > 0) {
+    return providerModels.filter(isChatCapableModel);
+  }
+  if (provider === settings["ai.provider"]) {
+    if (Array.isArray(settings["ai.models"]) && settings["ai.models"].length > 0) {
+      return settings["ai.models"].filter(isChatCapableModel);
+    }
+    if (typeof settings["ai.model"] === "string" && isChatCapableModel(settings["ai.model"])) {
+      return [settings["ai.model"]];
+    }
+  }
+  return [];
+};
 
 const getAiProviderModelListUrl = (provider: AiProvider, normalizedBase: string) =>
-  provider === "volcengine" ? `${normalizedBase}/models` : `${normalizedBase}/v1/models`;
+  provider === "openai" || provider === "anthropic"
+    ? `${normalizedBase}/v1/models`
+    : `${normalizedBase}/models`;
 
 const getAiProviderHeaders = (provider: AiProvider, apiKey: string) => {
   const headers: Record<string, string> = {
@@ -213,21 +267,25 @@ export function SettingsPage() {
     openai: [],
     anthropic: [],
     volcengine: [],
+    deepseek: [],
   });
   const [aiModelStatus, setAiModelStatus] = useState<Record<AiProvider, AiModelStatus>>({
     openai: "idle",
     anthropic: "idle",
     volcengine: "idle",
+    deepseek: "idle",
   });
   const [aiModelMessage, setAiModelMessage] = useState<Record<AiProvider, string | null>>({
     openai: null,
     anthropic: null,
     volcengine: null,
+    deepseek: null,
   });
   const aiModelAutoSignatureRef = useRef<Record<AiProvider, string>>({
     openai: "",
     anthropic: "",
     volcengine: "",
+    deepseek: "",
   });
   const [aiModelSearch, setAiModelSearch] = useState("");
   const [aiModelCustomInput, setAiModelCustomInput] = useState("");
@@ -395,18 +453,48 @@ export function SettingsPage() {
         "ai.openai.apiKey":
           (await store.get<string>("ai.openai.apiKey")) ??
           DEFAULT_APP_SETTINGS["ai.openai.apiKey"],
+        "ai.openai.model":
+          (await store.get<string>("ai.openai.model")) ??
+          DEFAULT_APP_SETTINGS["ai.openai.model"],
+        "ai.openai.models":
+          (await store.get<string[]>("ai.openai.models")) ??
+          DEFAULT_APP_SETTINGS["ai.openai.models"],
         "ai.anthropic.baseUrl":
           (await store.get<string>("ai.anthropic.baseUrl")) ??
           DEFAULT_APP_SETTINGS["ai.anthropic.baseUrl"],
         "ai.anthropic.apiKey":
           (await store.get<string>("ai.anthropic.apiKey")) ??
           DEFAULT_APP_SETTINGS["ai.anthropic.apiKey"],
+        "ai.anthropic.model":
+          (await store.get<string>("ai.anthropic.model")) ??
+          DEFAULT_APP_SETTINGS["ai.anthropic.model"],
+        "ai.anthropic.models":
+          (await store.get<string[]>("ai.anthropic.models")) ??
+          DEFAULT_APP_SETTINGS["ai.anthropic.models"],
         "ai.volcengine.baseUrl":
           (await store.get<string>("ai.volcengine.baseUrl")) ??
           DEFAULT_APP_SETTINGS["ai.volcengine.baseUrl"],
         "ai.volcengine.apiKey":
           (await store.get<string>("ai.volcengine.apiKey")) ??
           DEFAULT_APP_SETTINGS["ai.volcengine.apiKey"],
+        "ai.volcengine.model":
+          (await store.get<string>("ai.volcengine.model")) ??
+          DEFAULT_APP_SETTINGS["ai.volcengine.model"],
+        "ai.volcengine.models":
+          (await store.get<string[]>("ai.volcengine.models")) ??
+          DEFAULT_APP_SETTINGS["ai.volcengine.models"],
+        "ai.deepseek.baseUrl":
+          (await store.get<string>("ai.deepseek.baseUrl")) ??
+          DEFAULT_APP_SETTINGS["ai.deepseek.baseUrl"],
+        "ai.deepseek.apiKey":
+          (await store.get<string>("ai.deepseek.apiKey")) ??
+          DEFAULT_APP_SETTINGS["ai.deepseek.apiKey"],
+        "ai.deepseek.model":
+          (await store.get<string>("ai.deepseek.model")) ??
+          DEFAULT_APP_SETTINGS["ai.deepseek.model"],
+        "ai.deepseek.models":
+          (await store.get<string[]>("ai.deepseek.models")) ??
+          DEFAULT_APP_SETTINGS["ai.deepseek.models"],
         "ai.model":
           (await store.get<string>("ai.model")) ??
           DEFAULT_APP_SETTINGS["ai.model"],
@@ -1217,6 +1305,7 @@ export function SettingsPage() {
         throw new Error(`${resp.status} ${resp.statusText}`.trim());
       }
       const data = (await resp.json()) as { data?: Array<{ id?: string }> };
+      // Keep only distinct chat-capable models so the terminal model picker stays focused.
       const list: string[] = Array.isArray(data.data)
         ? data.data
             .map((item: { id?: string }) => item?.id)
@@ -1249,10 +1338,29 @@ export function SettingsPage() {
     const unique = Array.from(
       new Set(next.map((item) => item.trim()).filter((item) => item && isChatCapableModel(item))),
     );
+    const provider = settings["ai.provider"];
+    const currentModel = getAiProviderCurrentModel(settings, provider);
+    const nextCurrentModel = unique.includes(currentModel) ? currentModel : (unique[0] ?? "");
     updateSetting("ai.models", unique);
-    if (!unique.includes(settings["ai.model"])) {
-      updateSetting("ai.model", unique[0] ?? "");
-    }
+    updateSetting("ai.model", nextCurrentModel);
+    updateSetting(getAiProviderModelsKey(provider), unique);
+    updateSetting(getAiProviderModelKey(provider), nextCurrentModel);
+  };
+
+  const handleAiProviderChange = (provider: AiProvider) => {
+    const nextSelectedModels = getAiProviderSelectedModels(settings, provider);
+    const nextCurrentModel = getAiProviderCurrentModel(settings, provider);
+    updateSetting("ai.provider", provider);
+    updateSetting("ai.models", nextSelectedModels);
+    updateSetting("ai.model", nextCurrentModel);
+    setAiModelSearch("");
+    setAiModelCustomInput("");
+  };
+
+  const handleAiCurrentModelChange = (nextValue: string) => {
+    const provider = settings["ai.provider"];
+    updateSetting("ai.model", nextValue);
+    updateSetting(getAiProviderModelKey(provider), nextValue);
   };
 
   const toggleAiModelSelection = (model: string) => {
@@ -1300,6 +1408,8 @@ export function SettingsPage() {
     settings["ai.enabled"],
     settings["ai.openai.apiKey"],
     settings["ai.openai.baseUrl"],
+    settings["ai.deepseek.apiKey"],
+    settings["ai.deepseek.baseUrl"],
     settings["ai.volcengine.apiKey"],
     settings["ai.volcengine.baseUrl"],
     settings["ai.provider"],
@@ -1340,6 +1450,7 @@ export function SettingsPage() {
         "ai.openai.apiKey": "",
         "ai.anthropic.apiKey": "",
         "ai.volcengine.apiKey": "",
+        "ai.deepseek.apiKey": "",
       } as AppSettings;
 
       const connectionStore = await load("connections.json");
@@ -1448,6 +1559,10 @@ export function SettingsPage() {
           volcengine: {
             baseUrl: settings["ai.volcengine.baseUrl"],
             apiKey: settings["ai.volcengine.apiKey"],
+          },
+          deepseek: {
+            baseUrl: settings["ai.deepseek.baseUrl"],
+            apiKey: settings["ai.deepseek.apiKey"],
           },
         },
         messages,
@@ -1616,12 +1731,8 @@ export function SettingsPage() {
   const showDownloadAction = Boolean(updateInfo) && updateStatus !== "installed";
   const currentProvider = settings["ai.provider"];
   const currentModelList = (aiModels[currentProvider] ?? []).filter(isChatCapableModel);
-  const selectedModels =
-    settings["ai.models"] && settings["ai.models"].length > 0
-      ? settings["ai.models"].filter(isChatCapableModel)
-      : settings["ai.model"]
-        ? (isChatCapableModel(settings["ai.model"]) ? [settings["ai.model"]] : [])
-        : [];
+  const currentProviderModel = getAiProviderCurrentModel(settings, currentProvider);
+  const selectedModels = getAiProviderSelectedModels(settings, currentProvider);
   const mergedModels = Array.from(new Set([...currentModelList, ...selectedModels]));
   const searchKeyword = aiModelSearch.trim().toLowerCase();
   const filteredModels = searchKeyword
@@ -2258,13 +2369,14 @@ export function SettingsPage() {
               className="settings-select"
               value={settings["ai.provider"]}
               onChange={(nextValue) =>
-                updateSetting("ai.provider", nextValue as AppSettings["ai.provider"])
+                handleAiProviderChange(nextValue as AppSettings["ai.provider"])
               }
               disabled={!settings["ai.enabled"]}
               options={[
                 { value: "openai", label: "OpenAI" },
                 { value: "anthropic", label: "Anthropic" },
                 { value: "volcengine", label: "Volcengine Ark" },
+                { value: "deepseek", label: "DeepSeek" },
               ]}
             />
           </div>
@@ -2335,6 +2447,39 @@ export function SettingsPage() {
               </div>
             </div>
           </>
+        ) : settings["ai.provider"] === "deepseek" ? (
+          <>
+            <div className="settings-item">
+              <div className="settings-item-info">
+                <div className="settings-item-label">{t("settings.ai.apiUrl")}</div>
+                <div className="settings-item-description">{t("settings.ai.deepseek.desc")}</div>
+              </div>
+              <div className="settings-item-control">
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={settings["ai.deepseek.baseUrl"]}
+                  onChange={(e) => updateSetting("ai.deepseek.baseUrl", e.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                />
+              </div>
+            </div>
+            <div className="settings-item">
+              <div className="settings-item-info">
+                <div className="settings-item-label">{t("settings.ai.apiKey")}</div>
+                <div className="settings-item-description">{t("settings.ai.apiKey.desc")}</div>
+              </div>
+              <div className="settings-item-control">
+                <input
+                  type="password"
+                  className="settings-input"
+                  value={settings["ai.deepseek.apiKey"]}
+                  onChange={(e) => updateSetting("ai.deepseek.apiKey", e.target.value)}
+                  disabled={!settings["ai.enabled"]}
+                />
+              </div>
+            </div>
+          </>
         ) : (
           <>
             <div className="settings-item">
@@ -2382,8 +2527,8 @@ export function SettingsPage() {
               {selectedModels.length > 0 ? (
                 <Select
                   className="settings-select settings-select--compact"
-                  value={settings["ai.model"]}
-                  onChange={(nextValue) => updateSetting("ai.model", nextValue)}
+                  value={currentProviderModel}
+                  onChange={(nextValue) => handleAiCurrentModelChange(nextValue)}
                   disabled={!settings["ai.enabled"]}
                   options={selectedModels.map((model) => ({
                     value: model,
@@ -2394,8 +2539,8 @@ export function SettingsPage() {
                 <input
                   type="text"
                   className="settings-input settings-input--compact"
-                  value={settings["ai.model"]}
-                  onChange={(e) => updateSetting("ai.model", e.target.value)}
+                  value={currentProviderModel}
+                  onChange={(e) => handleAiCurrentModelChange(e.target.value)}
                   disabled={!settings["ai.enabled"]}
                   placeholder={t("settings.ai.model.placeholder")}
                 />

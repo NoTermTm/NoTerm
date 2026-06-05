@@ -1513,6 +1513,14 @@ export function XTerminal({
           (await store.get<string>("ai.volcengine.apiKey")) ??
           DEFAULT_APP_SETTINGS["ai.volcengine.apiKey"],
       },
+      deepseek: {
+        baseUrl:
+          (await store.get<string>("ai.deepseek.baseUrl")) ??
+          DEFAULT_APP_SETTINGS["ai.deepseek.baseUrl"],
+        apiKey:
+          (await store.get<string>("ai.deepseek.apiKey")) ??
+          DEFAULT_APP_SETTINGS["ai.deepseek.apiKey"],
+      },
     };
   };
 
@@ -3487,11 +3495,12 @@ export function XTerminal({
         },
         onThinkingComplete: (thinkingContent) => {
           setAgentBlocks((prev) => {
-            const last = prev[prev.length - 1];
+            const normalized = dropTrailingAgentStatusBlock(prev);
+            const last = normalized[normalized.length - 1];
             if (last?.type === "thinking") {
-              return [...prev.slice(0, -1), { ...last, content: thinkingContent }];
+              return [...normalized.slice(0, -1), { ...last, content: thinkingContent }];
             }
-            return prev;
+            return normalized;
           });
         },
         onActionDecided: (action) => {
@@ -3500,18 +3509,21 @@ export function XTerminal({
               ? `决策命令: ${action.command}`
               : `decided command: ${action.command}`,
           );
-          setAgentBlocks((prev) => [
-            ...prev,
-            {
-              id: action.id,
-              type: "action",
-              content: action.reason,
-              command: action.command,
-              risk: action.risk,
-              status: "pending",
-              timestamp: Date.now(),
-            },
-          ]);
+          setAgentBlocks((prev) => {
+            const normalized = dropTrailingAgentStatusBlock(prev);
+            return [
+              ...normalized,
+              {
+                id: action.id,
+                type: "action",
+                content: action.reason,
+                command: action.command,
+                risk: action.risk,
+                status: "pending",
+                timestamp: Date.now(),
+              },
+            ];
+          });
         },
         onActionStatusChange: (actionId, status) => {
           appendAgentDebugLog(

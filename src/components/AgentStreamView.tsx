@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { useI18n } from "../i18n";
 import { AppIcon } from "./AppIcon";
 import type { AgentBlock, AgentRisk } from "../types/agent";
@@ -23,7 +24,10 @@ interface AgentStreamViewProps {
 /* ─── Helpers ─── */
 
 function renderMarkdown(content: string, options?: { breaks?: boolean }): string {
-  const raw = marked.parse(content || "", { breaks: options?.breaks ?? false });
+  const raw = marked.parse(content || "", {
+    gfm: true,
+    breaks: options?.breaks ?? false,
+  });
   return DOMPurify.sanitize(raw, { SAFE_FOR_TEMPLATES: true });
 }
 
@@ -297,6 +301,26 @@ const AgentStreamView: React.FC<AgentStreamViewProps> = ({
     userScrolledRef.current = false;
     setAutoScroll(true);
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const handleLinkClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      const anchor = target?.closest<HTMLAnchorElement>("a[href]");
+      if (!anchor) return;
+      const href = anchor.getAttribute("href")?.trim();
+      if (!href) return;
+      event.preventDefault();
+      void openPath(href).catch(() => {});
+    };
+
+    el.addEventListener("click", handleLinkClick);
+    return () => {
+      el.removeEventListener("click", handleLinkClick);
+    };
   }, []);
 
   const latestThinkingBlockId = [...blocks]

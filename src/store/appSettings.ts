@@ -44,13 +44,23 @@ export type AppSettings = {
   "terminal.backgroundOpacity": number;
   "terminal.backgroundBlur": number;
   "ai.enabled": boolean;
-  "ai.provider": "openai" | "anthropic" | "volcengine";
+  "ai.provider": "openai" | "anthropic" | "volcengine" | "deepseek";
   "ai.openai.baseUrl": string;
   "ai.openai.apiKey": string;
+  "ai.openai.model": string;
+  "ai.openai.models": string[];
   "ai.anthropic.baseUrl": string;
   "ai.anthropic.apiKey": string;
+  "ai.anthropic.model": string;
+  "ai.anthropic.models": string[];
   "ai.volcengine.baseUrl": string;
   "ai.volcengine.apiKey": string;
+  "ai.volcengine.model": string;
+  "ai.volcengine.models": string[];
+  "ai.deepseek.baseUrl": string;
+  "ai.deepseek.apiKey": string;
+  "ai.deepseek.model": string;
+  "ai.deepseek.models": string[];
   "ai.model": string;
   "ai.models": string[];
   "ai.approvalMode": AgentApprovalMode;
@@ -145,10 +155,20 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "ai.provider": "openai",
   "ai.openai.baseUrl": "https://api.openai.com",
   "ai.openai.apiKey": "",
+  "ai.openai.model": "",
+  "ai.openai.models": [],
   "ai.anthropic.baseUrl": "https://api.anthropic.com",
   "ai.anthropic.apiKey": "",
+  "ai.anthropic.model": "",
+  "ai.anthropic.models": [],
   "ai.volcengine.baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
   "ai.volcengine.apiKey": "",
+  "ai.volcengine.model": "",
+  "ai.volcengine.models": [],
+  "ai.deepseek.baseUrl": "https://api.deepseek.com",
+  "ai.deepseek.apiKey": "",
+  "ai.deepseek.model": "",
+  "ai.deepseek.models": [],
   "ai.model": "claude-sonnet-4-5-20250929",
   "ai.models": [],
   "ai.approvalMode": "auto",
