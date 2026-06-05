@@ -1,27 +1,28 @@
 import { getAppSettingsStore } from "../store/appSettings";
-import type { AgentMode, AgentPlan, AgentRisk } from "../types/agent";
+import type { AgentRisk } from "../types/agent";
 
 const AUDIT_LOG_KEY = "agent.audit.logs";
 const AUDIT_MAX_RECORDS = 500;
 
 export type AgentAuditEvent =
-  | "plan_created"
-  | "plan_parse_failed"
-  | "action_confirmed"
-  | "action_rejected"
-  | "action_started"
-  | "action_finished"
-  | "plan_stopped";
+  | "loop_started"
+  | "step_thinking"
+  | "step_action_decided"
+  | "step_action_confirmed"
+  | "step_action_rejected"
+  | "step_action_executed"
+  | "step_action_blocked"
+  | "loop_completed"
+  | "loop_stopped"
+  | "loop_error";
 
 export interface AgentAuditRecord {
   id: string;
   ts: number;
   event: AgentAuditEvent;
   session_id: string;
-  mode: AgentMode;
   user_request?: string;
-  plan?: AgentPlan;
-  action_id?: string;
+  step_index?: number;
   command?: string;
   risk?: AgentRisk;
   reason?: string;
@@ -87,10 +88,8 @@ export async function appendAgentAuditRecord(
     ts: input.ts || Date.now(),
     event: input.event,
     session_id: input.session_id,
-    mode: input.mode,
     user_request: input.user_request,
-    plan: input.plan,
-    action_id: input.action_id,
+    step_index: input.step_index,
     command: input.command,
     risk: input.risk,
     reason: input.reason,

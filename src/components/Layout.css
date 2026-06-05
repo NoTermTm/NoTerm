@@ -29,8 +29,8 @@
 }
 
 .sidebar-item {
-    width: 40px;
-    height: 40px;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -59,7 +59,7 @@
     top: 50%;
     transform: translateY(-50%);
     width: 2px;
-    height: 16px;
+    height: 13px;
     background-color: var(--accent);
     border-radius: 0 2px 2px 0;
 }
@@ -328,10 +328,55 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: color-mix(in srgb, var(--bg-primary) 92%, transparent 8%);
-    backdrop-filter: blur(8px);
+    isolation: isolate;
+    background:
+        linear-gradient(
+            180deg,
+            var(--lock-screen-bg-top) 0%,
+            var(--lock-screen-bg-bottom) 100%
+        );
+    backdrop-filter: blur(10px);
     border-radius: var(--window-radius);
     overflow: hidden;
+}
+
+.lock-screen::before {
+    content: "";
+    position: absolute;
+    left: -8%;
+    right: -8%;
+    bottom: -2%;
+    height: 34%;
+    z-index: 0;
+    pointer-events: none;
+    background:
+        repeating-linear-gradient(
+            8deg,
+            transparent 0,
+            transparent 9px,
+            var(--lock-wave-line) 10px,
+            transparent 11px,
+            transparent 18px
+        );
+    opacity: 0.34;
+    mask-image: linear-gradient(180deg, transparent 0%, var(--lock-wave-mask-start) 22%, var(--lock-wave-mask-end) 100%);
+}
+
+.lock-screen::after {
+    content: "";
+    position: absolute;
+    right: 4.5%;
+    bottom: 6%;
+    width: 168px;
+    height: 120px;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.18;
+    background-image: radial-gradient(
+        var(--lock-dot-color) 1px,
+        transparent 1px
+    );
+    background-size: 16px 16px;
 }
 
 .lock-drag-region {
@@ -341,19 +386,43 @@
     right: 0;
     height: var(--titlebar-h);
     cursor: grab;
+    z-index: 2;
 }
 
 .lock-card {
+    position: relative;
+    z-index: 1;
     width: 336px;
-    padding: var(--space-3xl) var(--space-3xl) var(--space-2xl);
-    border-radius: var(--radius-panel);
-    background: var(--bg-primary);
-    box-shadow: var(--shadow-overlay);
-    border: 1px solid var(--border-light);
+    padding: 28px 24px 20px;
+    border-radius: 18px;
+    background: var(--lock-card-bg);
+    box-shadow:
+        0 20px 40px var(--lock-card-shadow-strong),
+        0 2px 8px var(--lock-card-shadow-soft);
+    border: 1px solid var(--lock-card-border);
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
     text-align: center;
+}
+
+.lock-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 14px;
+    right: 14px;
+    height: 1px;
+    border-radius: 999px;
+    background: linear-gradient(
+        90deg,
+        var(--lock-card-highlight-0) 0%,
+        var(--lock-card-highlight-1) 18%,
+        var(--lock-card-highlight-2) 50%,
+        var(--lock-card-highlight-1) 82%,
+        var(--lock-card-highlight-0) 100%
+    );
+    pointer-events: none;
 }
 
 .lock-icon {
@@ -383,19 +452,48 @@
 }
 
 .lock-input {
-    margin: 10px 0;
     height: 40px;
-    border-radius: var(--radius-control);
-    border: 1px solid var(--border-light);
+    border: none;
     padding: 0 12px;
     font-size: var(--type-ui);
     line-height: var(--leading-tight);
     outline: none;
+    background: transparent;
+    color: var(--text-primary);
+    flex: 1;
 }
 
-.lock-input:focus {
+.lock-input-shell {
+    margin: 10px 0;
+    height: 40px;
+    border-radius: var(--radius-control);
+    border: 1px solid var(--border-light);
+    background: color-mix(in srgb, var(--bg-primary) 92%, var(--bg-secondary) 8%);
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+}
+
+.lock-input-shell:focus-within {
     border-color: color-mix(in srgb, var(--accent) 60%, var(--bg-primary) 40%);
     box-shadow: var(--focus-ring);
+}
+
+.lock-input-toggle {
+    width: 40px;
+    height: 100%;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.lock-input-toggle:hover {
+    color: var(--text-secondary);
 }
 
 .lock-error {
@@ -475,4 +573,15 @@
     flex-direction: column;
     overflow: hidden;
     background-color: var(--bg-primary);
+}
+
+.main-view {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.main-view.is-hidden {
+    display: none;
 }

@@ -1,6 +1,7 @@
-export type AgentRisk = "low" | "medium" | "high" | "critical";
+// === 保留的类型 ===
 
-export type AgentMode = "suggest_only" | "confirm_then_execute";
+export type AgentRisk = "low" | "medium" | "high" | "critical";
+export type AgentApprovalMode = "auto" | "delegate" | "copilot";
 
 export type AgentPolicyStatus =
   | "allowed"
@@ -9,46 +10,13 @@ export type AgentPolicyStatus =
 
 export type AgentActionStatus =
   | "pending"
-  | "approved"
+  | "confirmed"
   | "running"
   | "success"
   | "failed"
   | "blocked"
   | "rejected"
-  | "skipped";
-
-export type AgentPlanStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "stopped";
-
-export type AgentPlanActivityTone = "info" | "success" | "warn" | "error";
-
-export interface AgentAction {
-  id: string;
-  session_id: string;
-  command: string;
-  risk: AgentRisk;
-  reason: string;
-  expected_effect: string;
-  timeout_sec: number;
-}
-
-export interface AgentPlan {
-  id: string;
-  session_id: string;
-  summary?: string;
-  actions: AgentAction[];
-}
-
-export interface AgentPlanParseResult {
-  plan: AgentPlan | null;
-  note: string;
-  raw_json?: string;
-  error?: string;
-}
+  | "timeout";
 
 export interface AgentPolicyDecision {
   status: AgentPolicyStatus;
@@ -65,35 +33,47 @@ export interface AgentCommandResult {
   timedOut?: boolean;
 }
 
-export interface AgentActionRuntime extends AgentAction {
-  edited_command: string;
-  policy: AgentPolicyDecision;
-  status: AgentActionStatus;
-  strong_confirm_input: string;
-  result?: AgentCommandResult;
-  error?: string;
-  execution_note?: string;
-  confirmed_at?: number;
-  finished_at?: number;
+// === 新增类型 ===
+
+export interface AgentStepAction {
+  id: string;
+  command: string;
+  risk: AgentRisk;
+  reason: string;
 }
 
-export interface AgentPlanRuntime {
+export interface AgentStep {
+  index: number;
+  thinking: string;
+  action: AgentStepAction | null;
+  actionStatus: AgentActionStatus | null;
+  result: AgentCommandResult | null;
+  policyDecision: AgentPolicyDecision | null;
+}
+
+export interface AgentSession {
   id: string;
-  session_id: string;
-  summary: string;
-  actions: AgentActionRuntime[];
-  status: AgentPlanStatus;
-  mode: AgentMode;
-  created_at: number;
-  user_request: string;
-  parse_error?: string;
-  stop_requested?: boolean;
-  thinking?: boolean;
-  final_report_ready?: boolean;
-  activities?: Array<{
-    id: string;
-    ts: number;
-    text: string;
-    tone: AgentPlanActivityTone;
-  }>;
+  sessionId: string;
+  userRequest: string;
+  steps: AgentStep[];
+  status: "running" | "completed" | "stopped" | "error";
+  createdAt: number;
+  completedAt?: number;
+}
+
+// === UI 渲染块类型 ===
+
+export type AgentBlockType = "thinking" | "action" | "output" | "error" | "done" | "user" | "status";
+
+export interface AgentBlock {
+  id: string;
+  type: AgentBlockType;
+  content: string;
+  timestamp: number;
+  phase?: "analyzing_output" | "waiting_model";
+  command?: string;
+  risk?: AgentRisk;
+  status?: "pending" | "running" | "success" | "failed" | "blocked" | "rejected";
+  exitCode?: number;
+  stderr?: string;
 }

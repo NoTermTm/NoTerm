@@ -6,7 +6,7 @@ import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
 import { useNavigate, useLocation } from "react-router-dom";
 import { TitleBar, Tab } from "./TitleBar";
 import { AppIcon } from "./AppIcon";
-import { ConnectionsPage } from "../pages/Connections";
+import { ConnectionsPage, type ActiveSession, type SplitLayout } from "../pages/Connections";
 import { KeysPage } from "../pages/Keys";
 import { SettingsPage } from "../pages/Settings";
 import { ForwardingPage } from "../pages/Forwarding";
@@ -36,6 +36,8 @@ export function Layout() {
   const [activePanel, setActivePanel] = useState<string | null>(null);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [activeSessions, setActiveSessions] = useState<Map<string, ActiveSession>>(new Map());
+  const [splitLayouts, setSplitLayouts] = useState<Map<string, SplitLayout>>(new Map());
   const [messagePanel, setMessagePanel] = useState<{
     x: number;
     y: number;
@@ -69,6 +71,7 @@ export function Layout() {
   const [unlockInput, setUnlockInput] = useState("");
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [unlocking, setUnlocking] = useState(false);
+  const [showUnlockSecret, setShowUnlockSecret] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
   const { t } = useI18n();
@@ -1041,6 +1044,7 @@ export function Layout() {
       }
       setIsLocked(false);
       setUnlockInput("");
+      setShowUnlockSecret(false);
       setUnlockError(null);
       setMasterKeySession(unlockInput);
       if (typeof window !== "undefined") {
@@ -1058,60 +1062,28 @@ export function Layout() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    let unlistenAccent: (() => void) | undefined;
-    const isHexColor = (value: string) => /^#([0-9a-f]{6})$/i.test(value);
-    const darkenHex = (hex: string, ratio: number) => {
-      const clean = hex.replace("#", "");
-      const toPart = (offset: number) =>
-        Math.max(
-          0,
-          Math.min(
-            255,
-            Math.round(parseInt(clean.slice(offset, offset + 2), 16) * (1 - ratio)),
-          ),
-        )
-          .toString(16)
-          .padStart(2, "0");
-      return `#${toPart(0)}${toPart(2)}${toPart(4)}`;
-    };
     const applyTheme = (value?: AppSettings["ui.theme"] | null) => {
       const next = (value ?? DEFAULT_APP_SETTINGS["ui.theme"]) as AppSettings["ui.theme"];
       document.documentElement.dataset.theme = next;
+      document.documentElement.style.removeProperty("--accent");
+      document.documentElement.style.removeProperty("--accent-primary");
+      document.documentElement.style.removeProperty("--accent-hover");
       try {
         localStorage.setItem("noterm.ui.theme", next);
       } catch {
         // Ignore storage failures in restricted environments.
       }
     };
-    const applyAccent = (value?: string | null) => {
-      const root = document.documentElement;
-      const accent = (value ?? "").trim();
-      if (!accent || !isHexColor(accent)) {
-        root.style.removeProperty("--accent");
-        root.style.removeProperty("--accent-primary");
-        root.style.removeProperty("--accent-hover");
-        return;
-      }
-      root.style.setProperty("--accent", accent);
-      root.style.setProperty("--accent-primary", accent);
-      root.style.setProperty("--accent-hover", darkenHex(accent, 0.14));
-    };
     void (async () => {
       const store = await getAppSettingsStore();
       const current = await store.get<AppSettings["ui.theme"]>("ui.theme");
-      const currentAccent = await store.get<AppSettings["ui.accent"]>("ui.accent");
       applyTheme(current);
-      applyAccent(currentAccent);
       unlisten = await store.onKeyChange<AppSettings["ui.theme"]>("ui.theme", (value) => {
         applyTheme(value);
-      });
-      unlistenAccent = await store.onKeyChange<AppSettings["ui.accent"]>("ui.accent", (value) => {
-        applyAccent(value);
       });
     })();
     return () => {
       if (unlisten) unlisten();
-      if (unlistenAccent) unlistenAccent();
     };
   }, []);
 
@@ -1247,7 +1219,9 @@ export function Layout() {
         </div>
 
         <div className="main-content">
-          {location.pathname === "/connections" && (
+          <div
+            className={`main-view ${location.pathname === "/connections" ? "is-active" : "is-hidden"}`}
+          >
             <ConnectionsPage
               activePanel={activePanel}
               setActivePanel={setActivePanel}
@@ -1255,11 +1229,15 @@ export function Layout() {
               setTabs={setTabs}
               activeTabId={activeTabId}
               setActiveTabId={setActiveTabId}
+              activeSessions={activeSessions}
+              setActiveSessions={setActiveSessions}
+              splitLayouts={splitLayouts}
+              setSplitLayouts={setSplitLayouts}
               onTabClick={handleTabClick}
               onTabClose={handleTabClose}
               onNewTab={handleNewTab}
             />
-          )}
+          </div>
           {location.pathname === "/keys" && (
             <KeysPage />
           )}
@@ -1404,20 +1382,50 @@ export function Layout() {
             </div>
             <div className="lock-title">{t("app.lock.title")}</div>
             <div className="lock-subtitle">{t("app.lock.subtitle")}</div>
-            <input
-              type="password"
-              className="lock-input"
-              placeholder={t("app.lock.placeholder")}
-              value={unlockInput}
-              ref={unlockInputRef}
-              autoFocus
-              onChange={(event) => setUnlockInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  void handleUnlock();
+            <div className="lock-input-shell">
+              <input
+                type={showUnlockSecret ? "text" : "password"}
+                className="lock-input"
+                placeholder={t("app.lock.placeholder")}
+                aria-label={t("app.lock.placeholder")}
+                value={unlockInput}
+                ref={unlockInputRef}
+                autoFocus
+                onChange={(event) => setUnlockInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    void handleUnlock();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="lock-input-toggle"
+                onClick={() => {
+                  setShowUnlockSecret((prev) => !prev);
+                  unlockInputRef.current?.focus();
+                }}
+                aria-label={
+                  showUnlockSecret
+                    ? t("connections.password.hide")
+                    : t("connections.password.show")
                 }
-              }}
-            />
+                title={
+                  showUnlockSecret
+                    ? t("connections.password.hide")
+                    : t("connections.password.show")
+                }
+              >
+                <AppIcon
+                  icon={
+                    showUnlockSecret
+                      ? "material-symbols:visibility-off-rounded"
+                      : "material-symbols:visibility-rounded"
+                  }
+                  size={20}
+                />
+              </button>
+            </div>
             {unlockError && <div className="lock-error">{unlockError}</div>}
             <button
               type="button"
@@ -1425,6 +1433,7 @@ export function Layout() {
               onClick={() => void handleUnlock()}
               disabled={unlocking}
             >
+              <AppIcon icon="material-symbols:lock-person-outline-rounded" size={18} />
               {unlocking ? t("app.lock.unlocking") : t("app.lock.unlock")}
             </button>
             <button

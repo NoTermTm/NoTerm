@@ -66,6 +66,7 @@ const TERMINAL_FONT_WEIGHT_OPTIONS = [
 const APP_THEME_OPTIONS = [
   { labelKey: "settings.theme.bright", value: "bright" },
   { labelKey: "settings.theme.mint", value: "mint" },
+  { labelKey: "settings.theme.kraft", value: "kraft" },
   { labelKey: "settings.theme.dark", value: "dark" },
 ];
 
@@ -321,9 +322,6 @@ export function SettingsPage() {
         "ui.theme":
           (await store.get<AppSettings["ui.theme"]>("ui.theme")) ??
           DEFAULT_APP_SETTINGS["ui.theme"],
-        "ui.accent":
-          (await store.get<AppSettings["ui.accent"]>("ui.accent")) ??
-          DEFAULT_APP_SETTINGS["ui.accent"],
         "connection.autoConnect":
           (await store.get<boolean>("connection.autoConnect")) ??
           DEFAULT_APP_SETTINGS["connection.autoConnect"],
@@ -417,9 +415,9 @@ export function SettingsPage() {
         "ai.models":
           (await store.get<string[]>("ai.models")) ??
           DEFAULT_APP_SETTINGS["ai.models"],
-        "ai.agentMode":
-          (await store.get<AppSettings["ai.agentMode"]>("ai.agentMode")) ??
-          DEFAULT_APP_SETTINGS["ai.agentMode"],
+        "ai.approvalMode":
+          (await store.get<AppSettings["ai.approvalMode"]>("ai.approvalMode")) ??
+          DEFAULT_APP_SETTINGS["ai.approvalMode"],
         "sync.enabled":
           (await store.get<boolean>("sync.enabled")) ??
           DEFAULT_APP_SETTINGS["sync.enabled"],
@@ -1646,27 +1644,6 @@ export function SettingsPage() {
             />
           </div>
         </div>
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <div className="settings-item-label">{t("settings.theme.accent")}</div>
-            <div className="settings-item-description">{t("settings.theme.accent.desc")}</div>
-          </div>
-          <div className="settings-item-control settings-item-control--row">
-            <input
-              className="settings-accent-picker"
-              type="color"
-              value={/^#([0-9a-f]{6})$/i.test(settings["ui.accent"]) ? settings["ui.accent"] : "#5aa7ff"}
-              onChange={(event) => updateSetting("ui.accent", event.target.value)}
-            />
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => updateSetting("ui.accent", "")}
-            >
-              {t("common.reset")}
-            </button>
-          </div>
-        </div>
       </div>
 
       <div className="settings-section">
@@ -2610,12 +2587,12 @@ export function SettingsPage() {
             )}
           </div>
         </Modal>
-        <div className="settings-item">
+        <div className="settings-item settings-item--responsive">
           <div className="settings-item-info">
             <div className="settings-item-label">{t("settings.ai.test")}</div>
             <div className="settings-item-description">{t("settings.ai.test.desc")}</div>
           </div>
-          <div className="settings-item-control settings-item-control--stack">
+          <div className="settings-item-control settings-item-control--stack settings-item-control--test">
             <button
               className="btn btn-secondary btn-sm"
               type="button"
@@ -2625,7 +2602,7 @@ export function SettingsPage() {
               {aiTestStatus === "testing" ? t("settings.ai.test.testing") : t("settings.ai.test.action")}
             </button>
             {aiTestMessage && aiTestStatus !== "success" && (
-              <span className={`settings-test-status settings-test-status--${aiTestStatus}`}>
+              <span className={`settings-test-status settings-test-status--${aiTestStatus} settings-test-status--multiline`}>
                 {aiTestMessage}
               </span>
             )}

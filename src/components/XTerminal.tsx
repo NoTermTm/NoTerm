@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { mkdir, remove, stat, watch, type UnwatchFn } from "@tauri-apps/plugin-fs";
+import { mkdir, readFile, readTextFile, remove, stat, watch, type UnwatchFn } from "@tauri-apps/plugin-fs";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { sshApi } from "../api/ssh";
 import { telnetApi } from "../api/telnet";
@@ -27,8 +27,8 @@ import { AppIcon } from "./AppIcon";
 import { Select } from "./Select";
 import { Modal } from "./Modal";
 import { ScriptPicker } from "./ScriptPicker";
-import { parseAgentPlanFromText, sendAiChatStream, type AiMessage } from "../api/ai";
-import AiRenderer from "./AiRenderer2";
+import { sendAiChat, type AiMessage, type AiMessagePart } from "../api/ai";
+import AgentStreamView from "./AgentStreamView";
 import {
   type AppSettings,
   DEFAULT_APP_SETTINGS,
@@ -50,20 +50,16 @@ import {
   type LsTableRow,
   type SmartCommandInfo,
 } from "../terminal/smartTerminal";
-import { appendAgentAuditRecord } from "../terminal/agentAudit";
-import { evaluateAgentActionPolicy } from "../terminal/agentPolicy";
+import { createAgentLoop, type AgentLoopController } from "../terminal/agentLoop";
 import type {
-  AgentActionRuntime,
-  AgentMode,
-  AgentPlan,
-  AgentPlanRuntime,
+  AgentApprovalMode,
+  AgentBlock,
   AgentRisk,
-  AgentPlanActivityTone,
-  AgentActionStatus,
 } from "../types/agent";
 import { getModifierKeyAbbr, getModifierKeyLabel } from "../utils/platform";
 import { toRgba } from "../utils/color";
 import { loadTerminalBackgroundUrl } from "../utils/terminalBackground";
+import { getResourceStatsCommand, parseResourceStatsOutput } from "../utils/resourceStats";
 import { useI18n } from "../i18n";
 
 interface XTerminalProps {
@@ -87,9 +83,6 @@ type AppMessageTone = "info" | "success" | "error";
 type AiChatMessage = AiMessage & {
   createdAt: number;
   id: string;
-  agentPlan?: AgentPlanRuntime;
-  agentPlanRaw?: AgentPlan;
-  agentPlanning?: boolean;
 };
 
 interface TransferTask {
@@ -123,11 +116,6 @@ type AppMessageDetail = {
   toast?: boolean;
   toastDuration?: number;
   store?: boolean;
-};
-
-type SftpNotice = {
-  tone: AppMessageTone;
-  message: string;
 };
 
 type SftpEditSession = {
@@ -184,6 +172,13 @@ type SmartMenuState =
       y: number;
     };
 
+type TerminalSnapshot = {
+  lines: string[];
+  viewportY: number;
+};
+
+const terminalSnapshotCache = new Map<string, TerminalSnapshot>();
+
 type SmartTrackedCommand = SmartCommandInfo & {
   output: string;
   startedAt: number;
@@ -202,14 +197,17 @@ type LogSummaryItem = {
   errorCount: number;
 };
 
-type AgentStepDecision = {
-  decision: "continue" | "update_plan" | "stop";
-  note?: string;
-  plan?: AgentPlan;
-};
-
 type SendAiMessageOptions = {
   extraSystemPrompt?: string;
+};
+
+type AiAttachment = {
+  id: string;
+  kind: "image" | "text";
+  name: string;
+  mimeType: string;
+  content: string;
+  filePath: string;
 };
 
 type AgentTerminalExecutionState = {
@@ -233,6 +231,11 @@ type TerminalHashCommand =
   | { kind: "fix"; query: string }
   | { kind: "help" }
   | { kind: "unknown"; name: string };
+
+type ToolbarResourceStats = {
+  cpuPercent: number | null;
+  memoryPercent: number | null;
+};
 
 const parseTerminalHashCommand = (input: string): TerminalHashCommand | null => {
   const trimmed = input.trim();
@@ -267,6 +270,7 @@ const hasExecutableCommand = (text: string): boolean => {
 const escapeForRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const normalizeFsPath = (value: string) => value.replace(/\\/g, "/");
 const SFTP_EDIT_CACHE_DIR = "sftp-edit-cache";
+const SFTP_LIST_TIMEOUT_MS = 20_000;
 const SFTP_EDIT_SYNC_DEBOUNCE_MS = 1200;
 const SFTP_SYNC_ERROR_TOAST_DEDUPE_MS = 15000;
 
@@ -283,16 +287,48 @@ const createStableHash = (value: string) => {
   return hash.toString(16);
 };
 
+const TEXT_ATTACHMENT_EXTENSIONS = new Set([
+  "txt",
+  "md",
+  "markdown",
+  "log",
+  "json",
+  "yaml",
+  "yml",
+  "xml",
+  "csv",
+  "tsv",
+  "ini",
+  "conf",
+  "config",
+  "sh",
+  "bash",
+  "zsh",
+  "js",
+  "ts",
+  "tsx",
+  "jsx",
+  "py",
+  "rs",
+  "sql",
+]);
+
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  svg: "image/svg+xml",
+};
+
 const MAX_TRANSFER_TASKS = 120;
 const MAX_LOG_SIGNALS = 200;
 const LOG_SUMMARY_WINDOW_MS = 60_000;
 const MAX_LOG_SUMMARIES = 12;
-const AGENT_MAX_ACTIONS = 5;
-const AGENT_RESULT_SNIPPET_CHARS = 2000;
 const AGENT_TERMINAL_CAPTURE_CHARS = 220_000;
-const AGENT_MAX_ACTIVITY_ITEMS = 40;
 const MAX_AI_MESSAGES = 60;
-const AI_SCROLL_BOTTOM_THRESHOLD = 72;
 const TERMINAL_FONT_SIZE_MIN = 9;
 const TERMINAL_FONT_SIZE_MAX = 28;
 const AGENT_INTERNAL_PRINTF_PATTERN =
@@ -315,21 +351,6 @@ const stripReconnectBanner = (value: string) => {
   return value.slice(promptMatch.index + (promptMatch[0].startsWith("\n") ? 1 : 0));
 };
 
-const normalizeAgentActionStatus = (
-  statuses: AgentActionStatus[],
-): AgentPlanRuntime["status"] => {
-  if (statuses.some((status) => status === "running")) return "running";
-  if (statuses.some((status) => status === "failed")) return "failed";
-  if (statuses.some((status) => status === "pending" || status === "approved")) {
-    return "pending";
-  }
-  if (statuses.every((status) => status === "blocked")) return "failed";
-  if (statuses.every((status) => status === "rejected" || status === "skipped")) {
-    return "stopped";
-  }
-  return "completed";
-};
-
 const createMessageId = () => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -337,11 +358,12 @@ const createMessageId = () => {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
-const createAgentActivityId = () => {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
+const dropTrailingAgentStatusBlock = (blocks: AgentBlock[]) => {
+  const last = blocks[blocks.length - 1];
+  if (last?.type === "status") {
+    return blocks.slice(0, -1);
   }
-  return `agent-activity-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return blocks;
 };
 
 const TERMINAL_BG_SIZE_MAP: Record<TerminalBackgroundFit, string> = {
@@ -362,7 +384,7 @@ export function XTerminal({
   port,
   isLocal = false,
   sessionKind = isLocal ? "local" : "ssh",
-  osType = "unknown",
+  osType: _osType = "unknown",
   onConnect,
   onRequestSplit,
   onCloseSession,
@@ -384,9 +406,16 @@ export function XTerminal({
   const [connectionLogOpen, setConnectionLogOpen] = useState(false);
   const [endpointIp, setEndpointIp] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [toolbarResourceStats, setToolbarResourceStats] = useState<ToolbarResourceStats>({
+    cpuPercent: null,
+    memoryPercent: null,
+  });
   const endpointProbeLogRef = useRef<string>("");
   const endpointLatencyRef = useRef<number | null>(null);
   const observedLatencyRef = useRef<number | null>(null);
+  const resourceStatsBusyRef = useRef(false);
+  const resourceStatsLastErrorRef = useRef<string | null>(null);
+  const resourceStatsLastSuccessRef = useRef<string | null>(null);
   const [endpointCopied, setEndpointCopied] = useState(false);
   const endpointCopyTimerRef = useRef<number | null>(null);
   const [xtermBg, setXtermBg] = useState<string | undefined>(undefined);
@@ -409,9 +438,12 @@ export function XTerminal({
   const [sftpEntries, setSftpEntries] = useState<SftpEntry[]>([]);
   const [sftpLoading, setSftpLoading] = useState(false);
   const [sftpError, setSftpError] = useState<string | null>(null);
-  const [sftpNotice, setSftpNotice] = useState<SftpNotice | null>(null);
   const [sftpDragging, setSftpDragging] = useState(false);
-  const [sftpWidth, setSftpWidth] = useState(380);
+  const [sftpDropTarget, setSftpDropTarget] = useState<{
+    path: string;
+    name: string;
+  } | null>(null);
+  const [sftpWidth, setSftpWidth] = useState(320);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [renameEntry, setRenameEntry] = useState<SftpEntry | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -463,35 +495,39 @@ export function XTerminal({
   const [scriptText, setScriptText] = useState("");
   const [aiMessages, setAiMessages] = useState<AiChatMessage[]>([]);
   const aiMessagesRef = useRef<AiChatMessage[]>([]);
-  const aiHistoryRef = useRef<HTMLDivElement>(null);
+  const agentConversationHistoryRef = useRef<AiMessage[]>([]);
   const aiInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const agentActivityListRef = useRef<HTMLDivElement>(null);
-  const aiAutoStickToBottomRef = useRef(true);
   const aiStreamAbortRef = useRef<AbortController | null>(null);
   const aiAbortReasonRef = useRef<"stop" | "clear" | null>(null);
   const [aiInput, setAiInput] = useState("");
   const [terminalQuickDraft, setTerminalQuickDraft] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
-  const [forceRunDialog, setForceRunDialog] = useState<{
-    messageId: string;
-    blockedCount: number;
-  } | null>(null);
-  const [forceRunConfirmInput, setForceRunConfirmInput] = useState("");
-  const [forceRunConfirmError, setForceRunConfirmError] = useState<string | null>(null);
-  const [aiWidth, setAiWidth] = useState(380);
+  const [aiWidth, setAiWidth] = useState(460);
   const [aiModel, setAiModel] = useState<string>("");
   const [aiModelOptions, setAiModelOptions] = useState<string[]>([]);
-  const [agentMode, setAgentMode] = useState<AgentMode>(
-    DEFAULT_APP_SETTINGS["ai.agentMode"],
+  const [aiApprovalMode, setAiApprovalMode] = useState<AgentApprovalMode>(
+    DEFAULT_APP_SETTINGS["ai.approvalMode"],
   );
-  const [agentActivityExpanded, setAgentActivityExpanded] = useState(false);
-  const planStopRequestedRef = useRef<Record<string, boolean>>({});
-  const planExecutionLockRef = useRef<Record<string, boolean>>({});
+  const [aiAttachments, setAiAttachments] = useState<AiAttachment[]>([]);
+  const [agentBlocks, setAgentBlocks] = useState<AgentBlock[]>([]);
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [agentPendingConfirmation, setAgentPendingConfirmation] = useState<{
+    actionId: string;
+    command: string;
+    risk: AgentRisk;
+    reason: string;
+  } | null>(null);
+  const agentLoopRef = useRef<AgentLoopController | null>(null);
+  // @ts-expect-error — will be used when thinking delta throttling is wired up
+  const agentThinkingBufferRef = useRef<string>("");
+  // @ts-expect-error — will be used when thinking delta throttling is wired up
+  const agentThinkingRafRef = useRef<number | null>(null);
   const aiModelTouchedRef = useRef(false);
-  const [aiInsightsOpen, setAiInsightsOpen] = useState(true);
   const [aiModelMenuOpen, setAiModelMenuOpen] = useState(false);
   const aiModelMenuRef = useRef<HTMLDivElement>(null);
+  const [aiApprovalMenuOpen, setAiApprovalMenuOpen] = useState(false);
+  const aiApprovalMenuRef = useRef<HTMLDivElement>(null);
   const [resizing, setResizing] = useState<{
     type: "sftp" | "ai";
     startX: number;
@@ -520,9 +556,11 @@ export function XTerminal({
   const lastInputAtRef = useRef<number>(0);
   const [termMenu, setTermMenu] = useState<{ x: number; y: number } | null>(null);
   const termMenuRef = useRef<HTMLDivElement>(null);
+  // @ts-expect-error smartTable read value temporarily unused after AI panel refactor (smart insights will be re-integrated)
   const [smartTable, setSmartTable] = useState<SmartTableState | null>(null);
   const [smartMenu, setSmartMenu] = useState<SmartMenuState | null>(null);
   const smartMenuRef = useRef<HTMLDivElement>(null);
+  // @ts-expect-error logSummaries read value temporarily unused after AI panel refactor
   const [logSummaries, setLogSummaries] = useState<LogSummaryItem[]>([]);
   const inputCommandBufferRef = useRef("");
   const inputEscapeModeRef = useRef(false);
@@ -550,44 +588,7 @@ export function XTerminal({
   const aiHistoryLoadedRef = useRef(false);
   const transferStatusLabel = (status: TransferTaskStatus) =>
     t(`terminal.transfer.status.${status}`);
-  const hasAiInsights = !!smartTable || logSummaries.length > 0;
-  const aiContextSummaryKey = useMemo(() => {
-    if (smartTable && logSummaries.length > 0) {
-      return "terminal.ai.context.summary.both";
-    }
-    if (smartTable) {
-      return "terminal.ai.context.summary.structured";
-    }
-    return "terminal.ai.context.summary.logs";
-  }, [smartTable, logSummaries.length]);
 
-  useEffect(() => {
-    if (hasAiInsights && aiMessages.length === 0) {
-      setAiInsightsOpen(true);
-    }
-  }, [aiMessages.length, hasAiInsights]);
-
-  const latestAgentPlanForActivity = useMemo(() => {
-    for (let i = aiMessages.length - 1; i >= 0; i -= 1) {
-      const message = aiMessages[i];
-      if (message?.agentPlan) {
-        return message.agentPlan;
-      }
-    }
-    return null;
-  }, [aiMessages]);
-  const latestAgentActivityKey = useMemo(() => {
-    const list = latestAgentPlanForActivity?.activities || [];
-    if (list.length === 0) return "empty";
-    const tail = list[list.length - 1];
-    return `${list.length}-${tail.id}-${tail.ts}`;
-  }, [latestAgentPlanForActivity]);
-  const latestAgentActivities = latestAgentPlanForActivity?.activities || [];
-  const latestAgentActivity =
-    latestAgentActivities.length > 0
-      ? latestAgentActivities[latestAgentActivities.length - 1]
-      : null;
-  const canExpandAgentActivities = latestAgentActivities.length > 1;
   const terminalQuickCommands = useMemo(
     () => [
       {
@@ -1028,6 +1029,44 @@ export function XTerminal({
     });
   }, [locale]);
 
+  const appendAgentDebugLog = useCallback((message: string) => {
+    appendConnectionLog(`${locale === "zh-CN" ? "[Agent]" : "[Agent]"} ${message}`);
+  }, [appendConnectionLog, locale]);
+
+  const captureTerminalSnapshot = useCallback(() => {
+    const term = terminalInstance.current;
+    if (!term) return;
+    const buffer = term.buffer.active;
+    if (!buffer || buffer.length <= 0) {
+      terminalSnapshotCache.delete(sessionId);
+      return;
+    }
+    const lines: string[] = [];
+    for (let i = 0; i < buffer.length; i += 1) {
+      lines.push(buffer.getLine(i)?.translateToString(true) ?? "");
+    }
+    if (lines.every((line) => !line.trim())) {
+      terminalSnapshotCache.delete(sessionId);
+      return;
+    }
+    terminalSnapshotCache.set(sessionId, {
+      lines,
+      viewportY: buffer.viewportY,
+    });
+  }, [sessionId]);
+
+  const restoreTerminalSnapshot = useCallback((term: Terminal) => {
+    const snapshot = terminalSnapshotCache.get(sessionId);
+    if (!snapshot || snapshot.lines.length === 0) return;
+    const content = snapshot.lines.join("\r\n");
+    if (!content.trim()) return;
+    term.write(content, () => {
+      if (snapshot.viewportY > 0) {
+        term.scrollToLine(snapshot.viewportY);
+      }
+    });
+  }, [sessionId]);
+
   const copyTerminalLog = async () => {
     const header = `session=${sessionId} type=${sessionKind} conn=${connStatus} sftp=${sftpOpen} ai=${aiOpen} lastInput=${lastInputAtRef.current} lastOutput=${lastOutputAtRef.current}`;
     const lines = terminalLogRef.current.map(
@@ -1129,6 +1168,19 @@ export function XTerminal({
     terminalInstance.current?.focus();
   };
 
+  const drainTypingBufferToWriteQueue = () => {
+    if (typingFlushTimerRef.current !== null) {
+      window.clearTimeout(typingFlushTimerRef.current);
+      typingFlushTimerRef.current = null;
+    }
+    const pendingTyping = typingBufferRef.current;
+    typingBufferRef.current = "";
+    if (pendingTyping) {
+      writeQueueRef.current.push(pendingTyping);
+      pushTerminalLog("info", `preserved pending input bytes=${pendingTyping.length}`);
+    }
+  };
+
   const startReconnectFlow = () => {
     if (isLocal) return;
     if (reconnectPromiseRef.current) return;
@@ -1138,6 +1190,7 @@ export function XTerminal({
       return;
     }
     reconnectCooldownUntilRef.current = now + 10_000;
+    drainTypingBufferToWriteQueue();
     writeFailureCountRef.current = 0;
     writeBlockedRef.current = true;
     reconnectingRef.current = true;
@@ -1187,9 +1240,6 @@ export function XTerminal({
     reconnectPromiseRef.current
       .then((ok) => {
         if (ok) {
-          inputCommandBufferRef.current = "";
-          typingBufferRef.current = "";
-          setTerminalQuickDraftState("");
           trackedCommandRef.current = null;
           terminalInstance.current?.write(`\r\n\x1b[33m[${t("terminal.session.recreated")}]\x1b[0m\r\n`);
           void flushWriteQueue();
@@ -1436,9 +1486,9 @@ export function XTerminal({
       models:
         (await store.get<string[]>("ai.models")) ??
         DEFAULT_APP_SETTINGS["ai.models"],
-      agentMode:
-        (await store.get<AgentMode>("ai.agentMode")) ??
-        DEFAULT_APP_SETTINGS["ai.agentMode"],
+      approvalMode:
+        (await store.get<AgentApprovalMode>("ai.approvalMode")) ??
+        DEFAULT_APP_SETTINGS["ai.approvalMode"],
       openai: {
         baseUrl:
           (await store.get<string>("ai.openai.baseUrl")) ??
@@ -1468,8 +1518,8 @@ export function XTerminal({
 
   const syncAiSettings = async () => {
     const settings = await readAiSettings();
-    setAgentMode(settings.agentMode || DEFAULT_APP_SETTINGS["ai.agentMode"]);
     setAiModelOptions(settings.models ?? []);
+    setAiApprovalMode(settings.approvalMode ?? DEFAULT_APP_SETTINGS["ai.approvalMode"]);
     if (!aiModelTouchedRef.current) {
       setAiModel(settings.model);
     }
@@ -1496,51 +1546,6 @@ export function XTerminal({
     aiMessagesRef.current = aiMessages;
   }, [aiMessages]);
 
-  const updateAiAutoStickFlag = () => {
-    const el = aiHistoryRef.current;
-    if (!el) return;
-    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    aiAutoStickToBottomRef.current = distanceToBottom <= AI_SCROLL_BOTTOM_THRESHOLD;
-  };
-
-  const scrollAiToBottom = (force = false) => {
-    const el = aiHistoryRef.current;
-    if (!el) return;
-    if (!force && !aiAutoStickToBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
-    aiAutoStickToBottomRef.current = true;
-  };
-
-  useEffect(() => {
-    if (!aiOpen) return;
-    const handle = requestAnimationFrame(() => {
-      scrollAiToBottom(true);
-    });
-    return () => cancelAnimationFrame(handle);
-  }, [aiOpen]);
-
-  useEffect(() => {
-    if (!aiOpen) return;
-    const handle = requestAnimationFrame(() => {
-      scrollAiToBottom();
-    });
-    return () => cancelAnimationFrame(handle);
-  }, [aiMessages, aiOpen]);
-
-  useEffect(() => {
-    if (!aiOpen || !agentActivityExpanded) return;
-    const el = agentActivityListRef.current;
-    if (!el) return;
-    const handle = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-    });
-    return () => cancelAnimationFrame(handle);
-  }, [agentActivityExpanded, aiOpen, latestAgentActivityKey]);
-
-  useEffect(() => {
-    setAgentActivityExpanded(false);
-  }, [latestAgentPlanForActivity?.id]);
-
   useEffect(() => {
     let disposed = false;
     const loadHistory = async () => {
@@ -1560,6 +1565,10 @@ export function XTerminal({
             }))
             .slice(-MAX_AI_MESSAGES);
           setAiMessages(normalized);
+          agentConversationHistoryRef.current = normalized.map((item) => ({
+            role: item.role,
+            content: item.content,
+          }));
         }
       } finally {
         aiHistoryLoadedRef.current = true;
@@ -1654,7 +1663,14 @@ export function XTerminal({
     message: string,
     tone: AppMessageTone = "error",
   ) => {
-    setSftpNotice({ tone, message });
+    emitAppMessage({
+      title: t("terminal.sftp.title"),
+      detail: message,
+      tone,
+      toast: true,
+      toastDuration: tone === "error" ? 4200 : 2600,
+      store: false,
+    });
   };
 
   const isPermissionDeniedError = (message: string) =>
@@ -1703,27 +1719,36 @@ export function XTerminal({
     });
   };
 
-  const isAbortError = (error: unknown) => {
-    if (!error) return false;
-    if (error instanceof DOMException && error.name === "AbortError") return true;
-    if (error instanceof Error && error.name === "AbortError") return true;
-    return String(error).toLowerCase().includes("abort");
-  };
-
   const interruptAiConversation = () => {
-    if (!aiStreamAbortRef.current) return;
-    aiAbortReasonRef.current = "stop";
-    aiStreamAbortRef.current.abort();
+    // Stop the agent loop if running
+    if (agentLoopRef.current?.isRunning()) {
+      agentLoopRef.current.stop();
+      setAgentRunning(false);
+      setAgentPendingConfirmation(null);
+    }
+    if (aiStreamAbortRef.current) {
+      aiAbortReasonRef.current = "stop";
+      aiStreamAbortRef.current.abort();
+    }
     setAiBusy(false);
   };
 
   const clearAiConversationContext = () => {
+    // Stop the agent loop if running
+    if (agentLoopRef.current?.isRunning()) {
+      agentLoopRef.current.stop();
+    }
     if (aiStreamAbortRef.current) {
       aiAbortReasonRef.current = "clear";
       aiStreamAbortRef.current.abort();
     }
     setAiBusy(false);
     setAiMessages([]);
+    agentConversationHistoryRef.current = [];
+    setAiAttachments([]);
+    setAgentBlocks([]);
+    setAgentRunning(false);
+    setAgentPendingConfirmation(null);
     setAiError(null);
     setAiInput("");
   };
@@ -1796,13 +1821,6 @@ export function XTerminal({
       }
     }
   };
-
-  const formatAgentActivityTime = (value: number) =>
-    new Date(value).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
 
   const createTransferTask = (
     direction: TransferTaskDirection,
@@ -2064,6 +2082,126 @@ export function XTerminal({
     return "bad";
   }, [latencyMs]);
 
+  const supportsToolbarResourceStats = !isTelnet && _osType !== "windows";
+  const resourceCpuLabel =
+    toolbarResourceStats.cpuPercent === null ? "--" : `${toolbarResourceStats.cpuPercent}%`;
+  const resourceMemoryLabel =
+    toolbarResourceStats.memoryPercent === null ? "--" : `${toolbarResourceStats.memoryPercent}%`;
+
+  useEffect(() => {
+    if (!supportsToolbarResourceStats || connStatus !== "connected") {
+      resourceStatsBusyRef.current = false;
+      resourceStatsLastErrorRef.current = null;
+      resourceStatsLastSuccessRef.current = null;
+      setToolbarResourceStats({ cpuPercent: null, memoryPercent: null });
+      return;
+    }
+
+    let disposed = false;
+    const command = getResourceStatsCommand();
+    appendConnectionLog(
+      locale === "zh-CN"
+        ? "资源监控已启动：每 5 秒采样一次 CPU/内存"
+        : "Resource monitor started: sampling CPU/memory every 5 seconds",
+    );
+
+    const pollResourceStats = async () => {
+      if (disposed || resourceStatsBusyRef.current) return;
+      resourceStatsBusyRef.current = true;
+      try {
+        const result = isLocal
+          ? await sshApi.localExecuteControlledCommand(sessionId, command, 8)
+          : await sshApi.executeControlledCommand(sessionId, command, 8);
+        if (disposed) return;
+        if (result.exitCode !== 0 || result.timedOut) {
+          const nextError = `resource stats failed exit=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr.trim() || "n/a"}`;
+          if (resourceStatsLastErrorRef.current !== nextError) {
+            pushTerminalLog("warn", nextError);
+            appendConnectionLog(
+              locale === "zh-CN"
+                ? `资源监控失败：exit=${result.exitCode} timeout=${result.timedOut ? "yes" : "no"} stderr=${result.stderr.trim() || "n/a"}`
+                : `Resource monitor failed: exit=${result.exitCode} timeout=${result.timedOut ? "yes" : "no"} stderr=${result.stderr.trim() || "n/a"}`,
+            );
+            resourceStatsLastErrorRef.current = nextError;
+            resourceStatsLastSuccessRef.current = null;
+          }
+          setToolbarResourceStats({ cpuPercent: null, memoryPercent: null });
+          return;
+        }
+
+        const parsed = parseResourceStatsOutput(result.stdout);
+        if (!parsed) {
+          const stdoutPreview = result.stdout.replace(/\s+/g, " ").trim().slice(0, 180) || "empty";
+          const nextError = `resource stats parse failed stdout=${stdoutPreview}`;
+          if (resourceStatsLastErrorRef.current !== nextError) {
+            pushTerminalLog("warn", nextError);
+            appendConnectionLog(
+              locale === "zh-CN"
+                ? `资源监控解析失败：${stdoutPreview}`
+                : `Resource monitor parse failed: ${stdoutPreview}`,
+            );
+            resourceStatsLastErrorRef.current = nextError;
+            resourceStatsLastSuccessRef.current = null;
+          }
+          setToolbarResourceStats({ cpuPercent: null, memoryPercent: null });
+          return;
+        }
+
+        const nextSuccess = `${parsed.cpuPercent}/${parsed.memoryPercent}`;
+        if (resourceStatsLastSuccessRef.current !== nextSuccess) {
+          appendConnectionLog(
+            locale === "zh-CN"
+              ? `资源监控成功：CPU ${parsed.cpuPercent}% · 内存 ${parsed.memoryPercent}%`
+              : `Resource monitor ok: CPU ${parsed.cpuPercent}% · MEM ${parsed.memoryPercent}%`,
+          );
+          resourceStatsLastSuccessRef.current = nextSuccess;
+        }
+        if (resourceStatsLastErrorRef.current) {
+          pushTerminalLog("info", "resource stats polling recovered");
+          appendConnectionLog(
+            locale === "zh-CN"
+              ? "资源监控已恢复"
+              : "Resource monitor recovered",
+          );
+          resourceStatsLastErrorRef.current = null;
+        }
+        setToolbarResourceStats(parsed);
+      } catch (error) {
+        if (!disposed) {
+          const errorMessage = formatError(error) || "unknown error";
+          const nextError = `resource stats polling threw before completion: ${errorMessage}`;
+          if (resourceStatsLastErrorRef.current !== nextError) {
+            pushTerminalLog("warn", nextError);
+            appendConnectionLog(
+              locale === "zh-CN"
+                ? `资源监控异常：${errorMessage}`
+                : `Resource monitor error: ${errorMessage}`,
+            );
+            resourceStatsLastErrorRef.current = nextError;
+            resourceStatsLastSuccessRef.current = null;
+          }
+          setToolbarResourceStats({ cpuPercent: null, memoryPercent: null });
+        }
+      } finally {
+        resourceStatsBusyRef.current = false;
+      }
+    };
+
+    const initialDelayId = window.setTimeout(() => {
+      void pollResourceStats();
+    }, 1800);
+    const intervalId = window.setInterval(() => {
+      void pollResourceStats();
+    }, 5000);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(initialDelayId);
+      window.clearInterval(intervalId);
+      resourceStatsBusyRef.current = false;
+    };
+  }, [connStatus, isLocal, sessionId, supportsToolbarResourceStats]);
+
   const connectNow = async (options?: { forceReset?: boolean }) => {
     const doConnect = onConnectRef.current;
     if (!doConnect) return;
@@ -2110,13 +2248,17 @@ export function XTerminal({
     }
   };
 
-  const recoverSessionAfterUnlock = async () => {
+  const ensureSessionReady = async (reason: "mount" | "unlock" = "mount") => {
     setConnStatus("connecting");
     setConnError(null);
     appendConnectionLog(
       locale === "zh-CN"
-        ? "检测到解锁，尝试恢复会话"
-        : "Session unlock detected, attempting recovery",
+        ? reason === "unlock"
+          ? "检测到解锁，尝试恢复会话"
+          : "检测到终端重新挂载，尝试恢复会话"
+        : reason === "unlock"
+          ? "Session unlock detected, attempting recovery"
+          : "Terminal remounted, attempting session recovery",
     );
     try {
       if (isLocal) {
@@ -2162,11 +2304,10 @@ export function XTerminal({
     setSftpLoading(true);
     setSftpError(null);
     try {
-      const timeoutMs = 5000;
       const timeoutPromise = new Promise<never>((_, reject) => {
         window.setTimeout(
           () => reject(new Error(t("terminal.sftp.timeout"))),
-          timeoutMs,
+          SFTP_LIST_TIMEOUT_MS,
         );
       });
       const entries = (await Promise.race([
@@ -2186,6 +2327,10 @@ export function XTerminal({
   const buildRemotePath = (name: string) => {
     const base = sftpPath || "/";
     return base.endsWith("/") ? `${base}${name}` : `${base}/${name}`;
+  };
+
+  const buildNestedRemotePath = (basePath: string, name: string) => {
+    return basePath.endsWith("/") ? `${basePath}${name}` : `${basePath}/${name}`;
   };
 
   const getSftpEditSessionKey = (remotePath: string) => normalizeFsPath(remotePath);
@@ -2260,7 +2405,6 @@ export function XTerminal({
       );
       session.lastSyncErrorMessage = null;
       session.lastSyncErrorAt = 0;
-      setSftpNotice(null);
       session.lastSyncedSignature = signature;
       if (taskId) {
         updateTransferTask(taskId, {
@@ -2387,8 +2531,6 @@ export function XTerminal({
       const signature = await getLocalFileSignature(localPath);
       await ensureSftpEditSession(remotePath, entry.name, localDir, localPath, signature);
       await openPath(localPath);
-      setSftpNotice(null);
-
       if (taskId) {
         updateTransferTask(taskId, {
           status: "success",
@@ -2599,19 +2741,31 @@ export function XTerminal({
       );
     };
 
+    const getDropTargetFromPosition = (position?: { x: number; y: number }) => {
+      if (!position) return null;
+      const hovered = document.elementFromPoint(position.x, position.y);
+      const row = hovered?.closest?.(".xterminal-sftp-item--dir") as HTMLElement | null;
+      const path = row?.dataset.dropPath;
+      const name = row?.dataset.dropName;
+      if (!path || !name) return null;
+      return { path, name };
+    };
+
     const resetDragging = () => {
       sftpDragCounterRef.current = 0;
       setSftpDragging(false);
+      setSftpDropTarget(null);
     };
 
     const register = async () => {
       unlistenHover = await listen("tauri://file-drop-hover", (event) => {
         if (!active) return;
         const payload = event.payload as { position?: { x: number; y: number } } | null;
-        if (withinSftpPanel(payload?.position)) {
+        if (payload?.position) {
           setSftpDragging(true);
+          setSftpDropTarget(getDropTargetFromPosition(payload.position));
         } else {
-          setSftpDragging(false);
+          resetDragging();
         }
       });
 
@@ -2627,15 +2781,16 @@ export function XTerminal({
           | null;
         const inside =
           payload?.position ? withinSftpPanel(payload.position) : sftpDraggingRef.current;
+        const dropTarget = getDropTargetFromPosition(payload?.position) ?? sftpDropTarget;
         resetDragging();
-        if (!inside) return;
+        if (!inside && !sftpDraggingRef.current) return;
         const paths = Array.isArray(payload?.paths) ? payload?.paths : [];
         if (!paths.length) return;
         if (uploadProgress) {
           showSftpNotice(t("terminal.sftp.upload.inProgress"), "info");
           return;
         }
-        void handleUploadFiles(paths);
+        void handleUploadFiles(paths, dropTarget?.path);
       });
     };
 
@@ -2646,7 +2801,7 @@ export function XTerminal({
       if (unlistenHover) unlistenHover();
       if (unlistenCancel) unlistenCancel();
     };
-  }, [sftpOpen, uploadProgress, t]);
+  }, [sftpDropTarget, sftpOpen, uploadProgress, t]);
 
   const handleEntryClick = (entry: SftpEntry) => {
     if (!entry.is_dir) return; // 只处理文件夹点击
@@ -2884,7 +3039,7 @@ export function XTerminal({
     }
   };
 
-  const handleUploadFiles = async (filePaths: string[]) => {
+  const handleUploadFiles = async (filePaths: string[], targetDirectory?: string) => {
     for (const filePath of filePaths) {
       let taskId: string | null = null;
       try {
@@ -2894,7 +3049,7 @@ export function XTerminal({
         );
 
         // 构建远程路径
-        const currentPath = sftpPathRef.current || "/";
+        const currentPath = targetDirectory || sftpPathRef.current || "/";
         const remotePath = currentPath.endsWith("/")
           ? currentPath + fileName
           : currentPath + "/" + fileName;
@@ -2931,7 +3086,12 @@ export function XTerminal({
 
   const isFileDrag = (event: DragEvent) => {
     const types = Array.from(event.dataTransfer?.types ?? []);
-    return types.includes("Files");
+    const items = Array.from(event.dataTransfer?.items ?? []);
+    return (
+      types.includes("Files") ||
+      types.includes("application/x-moz-file") ||
+      items.some((item) => item.kind === "file")
+    );
   };
 
   const extractDroppedPaths = (event: DragEvent) => {
@@ -2955,6 +3115,7 @@ export function XTerminal({
     sftpDragCounterRef.current = Math.max(0, sftpDragCounterRef.current - 1);
     if (sftpDragCounterRef.current === 0) {
       setSftpDragging(false);
+      setSftpDropTarget(null);
     }
   };
 
@@ -2962,6 +3123,10 @@ export function XTerminal({
     if (!isFileDrag(event)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
+    const hovered = (event.target as Element | null)?.closest?.(".xterminal-sftp-item--dir") as HTMLElement | null;
+    const path = hovered?.dataset.dropPath;
+    const name = hovered?.dataset.dropName;
+    setSftpDropTarget(path && name ? { path, name } : null);
   };
 
   const handleSftpDrop = async (event: DragEvent) => {
@@ -2969,6 +3134,8 @@ export function XTerminal({
     event.preventDefault();
     sftpDragCounterRef.current = 0;
     setSftpDragging(false);
+    const targetDirectory = sftpDropTarget?.path;
+    setSftpDropTarget(null);
     if (uploadProgress) {
       showSftpNotice(t("terminal.sftp.upload.inProgress"), "info");
       return;
@@ -2978,7 +3145,7 @@ export function XTerminal({
       showSftpNotice(t("terminal.sftp.drop.error"));
       return;
     }
-    await handleUploadFiles(filePaths);
+    await handleUploadFiles(filePaths, targetDirectory);
   };
 
   const handleFileSelect = async () => {
@@ -3038,1116 +3205,440 @@ export function XTerminal({
     ].join("\n");
   };
 
-  const inferOsProfileForPrompt = (terminalContext: string): string => {
-    if (osType && osType !== "unknown") {
-      return osType;
-    }
+  const normalizeAgentBlockText = (value: string) =>
+    value.replace(/\s+/g, " ").trim();
 
-    const platform =
-      typeof navigator !== "undefined" ? navigator.platform.toLowerCase() : "";
-    const ua =
-      typeof navigator !== "undefined" ? navigator.userAgent.toLowerCase() : "";
-    const text = `${terminalContext}\n${platform}\n${ua}`.toLowerCase();
-
-    if (text.includes("ubuntu")) return "linux ubuntu";
-    if (text.includes("debian")) return "linux debian";
-    if (text.includes("centos")) return "linux centos";
-    if (text.includes("fedora")) return "linux fedora";
-    if (text.includes("alpine")) return "linux alpine";
-    if (text.includes("arch")) return "linux arch";
-    if (text.includes("rocky")) return "linux rocky";
-    if (text.includes("amazon linux")) return "linux amazon";
-    if (
-      text.includes("darwin") ||
-      text.includes("macos") ||
-      text.includes("mac os")
-    ) {
-      return "macos";
-    }
-    if (text.includes("windows") || text.includes("powershell") || text.includes("cmd.exe")) {
-      return "windows";
-    }
-    if (text.includes("linux")) return "linux";
-    if (isLocal) return "local_unknown";
-    if (isTelnet) return "telnet_unknown";
-    return "unknown";
+  const getFileExtension = (filePath: string) => {
+    const normalized = filePath.split(/[\\/]/).pop() || filePath;
+    const dotIndex = normalized.lastIndexOf(".");
+    return dotIndex >= 0 ? normalized.slice(dotIndex + 1).toLowerCase() : "";
   };
 
-  const buildTerminalFactsForPrompt = (terminalContext: string) => {
-    const normalizedContext = terminalContext.trim().slice(-3200);
-    const osProfile = inferOsProfileForPrompt(normalizedContext);
+  const buildAiDisplayMessageWithAttachments = (content: string, attachments: AiAttachment[]) => {
+    const trimmed = content.trim();
+    if (attachments.length === 0) return trimmed;
 
-    const lines = [
-      "Terminal Facts:",
-      `- session_id: ${sessionId}`,
-      `- connection_type: ${isLocal ? "local" : isTelnet ? "telnet" : "ssh"}`,
-      `- target_host: ${host || "unknown"}`,
-      `- target_port: ${isLocal ? "N/A" : port}`,
-      `- endpoint_ip: ${endpointIp || "unknown"}`,
-      `- connection_status: ${connStatus}`,
-      `- os_profile_hint: ${osProfile}`,
-      "",
-      "Recent Terminal Output Excerpt:",
-      normalizedContext || "(empty)",
-    ];
+    const attachmentSections = attachments.map((attachment) => {
+      if (attachment.kind === "image") {
+        return [
+          `![${attachment.name}](${attachment.filePath})`,
+          `*Image attachment: ${attachment.name}*`,
+        ].join("\n");
+      }
 
-    return lines.join("\n");
-  };
-
-  const buildConversationSystemPrompt = (terminalContext: string) =>
-    [
-      t("terminal.ai.system"),
-      locale === "en-US" ? "Respond in English only." : "请仅使用中文回复。",
-      "",
-      "Always tailor commands and paths to the terminal facts below.",
-      "If information is uncertain, state assumptions briefly before commands.",
-      "When the user asks how to do/check/fix something in terminal, you must provide executable commands.",
-      "Format commands in fenced markdown code blocks with language bash.",
-      "Prefer OS-specific commands that match os_profile_hint. If multiple OS variants are needed, label them clearly.",
-      "",
-      buildTerminalFactsForPrompt(terminalContext),
-    ].join("\n");
-
-  const buildAgentSystemPrompt = (terminalContext: string) =>
-    (locale === "en-US"
-      ? [
-          "You are a terminal Agent. Convert the user request into an auditable command plan.",
-          "Use English only for all text fields in JSON (summary, reason, expected_effect).",
-          `The only available session_id is: ${sessionId}`,
-          "You must prioritize terminal facts, especially OS/distribution differences.",
-          "",
-          buildTerminalFactsForPrompt(terminalContext),
-          "",
-          "Output JSON only. Do not output Markdown or code fences.",
-          "JSON contract:",
-          "{",
-          '  "id": "plan_xxx",',
-          `  "session_id": "${sessionId}",`,
-          '  "summary": "short summary",',
-          '  "actions": [',
-          "    {",
-          '      "id": "action_xxx",',
-          `      "session_id": "${sessionId}",`,
-          '      "command": "single command",',
-          '      "risk": "low|medium|high|critical",',
-          '      "reason": "why this action is needed",',
-          '      "expected_effect": "expected outcome",',
-          '      "timeout_sec": 30',
-          "    }",
-          "  ]",
-          "}",
-          "Constraints:",
-          "- At most 5 actions;",
-          "- No command chaining; do not include ; && || | ;",
-          "- Commands must be directly executable in shell;",
-          "- If no executable steps are possible, return actions=[] and explain in summary.",
-        ]
-      : [
-          "你是终端 Agent。目标是把用户请求转换成可审核的命令计划。",
-          "JSON 中所有文本字段（summary/reason/expected_effect）必须使用中文。",
-          `当前唯一可用会话 session_id: ${sessionId}`,
-          "你必须优先根据“终端事实”选择命令，尤其是操作系统与发行版差异。",
-          "",
-          buildTerminalFactsForPrompt(terminalContext),
-          "",
-          "必须只输出 JSON，不要输出 Markdown，不要输出代码块标记。",
-          "JSON 协议：",
-          "{",
-          '  "id": "plan_xxx",',
-          `  "session_id": "${sessionId}",`,
-          '  "summary": "简短摘要",',
-          '  "actions": [',
-          "    {",
-          '      "id": "action_xxx",',
-          `      "session_id": "${sessionId}",`,
-          '      "command": "单条命令",',
-          '      "risk": "low|medium|high|critical",',
-          '      "reason": "为什么执行",',
-          '      "expected_effect": "预期结果",',
-          '      "timeout_sec": 30',
-          "    }",
-          "  ]",
-          "}",
-          "限制：",
-          "- 最多 5 个 action；",
-          "- 禁止拼接命令，不要包含 ; && || |；",
-          "- 命令必须可在 shell 中直接执行；",
-          "- 如果无法生成可执行步骤，返回 actions=[] 并在 summary 说明原因。",
-        ]).join("\n");
-
-  const buildAgentDecisionSystemPrompt = (terminalContext: string) =>
-    (locale === "en-US"
-      ? [
-          "You are a terminal Agent execution supervisor.",
-          "Use English only for all text fields in JSON (note, summary, reason, expected_effect).",
-          "Based on completed steps, decide whether to continue, update the remaining plan, or stop.",
-          "",
-          buildTerminalFactsForPrompt(terminalContext),
-          "",
-          "Output JSON only. Do not output Markdown. Format:",
-          "{",
-          '  "decision": "continue | update_plan | stop",',
-          '  "note": "short user-facing note",',
-          '  "plan": {',
-          '    "id": "plan_xxx",',
-          `    "session_id": "${sessionId}",`,
-          '    "summary": "optional summary",',
-          '    "actions": [',
-          "      {",
-          '        "id": "action_xxx",',
-          `        "session_id": "${sessionId}",`,
-          '        "command": "single follow-up command only",',
-          '        "risk": "low|medium|high|critical",',
-          '        "reason": "reason",',
-          '        "expected_effect": "expected effect",',
-          '        "timeout_sec": 30',
-          "      }",
-          "    ]",
-          "  }",
-          "}",
-          "Constraints:",
-          "- plan.actions must include only not-yet-executed follow-up steps;",
-          "- Do not repeat executed steps;",
-          "- Return at most 5 follow-up steps;",
-          "- If no plan change is needed, set decision=continue and omit plan;",
-          "- If execution should stop, set decision=stop.",
-        ]
-      : [
-          "你是终端 Agent 执行监督器。",
-          "JSON 中所有文本字段（note/summary/reason/expected_effect）必须使用中文。",
-          "根据已执行步骤结果，决定是否继续执行、更新后续计划或停止。",
-          "",
-          buildTerminalFactsForPrompt(terminalContext),
-          "",
-          "必须仅输出 JSON，不要输出 Markdown。格式：",
-          "{",
-          '  "decision": "continue | update_plan | stop",',
-          '  "note": "给用户的简短说明",',
-          '  "plan": {',
-          '    "id": "plan_xxx",',
-          `    "session_id": "${sessionId}",`,
-          '    "summary": "可选摘要",',
-          '    "actions": [',
-          "      {",
-          '        "id": "action_xxx",',
-          `        "session_id": "${sessionId}",`,
-          '        "command": "仅后续要执行的单条命令",',
-          '        "risk": "low|medium|high|critical",',
-          '        "reason": "原因",',
-          '        "expected_effect": "预期影响",',
-          '        "timeout_sec": 30',
-          "      }",
-          "    ]",
-          "  }",
-          "}",
-          "约束：",
-          "- plan.actions 只包含“尚未执行”的后续步骤；",
-          "- 不要重复已执行步骤；",
-          "- 每次最多返回 5 个后续步骤；",
-          "- 若无需变更计划，decision=continue 且省略 plan；",
-          "- 若应停止执行，decision=stop。",
-        ]).join("\n");
-
-  const buildAgentFinalReportSystemPrompt = (terminalContext: string) =>
-    (locale === "en-US"
-      ? [
-          "You are a terminal Agent reporting assistant.",
-          "Produce a user-readable summary based on execution records.",
-          "",
-          buildTerminalFactsForPrompt(terminalContext),
-          "",
-          "Output requirements:",
-          "- Use concise English Markdown;",
-          "- Must include: overall conclusion, step-by-step results, failure reasons (if any), and next suggestions;",
-          "- For each step, clearly mark success/failure and key details.",
-        ]
-      : [
-          "你是终端 Agent 汇报助手。",
-          "请根据执行记录给出用户可读总结。",
-          "",
-          buildTerminalFactsForPrompt(terminalContext),
-          "",
-          "输出要求：",
-          "- 使用简洁中文 Markdown；",
-          "- 必须包含：总体结论、每一步结果、失败原因（如有）、下一步建议；",
-          "- 每一步结果要明确成功/失败与关键信息。",
-        ]).join("\n");
-
-  const getEffectiveAiSettings = async () => {
-    const settings = await readAiSettings();
-    const selectedModel = aiModel.trim() || settings.model;
-    return selectedModel ? { ...settings, model: selectedModel } : settings;
-  };
-
-  const toRuntimeActions = (actions: AgentPlan["actions"], fallbackSessionId: string) =>
-    actions.slice(0, AGENT_MAX_ACTIONS).map((action) => {
-      const normalizedAction = {
-        ...action,
-        session_id: action.session_id || fallbackSessionId || sessionId,
-        timeout_sec: Math.max(3, Math.min(300, action.timeout_sec || 30)),
-      };
-      const policy = evaluateAgentActionPolicy(
-        {
-          command: normalizedAction.command,
-          risk: normalizedAction.risk,
-          session_id: normalizedAction.session_id,
-        },
-        sessionId,
-      );
-      return {
-        ...normalizedAction,
-        risk: policy.normalized_risk,
-        edited_command: policy.normalized_command || normalizedAction.command,
-        policy,
-        status: policy.status === "blocked" ? "blocked" : "pending",
-        strong_confirm_input: "",
-      } satisfies AgentActionRuntime;
+      return [
+        `**Text attachment:** ${attachment.name}`,
+      ].join("\n");
     });
 
-  const truncateResultText = (text: string | undefined) => {
-    const value = (text || "").trim();
-    if (!value) return "";
-    if (value.length <= AGENT_RESULT_SNIPPET_CHARS) return value;
-    return `${value.slice(0, AGENT_RESULT_SNIPPET_CHARS)}\n...<truncated>`;
+    return [trimmed, ...attachmentSections].filter(Boolean).join("\n\n");
   };
 
-  const waitForUiStateSync = () =>
-    new Promise<void>((resolve) => {
-      if (
-        typeof window !== "undefined" &&
-        typeof window.requestAnimationFrame === "function"
-      ) {
-        window.requestAnimationFrame(() => resolve());
+  const buildAiApiMessageWithAttachments = (
+    content: string,
+    attachments: AiAttachment[],
+  ): AiMessage["content"] => {
+    const trimmed = content.trim();
+    const hasImageAttachment = attachments.some((attachment) => attachment.kind === "image");
+
+    if (!hasImageAttachment) {
+      const attachmentSections = attachments.map((attachment) =>
+        attachment.kind === "text"
+          ? `[Text Attachment: ${attachment.name}]\n${attachment.content}`
+          : `[Image Attachment: ${attachment.name}]`,
+      );
+      return [trimmed, ...attachmentSections].filter(Boolean).join("\n\n");
+    }
+
+    const parts: AiMessagePart[] = [];
+    if (trimmed) {
+      parts.push({ type: "text", text: trimmed });
+    }
+
+    for (const attachment of attachments) {
+      if (attachment.kind === "text") {
+        parts.push({
+          type: "text",
+          text: `[Text Attachment: ${attachment.name}]\n${attachment.content}`,
+        });
+        continue;
+      }
+
+      parts.push({
+        type: "text",
+        text: `[Image Attachment: ${attachment.name}]`,
+      });
+      parts.push({
+        type: "image",
+        mediaType: attachment.mimeType,
+        dataUrl: attachment.content,
+      });
+    }
+
+    return parts;
+  };
+
+  const removeAiAttachment = (attachmentId: string) => {
+    setAiAttachments((prev) => prev.filter((item) => item.id !== attachmentId));
+  };
+
+  const handlePickAiAttachments = async () => {
+    try {
+      const selected = await openDialog({
+        multiple: true,
+        filters: [
+          {
+            name: "Attachments",
+            extensions: [
+              "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg",
+              "txt", "md", "markdown", "log", "json", "yaml", "yml", "xml", "csv", "tsv",
+              "ini", "conf", "config", "sh", "bash", "zsh", "js", "ts", "tsx", "jsx", "py", "rs", "sql",
+            ],
+          },
+        ],
+      });
+      if (!selected) return;
+
+      const paths = Array.isArray(selected) ? selected : [selected];
+      const nextAttachments = await Promise.all(paths.map(async (filePath) => {
+        const name = filePath.split(/[\\/]/).pop() || filePath;
+        const ext = getFileExtension(filePath);
+
+        if (ext in IMAGE_MIME_BY_EXTENSION) {
+          const bytes = await readFile(filePath);
+          const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+          return {
+            id: createMessageId(),
+            kind: "image" as const,
+            name,
+            mimeType: IMAGE_MIME_BY_EXTENSION[ext] || "image/png",
+            content: `data:${IMAGE_MIME_BY_EXTENSION[ext] || "image/png"};base64,${btoa(binary)}`,
+            filePath,
+          };
+        }
+
+        if (TEXT_ATTACHMENT_EXTENSIONS.has(ext)) {
+          const raw = await readTextFile(filePath);
+          return {
+            id: createMessageId(),
+            kind: "text" as const,
+            name,
+            mimeType: "text/plain",
+            content: raw,
+            filePath,
+          };
+        }
+
+        return null;
+      }));
+
+      const validAttachments = nextAttachments.filter((item): item is AiAttachment => Boolean(item));
+      if (validAttachments.length === 0) {
+        setAiError("Only image and text attachments are supported.");
         return;
       }
-      setTimeout(() => resolve(), 0);
-    });
 
-  const extractJsonBlock = (text: string) => {
-    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fenced?.[1]) return fenced[1].trim();
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start >= 0 && end > start) return text.slice(start, end + 1).trim();
-    return "";
-  };
-
-  const parseAgentStepDecision = (raw: string): AgentStepDecision | null => {
-    const jsonText = extractJsonBlock(raw);
-    if (!jsonText) return null;
-    try {
-      const data = JSON.parse(jsonText) as Record<string, unknown>;
-      const decisionRaw = String(data.decision || "").trim().toLowerCase();
-      const decision: AgentStepDecision["decision"] =
-        decisionRaw === "update_plan"
-          ? "update_plan"
-          : decisionRaw === "stop"
-            ? "stop"
-            : "continue";
-      const note = typeof data.note === "string" ? data.note.trim() : "";
-      const parsedPlan = parseAgentPlanFromText(
-        typeof data.plan === "object" && data.plan
-          ? JSON.stringify(data.plan)
-          : typeof data === "object"
-            ? JSON.stringify(data)
-            : "",
-      ).plan;
-      return {
-        decision,
-        note,
-        plan: decision === "update_plan" ? parsedPlan || undefined : undefined,
-      };
-    } catch {
-      return null;
-    }
-  };
-
-  const applyRevisedPlan = (messageId: string, revisedPlan: AgentPlan) => {
-    updateMessageAgentPlan(messageId, (plan) => {
-      const completed = plan.actions.filter(
-        (action) =>
-          action.status === "success" ||
-          action.status === "failed" ||
-          action.status === "blocked" ||
-          action.status === "rejected" ||
-          action.status === "skipped",
-      );
-      const revised = toRuntimeActions(
-        revisedPlan.actions,
-        revisedPlan.session_id || plan.session_id,
-      );
-      return {
-        ...plan,
-        summary: revisedPlan.summary?.trim() || plan.summary,
-        actions: [...completed, ...revised].slice(0, AGENT_MAX_ACTIONS + completed.length),
-      };
-    });
-  };
-
-  const riskLevelLabel = (risk: AgentRisk) => t(`terminal.agent.risk.${risk}`);
-
-  const policyStatusLabel = (
-    status: AgentActionRuntime["policy"]["status"],
-  ) => t(`terminal.agent.policy.${status}`);
-
-  const actionStatusLabel = (status: AgentActionStatus) =>
-    t(`terminal.agent.status.${status}`);
-
-  const buildAgentPlanRuntime = (
-    plan: AgentPlan,
-    userRequest: string,
-    mode: AgentMode,
-  ): AgentPlanRuntime => {
-    const actions = toRuntimeActions(plan.actions, plan.session_id);
-
-    return {
-      id: plan.id,
-      session_id: plan.session_id,
-      summary: plan.summary || t("terminal.agent.plan.generated"),
-      actions,
-      status: normalizeAgentActionStatus(actions.map((item) => item.status)),
-      mode,
-      created_at: Date.now(),
-      user_request: userRequest,
-      thinking: false,
-      final_report_ready: false,
-      activities: [
-        {
-          id: createAgentActivityId(),
-          ts: Date.now(),
-          text: t("terminal.agent.activity.planReady"),
-          tone: "info",
-        },
-      ],
-    };
-  };
-
-  const updateMessageAgentPlan = (
-    messageId: string,
-    updater: (plan: AgentPlanRuntime) => AgentPlanRuntime,
-  ) => {
-    setAiMessages((prev) =>
-      prev.map((msg) => {
-        if (msg.id !== messageId || !msg.agentPlan) return msg;
-        const nextPlan = updater(msg.agentPlan);
-        const normalizedStatus = normalizeAgentActionStatus(
-          nextPlan.actions.map((item) => item.status),
-        );
-        let resolvedStatus = normalizedStatus;
-        if (nextPlan.status === "running" && normalizedStatus === "pending") {
-          resolvedStatus = "running";
+      setAiError(null);
+      setAiAttachments((prev) => {
+        const deduped = new Map(prev.map((item) => [item.name, item]));
+        for (const attachment of validAttachments) {
+          deduped.set(attachment.name, attachment);
         }
-        if (nextPlan.status === "failed" && normalizedStatus === "completed") {
-          resolvedStatus = "failed";
-        }
-        if (nextPlan.status === "stopped" || nextPlan.stop_requested) {
-          resolvedStatus = normalizedStatus === "running" ? "running" : "stopped";
-        }
-        return {
-          ...msg,
-          agentPlan: {
-            ...nextPlan,
-            status: resolvedStatus,
-          },
-        };
-      }),
-    );
-  };
-
-  const appendAgentPlanActivity = (
-    messageId: string,
-    text: string,
-    tone: AgentPlanActivityTone = "info",
-  ) => {
-    const value = text.trim();
-    if (!value) return;
-    updateMessageAgentPlan(messageId, (plan) => {
-      const next = [
-        ...(plan.activities || []),
-        {
-          id: createAgentActivityId(),
-          ts: Date.now(),
-          text: value,
-          tone,
-        },
-      ];
-      if (next.length > AGENT_MAX_ACTIVITY_ITEMS) {
-        next.splice(0, next.length - AGENT_MAX_ACTIVITY_ITEMS);
-      }
-      return {
-        ...plan,
-        activities: next,
-      };
-    });
-  };
-
-  const setAgentPlanThinking = (
-    messageId: string,
-    thinking: boolean,
-  ) => {
-    updateMessageAgentPlan(messageId, (plan) => ({
-      ...plan,
-      thinking,
-    }));
-  };
-
-  const updateAgentAction = (
-    messageId: string,
-    actionId: string,
-    updater: (action: AgentActionRuntime) => AgentActionRuntime,
-  ) => {
-    updateMessageAgentPlan(messageId, (plan) => ({
-      ...plan,
-      actions: plan.actions.map((action) =>
-        action.id === actionId ? updater(action) : action,
-      ),
-    }));
-  };
-
-  const runAgentAction = async (
-    messageId: string,
-    actionId: string,
-    options?: {
-      allowBlocked?: boolean;
-    },
-  ): Promise<AgentActionStatus | null> => {
-    const allowBlocked = options?.allowBlocked === true;
-    const msg = aiMessagesRef.current.find((item) => item.id === messageId);
-    if (!msg?.agentPlan) return null;
-    const plan = msg.agentPlan;
-    const action = plan.actions.find((item) => item.id === actionId);
-    if (!action) return null;
-    if (action.status === "rejected") return action.status;
-    if (action.status === "blocked" && !allowBlocked) return action.status;
-    if (action.status === "running") return "running";
-    if (agentMode !== "confirm_then_execute") {
-      setAiError(t("terminal.agent.mode.suggestBlock"));
-      return null;
-    }
-
-    const command = action.edited_command.trim();
-    if (!command) {
-      setAiError(t("terminal.write.fail"));
-      updateAgentAction(messageId, actionId, (prev) => ({
-        ...prev,
-        status: "failed",
-        error: t("terminal.write.fail"),
-      }));
-      return "failed";
-    }
-
-    const latestPolicy = evaluateAgentActionPolicy(
-      {
-        command,
-        risk: action.risk,
-        session_id: action.session_id,
-      },
-      sessionId,
-    );
-
-    if (latestPolicy.status === "blocked" && !allowBlocked) {
-      setAiError(latestPolicy.reason);
-      updateAgentAction(messageId, actionId, (prev) => ({
-        ...prev,
-        status: "blocked",
-        policy: latestPolicy,
-        risk: latestPolicy.normalized_risk,
-        error: latestPolicy.reason,
-      }));
-      return "blocked";
-    }
-
-    const effectivePolicy =
-      allowBlocked && latestPolicy.status === "blocked"
-        ? {
-            ...latestPolicy,
-            status: "needs_strong_confirmation" as const,
-            reason: `${latestPolicy.reason}（用户强制执行）`,
-          }
-        : latestPolicy;
-
-    updateAgentAction(messageId, actionId, (prev) => ({
-      ...prev,
-      policy: effectivePolicy,
-      risk: effectivePolicy.normalized_risk,
-      status: "running",
-      confirmed_at: Date.now(),
-      error: undefined,
-    }));
-
-    await appendAgentAuditRecord({
-      event: "action_confirmed",
-      mode: agentMode,
-      session_id: sessionId,
-      user_request: plan.user_request,
-      action_id: actionId,
-      command,
-      risk: action.risk,
-      reason: allowBlocked ? `${action.reason} [force_blocked=true]` : action.reason,
-      plan: msg.agentPlanRaw,
-    }).catch(() => {});
-
-    await appendAgentAuditRecord({
-      event: "action_started",
-      mode: agentMode,
-      session_id: sessionId,
-      user_request: plan.user_request,
-      action_id: actionId,
-      command,
-      risk: action.risk,
-      reason: allowBlocked ? `${action.reason} [force_blocked=true]` : action.reason,
-      plan: msg.agentPlanRaw,
-    }).catch(() => {});
-
-    try {
-      const result = await executeAgentActionInTerminal(command, action.timeout_sec);
-
-      const status: AgentActionStatus =
-        !result.timedOut && result.exitCode === 0 ? "success" : "failed";
-
-      updateAgentAction(messageId, actionId, (prev) => ({
-        ...prev,
-        status,
-        result,
-        execution_note:
-          status === "success"
-            ? `exit=${result.exitCode}, ${result.durationMs}ms`
-            : `exit=${result.exitCode}, ${result.durationMs}ms, ${truncateResultText(result.stderr || result.stdout)}`,
-        finished_at: Date.now(),
-        error:
-          status === "failed"
-            ? result.stderr || `exit code ${result.exitCode}`
-            : undefined,
-      }));
-
-      await appendAgentAuditRecord({
-        event: "action_finished",
-        mode: agentMode,
-        session_id: sessionId,
-        user_request: plan.user_request,
-        action_id: actionId,
-        command,
-        risk: action.risk,
-        reason: action.reason,
-        plan: msg.agentPlanRaw,
-        result: {
-          exitCode: result.exitCode,
-          durationMs: result.durationMs,
-          timedOut: result.timedOut,
-          stderr: result.stderr,
-          stdout: result.stdout,
-        },
-      }).catch(() => {});
-
-      return status;
+        return Array.from(deduped.values());
+      });
     } catch (error) {
-      const message = formatError(error);
-      updateAgentAction(messageId, actionId, (prev) => ({
-        ...prev,
-        status: "failed",
-        error: message,
-        execution_note: message,
-        finished_at: Date.now(),
-      }));
-
-      await appendAgentAuditRecord({
-        event: "action_finished",
-        mode: agentMode,
-        session_id: sessionId,
-        user_request: plan.user_request,
-        action_id: actionId,
-        command,
-        risk: action.risk,
-        reason: action.reason,
-        plan: msg.agentPlanRaw,
-        result: {
-          stderr: message,
-        },
-      }).catch(() => {});
-
-      return "failed";
+      setAiError(formatError(error));
     }
-  };
-
-  const askAgentStepDecision = async (
-    messageId: string,
-    actionId: string,
-  ): Promise<AgentStepDecision | null> => {
-    const message = aiMessagesRef.current.find((item) => item.id === messageId);
-    const plan = message?.agentPlan;
-    const action = plan?.actions.find((item) => item.id === actionId);
-    if (!plan || !action) return null;
-
-    const terminalContextForPrompt = getTerminalContext(60);
-    const systemMessage: AiMessage = {
-      role: "system",
-      content: buildAgentDecisionSystemPrompt(terminalContextForPrompt),
-    };
-
-    const payload = {
-      user_request: plan.user_request,
-      current_summary: plan.summary,
-      current_plan: {
-        id: plan.id,
-        session_id: plan.session_id,
-        actions: plan.actions.map((item) => ({
-          id: item.id,
-          command: item.edited_command,
-          status: item.status,
-          risk: item.risk,
-          reason: item.reason,
-          expected_effect: item.expected_effect,
-          timeout_sec: item.timeout_sec,
-        })),
-      },
-      executed_step: {
-        id: action.id,
-        command: action.edited_command,
-        status: action.status,
-        exit_code: action.result?.exitCode,
-        duration_ms: action.result?.durationMs,
-        timed_out: action.result?.timedOut,
-        stdout: truncateResultText(action.result?.stdout),
-        stderr: truncateResultText(action.error || action.result?.stderr),
-      },
-    };
-
-    try {
-      const settings = await getEffectiveAiSettings();
-      const raw = await sendAiChatStream(
-        settings,
-        [systemMessage, { role: "user", content: JSON.stringify(payload, null, 2) }],
-        () => {},
-      );
-      return parseAgentStepDecision(raw);
-    } catch {
-      return null;
-    }
-  };
-
-  const askAgentFinalReport = async (messageId: string): Promise<string | null> => {
-    const message = aiMessagesRef.current.find((item) => item.id === messageId);
-    const plan = message?.agentPlan;
-    if (!plan) return null;
-
-    const terminalContextForPrompt = getTerminalContext(60);
-    const systemMessage: AiMessage = {
-      role: "system",
-      content: buildAgentFinalReportSystemPrompt(terminalContextForPrompt),
-    };
-
-    const payload = {
-      user_request: plan.user_request,
-      final_plan_summary: plan.summary,
-      final_status: plan.status,
-      steps: plan.actions.map((item) => ({
-        id: item.id,
-        command: item.edited_command,
-        status: item.status,
-        risk: item.risk,
-        reason: item.reason,
-        expected_effect: item.expected_effect,
-        exit_code: item.result?.exitCode,
-        duration_ms: item.result?.durationMs,
-        timed_out: item.result?.timedOut,
-        stdout: truncateResultText(item.result?.stdout),
-        stderr: truncateResultText(item.error || item.result?.stderr),
-      })),
-    };
-
-    try {
-      const settings = await getEffectiveAiSettings();
-      return await sendAiChatStream(
-        settings,
-        [systemMessage, { role: "user", content: JSON.stringify(payload, null, 2) }],
-        () => {},
-      );
-    } catch {
-      return null;
-    }
-  };
-
-  const runRemainingAgentActions = async (
-    messageId: string,
-    options?: {
-      allowBlocked?: boolean;
-    },
-  ) => {
-    const allowBlocked = options?.allowBlocked === true;
-    if (agentMode !== "confirm_then_execute") {
-      setAiError(t("terminal.agent.mode.suggestBlock"));
-      return;
-    }
-    if (planExecutionLockRef.current[messageId]) {
-      return;
-    }
-    planExecutionLockRef.current[messageId] = true;
-
-    try {
-      planStopRequestedRef.current[messageId] = false;
-      updateMessageAgentPlan(messageId, (plan) => ({
-        ...plan,
-        stop_requested: false,
-        status: "running",
-        final_report_ready: false,
-      }));
-      setAgentPlanThinking(messageId, false);
-      const initialPlan = aiMessagesRef.current.find((item) => item.id === messageId)?.agentPlan;
-      appendAgentPlanActivity(
-        messageId,
-        t("terminal.agent.activity.planStart", {
-          count: initialPlan?.actions.length || 0,
-        }),
-        "info",
-      );
-
-      while (true) {
-        const current = aiMessagesRef.current.find((item) => item.id === messageId);
-        const plan = current?.agentPlan;
-        if (!plan) break;
-
-        if (planStopRequestedRef.current[messageId]) {
-          updateMessageAgentPlan(messageId, (prev) => ({
-            ...prev,
-            actions: prev.actions.map((action) =>
-              action.status === "pending" ||
-              action.status === "approved" ||
-              (allowBlocked && action.status === "blocked")
-                ? { ...action, status: "skipped" }
-                : action,
-            ),
-            status: "stopped",
-            stop_requested: true,
-          }));
-          appendAgentPlanActivity(
-            messageId,
-            t("terminal.agent.activity.userStopped"),
-            "warn",
-          );
-          break;
-        }
-
-        const next = plan.actions.find(
-          (action) =>
-            action.status === "pending" ||
-            action.status === "approved" ||
-            (allowBlocked && action.status === "blocked"),
-        );
-        if (!next) break;
-        const stepIndex =
-          plan.actions.findIndex((item) => item.id === next.id) + 1;
-        appendAgentPlanActivity(
-          messageId,
-          t("terminal.agent.activity.stepStart", {
-            index: stepIndex,
-            command: next.edited_command,
-          }),
-          "info",
-        );
-
-        const status = await runAgentAction(messageId, next.id, {
-          allowBlocked,
-        });
-        if (status === null) break;
-
-        if (status === "success") {
-          appendAgentPlanActivity(
-            messageId,
-            t("terminal.agent.activity.stepSuccess", {
-              index: stepIndex,
-            }),
-            "success",
-          );
-        } else if (status === "failed") {
-          appendAgentPlanActivity(
-            messageId,
-            t("terminal.agent.activity.stepFailed", {
-              index: stepIndex,
-            }),
-            "error",
-          );
-        } else if (status === "blocked") {
-          appendAgentPlanActivity(
-            messageId,
-            t("terminal.agent.activity.stepBlocked", {
-              index: stepIndex,
-            }),
-            "warn",
-          );
-        }
-
-        await waitForUiStateSync();
-
-        setAgentPlanThinking(messageId, true);
-        appendAgentPlanActivity(
-          messageId,
-          t("terminal.agent.activity.thinkingDecision"),
-          "info",
-        );
-        const decision = await askAgentStepDecision(messageId, next.id);
-        setAgentPlanThinking(messageId, false);
-        if (decision?.note) {
-          updateMessageAgentPlan(messageId, (prev) => ({
-            ...prev,
-            summary: decision.note || prev.summary,
-          }));
-          appendAgentPlanActivity(
-            messageId,
-            t("terminal.agent.activity.decisionNote", {
-              note: decision.note,
-            }),
-            "info",
-          );
-          await waitForUiStateSync();
-        }
-        if (decision?.decision === "update_plan" && decision.plan) {
-          appendAgentPlanActivity(
-            messageId,
-            t("terminal.agent.activity.replanStart"),
-            "warn",
-          );
-          applyRevisedPlan(messageId, decision.plan);
-          appendAgentPlanActivity(
-            messageId,
-            t("terminal.agent.activity.replanDone", {
-              count: decision.plan.actions.length,
-            }),
-            "success",
-          );
-          await waitForUiStateSync();
-        }
-        if (decision?.decision === "stop") {
-          appendAgentPlanActivity(
-            messageId,
-            t("terminal.agent.activity.planStoppedByAgent"),
-            "warn",
-          );
-          stopRemainingAgentActions(messageId);
-          break;
-        }
-      }
-
-      await waitForUiStateSync();
-      setAgentPlanThinking(messageId, true);
-      appendAgentPlanActivity(
-        messageId,
-        t("terminal.agent.activity.thinkingFinalReport"),
-        "info",
-      );
-      const finalReport = await askAgentFinalReport(messageId);
-      setAgentPlanThinking(messageId, false);
-      if (finalReport?.trim()) {
-        setAiMessages((prev) => [
-          ...prev,
-          {
-            id: createMessageId(),
-            role: "assistant",
-            content: finalReport.trim(),
-            createdAt: Date.now(),
-          },
-        ]);
-        updateMessageAgentPlan(messageId, (prev) => ({
-          ...prev,
-          final_report_ready: true,
-        }));
-        appendAgentPlanActivity(
-          messageId,
-          t("terminal.agent.activity.finalReportReady"),
-          "success",
-        );
-      }
-    } finally {
-      setAgentPlanThinking(messageId, false);
-      planExecutionLockRef.current[messageId] = false;
-    }
-  };
-
-  const openForceRunDialog = (messageId: string) => {
-    const message = aiMessagesRef.current.find((item) => item.id === messageId);
-    const blockedCount =
-      message?.agentPlan?.actions.filter((action) => action.status === "blocked").length || 0;
-    if (blockedCount <= 0) {
-      void runRemainingAgentActions(messageId);
-      return;
-    }
-    setForceRunDialog({ messageId, blockedCount });
-    setForceRunConfirmInput("");
-    setForceRunConfirmError(null);
-  };
-
-  const confirmForceRunDialog = async () => {
-    const dialog = forceRunDialog;
-    if (!dialog) return;
-    const keyword = t("terminal.agent.plan.force.keyword").trim();
-    if (forceRunConfirmInput.trim() !== keyword) {
-      setForceRunConfirmError(
-        t("terminal.agent.plan.force.invalid", {
-          keyword,
-        }),
-      );
-      return;
-    }
-    const messageId = dialog.messageId;
-    setForceRunDialog(null);
-    setForceRunConfirmInput("");
-    setForceRunConfirmError(null);
-    await runRemainingAgentActions(messageId, { allowBlocked: true });
-  };
-
-  const stopRemainingAgentActions = (messageId: string) => {
-    planStopRequestedRef.current[messageId] = true;
-    updateMessageAgentPlan(messageId, (plan) => ({
-      ...plan,
-      stop_requested: true,
-    }));
-    void appendAgentAuditRecord({
-      event: "plan_stopped",
-      mode: agentMode,
-      session_id: sessionId,
-      user_request:
-        aiMessagesRef.current.find((item) => item.id === messageId)?.agentPlan?.user_request ||
-        "",
-      plan: aiMessagesRef.current.find((item) => item.id === messageId)?.agentPlanRaw,
-    }).catch(() => {});
   };
 
   const sendAiMessage = async (
     content: string,
-    options?: SendAiMessageOptions,
+    _options?: SendAiMessageOptions,
   ): Promise<string | null> => {
-    if (!content.trim()) return null;
+    const displayContent = buildAiDisplayMessageWithAttachments(content, aiAttachments);
+    const apiContent = buildAiApiMessageWithAttachments(content, aiAttachments);
+    const hasApiTextContent =
+      typeof apiContent === "string"
+        ? apiContent.trim().length > 0
+        : apiContent.some((part) => part.type === "image" || part.text.trim().length > 0);
+    if (!hasApiTextContent) return null;
     setAiError(null);
     setAiBusy(true);
 
-    const useAgentMode = agentMode === "confirm_then_execute";
+    // Stop any existing agent loop
+    if (agentLoopRef.current?.isRunning()) {
+      agentLoopRef.current.stop();
+    }
+
     const userMessage: AiChatMessage = {
       id: createMessageId(),
       role: "user",
-      content,
+      content: apiContent,
       createdAt: Date.now(),
     };
-    const assistantId = createMessageId();
-    const assistantMessage: AiChatMessage = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      createdAt: Date.now(),
-      agentPlanning: useAgentMode,
-    };
-    const requestAbortController = new AbortController();
-    aiStreamAbortRef.current = requestAbortController;
-    aiAbortReasonRef.current = null;
-    const nextMessages = [...aiMessagesRef.current, userMessage];
-    setAiMessages((prev) => [...prev, userMessage, assistantMessage].slice(-MAX_AI_MESSAGES));
+    setAiMessages((prev) => [...prev, userMessage].slice(-MAX_AI_MESSAGES));
+
+    // Append user message block to existing conversation (preserve history)
+    setAgentBlocks((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        type: "user" as AgentBlock["type"],
+        content: displayContent,
+        timestamp: Date.now(),
+      },
+    ]);
+    setAgentRunning(true);
+    setAgentPendingConfirmation(null);
+    appendAgentDebugLog(
+      locale === "zh-CN"
+        ? `开始新一轮对话，现有消息=${aiMessagesRef.current.length}`
+        : `Starting new agent turn, existing messages=${aiMessagesRef.current.length}`,
+    );
 
     try {
       const settings = await readAiSettings();
       const selectedModel = aiModel.trim() || settings.model;
       const nextSettings = selectedModel ? { ...settings, model: selectedModel } : settings;
-      const terminalContextForPrompt = getTerminalContext(60);
-      const baseSystemPrompt = useAgentMode
-        ? buildAgentSystemPrompt(terminalContextForPrompt)
-        : buildConversationSystemPrompt(terminalContextForPrompt);
-      const systemMessage: AiMessage = {
-        role: "system",
-        content: options?.extraSystemPrompt
-          ? [baseSystemPrompt, "", options.extraSystemPrompt].join("\n")
-          : baseSystemPrompt,
-      };
-      const finalContent = await sendAiChatStream(
-        nextSettings,
-        [systemMessage, ...nextMessages.map(({ role, content }) => ({ role, content }))],
-        (delta) => {
-          if (!delta) return;
-          if (useAgentMode) return;
-          setAiMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantId ? { ...msg, content: msg.content + delta } : msg,
-            ),
+      const nextApprovalMode =
+        aiApprovalMode || settings.approvalMode || DEFAULT_APP_SETTINGS["ai.approvalMode"];
+      const priorConversationHistory = [...agentConversationHistoryRef.current];
+      appendAgentDebugLog(
+        locale === "zh-CN"
+          ? `模型=${selectedModel || settings.model} 模式=${nextApprovalMode} 历史轮次=${priorConversationHistory.length}`
+          : `model=${selectedModel || settings.model} mode=${nextApprovalMode} history=${priorConversationHistory.length}`,
+      );
+
+      if (aiAttachments.length > 0) {
+        const multimodalSystemMessage: AiMessage = {
+          role: "system",
+          content:
+            locale === "zh-CN"
+              ? "你是一个多模态助手。直接回答用户，不要输出思考过程、计划、内部推理或自我说明。"
+              : "You are a multimodal assistant. Answer the user directly. Do not output internal reasoning, planning, or self-referential process.",
+        };
+        const multimodalUserMessage: AiMessage = {
+          role: "user",
+          content: apiContent,
+        };
+        const multimodalMessages: AiMessage[] = [
+          ...priorConversationHistory,
+          multimodalSystemMessage,
+          multimodalUserMessage,
+        ];
+
+        const reply = await sendAiChat(nextSettings, multimodalMessages);
+
+        setAgentRunning(false);
+        setAiBusy(false);
+        setAgentPendingConfirmation(null);
+        setAiAttachments([]);
+        const nextMultimodalConversationHistory: AiMessage[] = [
+          ...priorConversationHistory,
+          multimodalUserMessage,
+          { role: "assistant", content: reply },
+        ];
+        agentConversationHistoryRef.current = nextMultimodalConversationHistory.slice(-MAX_AI_MESSAGES);
+        setAiMessages((prev) => [
+          ...prev,
+          {
+            id: createMessageId(),
+            role: "assistant" as const,
+            content: reply,
+            createdAt: Date.now(),
+          },
+        ].slice(-MAX_AI_MESSAGES));
+        setAgentBlocks((prev) => [
+          ...prev,
+          { id: crypto.randomUUID(), type: "done", content: reply, timestamp: Date.now() },
+        ]);
+        return reply;
+      }
+
+      const loop = createAgentLoop({
+        sessionId,
+        aiSettings: nextSettings,
+        approvalMode: nextApprovalMode,
+        terminalContext: () => getTerminalContext(60),
+        locale: locale as "zh-CN" | "en-US",
+        conversationHistory: priorConversationHistory,
+        onThinkingDelta: (thinking) => {
+          appendAgentDebugLog(
+            locale === "zh-CN"
+              ? `thinking 更新 ${thinking.length} chars`
+              : `thinking update ${thinking.length} chars`,
+          );
+          setAgentBlocks((prev) => {
+            const normalized = dropTrailingAgentStatusBlock(prev);
+            const last = normalized[normalized.length - 1];
+            if (last?.type === "thinking") {
+              return [...normalized.slice(0, -1), { ...last, content: thinking }];
+            }
+            return [
+              ...normalized,
+              {
+                id: crypto.randomUUID(),
+                type: "thinking",
+                content: thinking,
+                timestamp: Date.now(),
+              },
+            ];
+          });
+        },
+        onThinkingComplete: (thinkingContent) => {
+          setAgentBlocks((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.type === "thinking") {
+              return [...prev.slice(0, -1), { ...last, content: thinkingContent }];
+            }
+            return prev;
+          });
+        },
+        onActionDecided: (action) => {
+          appendAgentDebugLog(
+            locale === "zh-CN"
+              ? `决策命令: ${action.command}`
+              : `decided command: ${action.command}`,
+          );
+          setAgentBlocks((prev) => [
+            ...prev,
+            {
+              id: action.id,
+              type: "action",
+              content: action.reason,
+              command: action.command,
+              risk: action.risk,
+              status: "pending",
+              timestamp: Date.now(),
+            },
+          ]);
+        },
+        onActionStatusChange: (actionId, status) => {
+          appendAgentDebugLog(
+            locale === "zh-CN"
+              ? `命令状态 ${actionId}: ${status}`
+              : `command status ${actionId}: ${status}`,
+          );
+          setAgentBlocks((prev) =>
+            prev.map((b) => (b.id === actionId ? { ...b, status: status as AgentBlock["status"] } : b)),
           );
         },
-        {
-          signal: requestAbortController.signal,
+        onOutputReceived: (actionId, result) => {
+          appendAgentDebugLog(
+            locale === "zh-CN"
+              ? `命令完成 ${actionId}: exit=${result.exitCode} stdout=${result.stdout.length} stderr=${result.stderr.length}`
+              : `command finished ${actionId}: exit=${result.exitCode} stdout=${result.stdout.length} stderr=${result.stderr.length}`,
+          );
+          setAgentBlocks((prev) => [
+            ...prev,
+            {
+              id: `output-${actionId}`,
+              type: "output",
+              content: result.stdout,
+              exitCode: result.exitCode,
+              stderr: result.stderr,
+              timestamp: Date.now(),
+            },
+            {
+              id: `status-${actionId}`,
+              type: "status",
+              content: "",
+              phase: "analyzing_output",
+              timestamp: Date.now(),
+            },
+          ]);
         },
-      );
-
-      if (!useAgentMode) {
-        return finalContent;
-      }
-
-      const parsed = parseAgentPlanFromText(finalContent);
-      if (!parsed.plan) {
-        setAiError(t("terminal.agent.plan.parseFailed"));
-        setAiMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                  ...msg,
-                  content: parsed.note || finalContent,
-                  agentPlanning: false,
-                }
-              : msg,
-          ),
-        );
-        void appendAgentAuditRecord({
-          event: "plan_parse_failed",
-          mode: agentMode,
-          session_id: sessionId,
-          user_request: content,
-          reason: parsed.error,
-          command: parsed.raw_json || finalContent,
-        }).catch(() => {});
-        return parsed.note || finalContent;
-      }
-
-      const runtimePlan = buildAgentPlanRuntime(parsed.plan, content, agentMode);
-      const assistantContent = parsed.note || t("terminal.agent.plan.generated");
-      setAiMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === assistantId
-            ? {
-                ...msg,
-                content: assistantContent,
-                agentPlan: runtimePlan,
-                agentPlanRaw: parsed.plan || undefined,
-                agentPlanning: false,
+        onConfirmationNeeded: (actionId, action, policy) => {
+          setAgentPendingConfirmation({
+            actionId,
+            command: action.command,
+            risk: policy.normalized_risk,
+            reason: policy.reason,
+          });
+        },
+        onLoopComplete: (summary) => {
+          appendAgentDebugLog(
+            locale === "zh-CN"
+              ? `loop 完成，summary=${summary.length} chars`
+              : `loop complete, summary=${summary.length} chars`,
+          );
+          setAgentRunning(false);
+          setAiBusy(false);
+          setAgentPendingConfirmation(null);
+          const nextConversationHistory: AiMessage[] = [
+            ...priorConversationHistory,
+            { role: "user", content: apiContent },
+            ...(summary.trim() ? [{ role: "assistant" as const, content: summary }] : []),
+          ];
+          agentConversationHistoryRef.current = nextConversationHistory.slice(-MAX_AI_MESSAGES);
+          if (summary.trim()) {
+            setAiMessages((prev) => [
+              ...prev,
+              {
+                id: createMessageId(),
+                role: "assistant" as const,
+                content: summary,
+                createdAt: Date.now(),
+              },
+            ].slice(-MAX_AI_MESSAGES));
+          }
+          if (summary) {
+            setAgentBlocks((prev) => {
+              const normalized = dropTrailingAgentStatusBlock(prev);
+              const last = normalized[normalized.length - 1];
+              if (
+                last?.type === "thinking" &&
+                normalizeAgentBlockText(last.content) === normalizeAgentBlockText(summary)
+              ) {
+                return [
+                  ...normalized.slice(0, -1),
+                  {
+                    ...last,
+                    type: "done" as const,
+                    content: summary,
+                    timestamp: Date.now(),
+                  },
+                ];
               }
-            : msg,
-        ),
-      );
 
-      void appendAgentAuditRecord({
-        event: "plan_created",
-        mode: agentMode,
-        session_id: sessionId,
-        user_request: content,
-        plan: parsed.plan,
-      }).catch(() => {});
-      return assistantContent;
-    } catch (error) {
-      if (isAbortError(error)) {
-        if (aiAbortReasonRef.current === "stop") {
-          setAiError(t("terminal.ai.interrupted"));
-        } else {
-          setAiError(null);
-        }
-        setAiMessages((prev) =>
-          prev.filter((msg) => msg.id !== assistantId || msg.content.trim()),
-        );
-        return null;
-      }
-      const message = formatError(error);
-      setAiError(message);
-      setAiMessages((prev) =>
-        prev.filter((msg) => msg.id !== assistantId || msg.content.trim()),
-      );
+              return [
+                ...normalized,
+                { id: crypto.randomUUID(), type: "done", content: summary, timestamp: Date.now() },
+              ];
+            });
+          }
+        },
+        onError: (error) => {
+          appendAgentDebugLog(
+            locale === "zh-CN" ? `loop 错误: ${error}` : `loop error: ${error}`,
+          );
+          setAgentRunning(false);
+          setAiBusy(false);
+          setAgentPendingConfirmation(null);
+          setAgentBlocks((prev) => [
+            ...dropTrailingAgentStatusBlock(prev),
+            { id: crypto.randomUUID(), type: "error", content: error, timestamp: Date.now() },
+          ]);
+          setAiError(error);
+        },
+        executeCommand: async (command, timeoutSec) => {
+          return await executeAgentActionInTerminal(command, timeoutSec);
+        },
+      });
+
+      agentLoopRef.current = loop;
+      setAiAttachments([]);
+      loop.start(typeof apiContent === "string" ? apiContent : content.trim());
       return null;
-    } finally {
-      if (aiStreamAbortRef.current === requestAbortController) {
-        aiStreamAbortRef.current = null;
-      }
-      aiAbortReasonRef.current = null;
+    } catch (error) {
+      const message = formatError(error);
+      appendAgentDebugLog(
+        locale === "zh-CN" ? `发送失败: ${message}` : `send failed: ${message}`,
+      );
+      setAiError(message);
+      setAgentRunning(false);
       setAiBusy(false);
+      return null;
     }
   };
 
@@ -4168,51 +3659,6 @@ export function XTerminal({
           "2) 至少一个 bash 代码块，包含可直接执行命令；",
           "3) 每条命令后简短说明作用与风险。",
         ].join("\n");
-
-  const seedAiInput = (value: string) => {
-    setAiOpen(true);
-    setAiError(null);
-    setAiInput(value);
-    window.requestAnimationFrame(() => {
-      if (!aiInputRef.current) return;
-      aiInputRef.current.focus();
-      const caret = value.length;
-      aiInputRef.current.setSelectionRange(caret, caret);
-    });
-  };
-
-  const handleAiOnboardAction = async (action: "ask" | "analyze" | "fix") => {
-    if (action === "ask") {
-      seedAiInput(t("terminal.ai.onboard.askSeed"));
-      return;
-    }
-
-    const context = getTerminalContext(60);
-    setAiOpen(true);
-    if (!context) {
-      setAiError(t("terminal.ai.onboard.contextNeeded"));
-      return;
-    }
-
-    setAiError(null);
-    setAiInput("");
-
-    if (action === "analyze") {
-      await sendAiMessage(buildAiPrompt("ask", context));
-      return;
-    }
-
-    const strictCommandPrompt = buildStrictCommandPrompt();
-    const prompt = [t("terminal.ai.quick.fix.prefixEmpty"), "", buildAiPrompt("fix", context)].join("\n");
-    const firstReply = await sendAiMessage(prompt, {
-      extraSystemPrompt: strictCommandPrompt,
-    });
-    if (firstReply && !hasExecutableCommand(firstReply)) {
-      await sendAiMessage(t("terminal.ai.quick.followup.commandsOnly"), {
-        extraSystemPrompt: strictCommandPrompt,
-      });
-    }
-  };
 
   const handleTerminalHashCommand = async (rawCommand: string) => {
     const parsed = parseTerminalHashCommand(rawCommand);
@@ -4307,34 +3753,62 @@ export function XTerminal({
     await sendAiMessage(prompt);
   };
 
-  const handleAgentModeChange = async (nextMode: AgentMode) => {
-    if (nextMode === agentMode) return;
-    setAgentMode(nextMode);
-    try {
-      await writeAppSetting("ai.agentMode", nextMode);
-    } catch (error) {
-      setAiError(formatError(error));
-    }
-  };
-
   useEffect(() => {
     if (!aiOpen) return;
     void syncAiSettings();
   }, [aiOpen]);
 
+  const handleSelectAiApprovalMode = async (mode: AgentApprovalMode) => {
+    setAiApprovalMode(mode);
+    setAiApprovalMenuOpen(false);
+    await writeAppSetting("ai.approvalMode", mode);
+  };
+
+  const aiApprovalModeOptions: Array<{
+    value: AgentApprovalMode;
+    label: string;
+    description: string;
+  }> = [
+    {
+      value: "auto",
+      label: t("terminal.ai.approvalMode.auto"),
+      description: t("terminal.ai.approvalMode.auto.desc"),
+    },
+    {
+      value: "delegate",
+      label: t("terminal.ai.approvalMode.delegate"),
+      description: t("terminal.ai.approvalMode.delegate.desc"),
+    },
+    {
+      value: "copilot",
+      label: t("terminal.ai.approvalMode.copilot"),
+      description: t("terminal.ai.approvalMode.copilot.desc"),
+    },
+  ];
+
+  const activeAiApprovalMode =
+    aiApprovalModeOptions.find((item) => item.value === aiApprovalMode) ??
+    aiApprovalModeOptions[0];
+
   useEffect(() => {
-    if (!aiModelMenuOpen) return;
+    if (!aiModelMenuOpen && !aiApprovalMenuOpen) return;
 
     const handleClick = (event: MouseEvent) => {
       const target = event.target as Node | null;
-      if (!target || !aiModelMenuRef.current) return;
-      if (!aiModelMenuRef.current.contains(target)) {
+      if (!target) return;
+      if (aiModelMenuRef.current && !aiModelMenuRef.current.contains(target)) {
         setAiModelMenuOpen(false);
+      }
+      if (aiApprovalMenuRef.current && !aiApprovalMenuRef.current.contains(target)) {
+        setAiApprovalMenuOpen(false);
       }
     };
 
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAiModelMenuOpen(false);
+      if (event.key === "Escape") {
+        setAiModelMenuOpen(false);
+        setAiApprovalMenuOpen(false);
+      }
     };
 
     document.addEventListener("mousedown", handleClick);
@@ -4343,7 +3817,7 @@ export function XTerminal({
       document.removeEventListener("mousedown", handleClick);
       document.removeEventListener("keydown", handleKey);
     };
-  }, [aiModelMenuOpen]);
+  }, [aiApprovalMenuOpen, aiModelMenuOpen]);
 
   useEffect(() => {
     const focusTerminalForEvent = (event: Event) => {
@@ -4410,7 +3884,7 @@ export function XTerminal({
         return;
       }
       setTerminalIssue(null);
-      void recoverSessionAfterUnlock();
+      void ensureSessionReady("unlock");
     };
 
     window.addEventListener("app-reconnect-terminals", onReconnectAllTerminals);
@@ -4490,6 +3964,7 @@ export function XTerminal({
     setTermMenu(null);
   };
 
+  // @ts-expect-error openSmartMenu temporarily unused after AI panel refactor (smart table UI will be re-integrated)
   const openSmartMenu = (
     event: {
       preventDefault: () => void;
@@ -4676,6 +4151,7 @@ export function XTerminal({
 
       term.open(terminalRef.current);
       fit.fit();
+      restoreTerminalSnapshot(term);
 
       terminalInstance.current = term;
       fitAddon.current = fit;
@@ -4844,7 +4320,7 @@ export function XTerminal({
         };
       }
 
-      void connectNow();
+      void ensureSessionReady("mount");
 
       // Listen for terminal output from backend
       const unlisten = await listen<{ session_id: string; data: string }>(
@@ -5234,6 +4710,7 @@ export function XTerminal({
           timedOut: false,
         });
       }
+      captureTerminalSnapshot();
       term?.dispose();
       if (typingFlushTimerRef.current !== null) {
         window.clearTimeout(typingFlushTimerRef.current);
@@ -5307,12 +4784,6 @@ export function XTerminal({
   useEffect(() => {
     setConnectionLogOpen(false);
   }, [sessionId]);
-
-  useEffect(() => {
-    if (connStatus !== "error") {
-      setConnectionLogOpen(false);
-    }
-  }, [connStatus]);
 
   useEffect(
     () => () => {
@@ -5394,17 +4865,15 @@ export function XTerminal({
             {statusText}
             {connStatus === "error" && connError ? `：${connError}` : ""}
           </span>
-          {connStatus === "error" && (
-            <button
-              className={`xterminal-topbar-btn ${connectionLogOpen ? "xterminal-topbar-btn--active" : ""}`}
-              type="button"
-              onClick={() => setConnectionLogOpen((prev) => !prev)}
-              title={locale === "zh-CN" ? "连接日志" : "Connection log"}
-              aria-label={locale === "zh-CN" ? "连接日志" : "Connection log"}
-            >
-              <AppIcon icon="material-symbols:article-outline-rounded" size={18} />
-            </button>
-          )}
+          <button
+            className={`xterminal-topbar-btn ${connectionLogOpen ? "xterminal-topbar-btn--active" : ""}`}
+            type="button"
+            onClick={() => setConnectionLogOpen((prev) => !prev)}
+            title={locale === "zh-CN" ? "连接日志" : "Connection log"}
+            aria-label={locale === "zh-CN" ? "连接日志" : "Connection log"}
+          >
+            <AppIcon icon="material-symbols:article-outline-rounded" size={18} />
+          </button>
         </div>
 
         <div className="xterminal-topbar-right">
@@ -5483,17 +4952,23 @@ export function XTerminal({
         </div>
       </div>
 
-      {connectionLogOpen && connectionLogs.length > 0 && (
+      {connectionLogOpen && (
         <div className="xterminal-connect-log" role="status" aria-live="polite">
           <div className="xterminal-connect-log-title">
             {locale === "zh-CN" ? "连接日志" : "Connection Log"}
           </div>
           <div className="xterminal-connect-log-list">
-            {connectionLogs.slice(-8).map((line, index) => (
-              <div key={`${line}-${index}`} className="xterminal-connect-log-line">
-                {line}
+            {connectionLogs.length > 0 ? (
+              connectionLogs.slice(-8).map((line, index) => (
+                <div key={`${line}-${index}`} className="xterminal-connect-log-line">
+                  {line}
+                </div>
+              ))
+            ) : (
+              <div className="xterminal-connect-log-line">
+                {locale === "zh-CN" ? "暂无连接日志" : "No connection logs yet"}
               </div>
-            ))}
+            )}
           </div>
         </div>
       )}
@@ -5664,14 +5139,6 @@ export function XTerminal({
                 onDragOver={handleSftpDragOver}
                 onDrop={(event) => void handleSftpDrop(event)}
               >
-                {sftpDragging && (
-                  <div className="xterminal-sftp-drop-overlay">
-                    <div className="xterminal-sftp-drop-content">
-                      <AppIcon icon="material-symbols:upload-rounded" size={24} />
-                      <span>{t("terminal.sftp.dropHint")}</span>
-                    </div>
-                  </div>
-                )}
                 <div className="xterminal-sftp-header">
                   <div className="xterminal-sftp-title">
                     {t("terminal.sftp.title")}
@@ -5748,40 +5215,12 @@ export function XTerminal({
                   {t("terminal.sftp.col.size")}
                 </span>
               </div>
-              {uploadProgress && (
-                <div className="xterminal-sftp-progress">
-                  {uploadProgress}
-                </div>
-              )}
-              {sftpNotice && (
-                <div
-                  className={`xterminal-sftp-notice xterminal-sftp-notice--${sftpNotice.tone}`}
-                  role={sftpNotice.tone === "error" ? "alert" : "status"}
-                >
-                  <AppIcon
-                    className="xterminal-sftp-notice-icon"
-                    icon={
-                      sftpNotice.tone === "error"
-                        ? "material-symbols:error-outline-rounded"
-                        : sftpNotice.tone === "success"
-                          ? "material-symbols:check-circle-outline-rounded"
-                          : "material-symbols:info-outline-rounded"
-                    }
-                    size={15}
-                  />
-                  <span className="xterminal-sftp-notice-text">{sftpNotice.message}</span>
-                  <button
-                    type="button"
-                    className="xterminal-sftp-notice-close"
-                    aria-label={t("terminal.sftp.notice.close")}
-                    onClick={() => setSftpNotice(null)}
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
               <div
                 className="xterminal-sftp-body"
+                onDragEnter={handleSftpDragEnter}
+                onDragLeave={handleSftpDragLeave}
+                onDragOver={handleSftpDragOver}
+                onDrop={(event) => void handleSftpDrop(event)}
                 onPointerDown={(event) => {
                   if (event.button !== 2) return;
                   if (isSftpItemTarget(event.target)) return;
@@ -5792,6 +5231,18 @@ export function XTerminal({
                   openSftpMenu(event, null);
                 }}
               >
+                {sftpDragging && (
+                  <div className="xterminal-sftp-drop-overlay">
+                    <div className="xterminal-sftp-drop-content">
+                      <AppIcon icon="material-symbols:upload-rounded" size={24} />
+                      <span>
+                        {sftpDropTarget
+                          ? t("terminal.sftp.dropHintTarget", { name: sftpDropTarget.name })
+                          : t("terminal.sftp.dropHint")}
+                      </span>
+                    </div>
+                  </div>
+                )}
                 {sftpLoading && (
                   <div className="xterminal-sftp-state xterminal-sftp-state--loading">
                     <AppIcon
@@ -5804,7 +5255,12 @@ export function XTerminal({
                 )}
                 {!sftpLoading && sftpError && (
                   <div className="xterminal-sftp-state xterminal-sftp-state--error">
-                    {sftpError}
+                    <AppIcon
+                      className="xterminal-sftp-notice-icon"
+                      icon="material-symbols:error-outline-rounded"
+                      size={16}
+                    />
+                    <span className="xterminal-sftp-notice-text">{sftpError}</span>
                     <button
                       type="button"
                       className="xterminal-sftp-error-close"
@@ -5824,7 +5280,11 @@ export function XTerminal({
                     {sftpEntries.map((entry) => (
                       <li
                         key={entry.name}
-                        className={`xterminal-sftp-item ${entry.is_dir ? "xterminal-sftp-item--dir" : "xterminal-sftp-item--file"}`}
+                        className={`xterminal-sftp-item ${entry.is_dir ? "xterminal-sftp-item--dir" : "xterminal-sftp-item--file"} ${
+                          sftpDropTarget?.name === entry.name && entry.is_dir ? "xterminal-sftp-item--drop-target" : ""
+                        }`}
+                        data-drop-path={entry.is_dir && entry.name !== ".." ? buildNestedRemotePath(sftpPath || "/", entry.name) : undefined}
+                        data-drop-name={entry.is_dir && entry.name !== ".." ? entry.name : undefined}
                         onClick={() => handleEntryClick(entry)}
                         onDoubleClick={() => {
                           if (entry.is_dir) return;
@@ -6018,32 +5478,6 @@ export function XTerminal({
 	                    <div className="xterminal-ai-title">
 	                      {t("terminal.ai.title")}
 	                    </div>
-                    <div className="xterminal-agent-mode" role="group" aria-label="agent mode">
-                      <button
-                        type="button"
-                        className={`xterminal-agent-mode-btn${
-                          agentMode === "suggest_only" ? " is-active" : ""
-                        }`}
-                        onClick={() => {
-                          void handleAgentModeChange("suggest_only");
-                        }}
-                        disabled={aiBusy}
-                      >
-                        {t("terminal.agent.mode.suggest")}
-                      </button>
-                      <button
-                        type="button"
-                        className={`xterminal-agent-mode-btn${
-                          agentMode === "confirm_then_execute" ? " is-active" : ""
-                        }`}
-                        onClick={() => {
-                          void handleAgentModeChange("confirm_then_execute");
-                        }}
-                        disabled={aiBusy}
-                      >
-                        {t("terminal.agent.mode.confirm")}
-                      </button>
-                    </div>
                   </div>
                   <button
                     type="button"
@@ -6055,454 +5489,20 @@ export function XTerminal({
                   </button>
               </div>
               <div className="xterminal-ai-body">
-                <div
-                  className="xterminal-ai-history"
-                  ref={aiHistoryRef}
-                  onScroll={updateAiAutoStickFlag}
-                >
-	                  {hasAiInsights && (
-	                    <section className={`xterminal-ai-context${aiInsightsOpen ? " is-open" : ""}`}>
-	                      <button
-	                        type="button"
-	                        className="xterminal-ai-context-toggle"
-	                        onClick={() => setAiInsightsOpen((prev) => !prev)}
-	                        aria-expanded={aiInsightsOpen}
-	                      >
-	                        <div className="xterminal-ai-context-copy">
-	                          <div className="xterminal-ai-context-title">
-	                            {t("terminal.ai.context.title")}
-	                          </div>
-	                          <div className="xterminal-ai-context-summary">
-	                            {t(aiContextSummaryKey)}
-	                          </div>
-	                        </div>
-	                        <AppIcon
-	                          className={`xterminal-ai-context-caret${aiInsightsOpen ? " is-open" : ""}`}
-	                          icon="material-symbols:keyboard-arrow-down-rounded"
-	                          size={18}
-	                        />
-	                      </button>
-	                      {aiInsightsOpen && (
-	                        <div className="xterminal-ai-context-body">
-	                          <div className="xterminal-ai-insights">
-	                            {smartTable && (
-	                              <section className="xterminal-ai-card">
-	                                <div className="xterminal-ai-card-head">
-	                                  <div className="xterminal-ai-card-title">
-	                                    <AppIcon icon="material-symbols:table-view-rounded" size={15} />
-	                                    {t("terminal.ai.smartTable.title")}
-	                                  </div>
-	                                  <span className="xterminal-ai-card-time">
-	                                    {new Date(smartTable.updatedAt).toLocaleTimeString()}
-	                                  </span>
-	                                </div>
-	                                <div className="xterminal-ai-card-subtitle">
-	                                  {t("terminal.ai.smartTable.command", { command: smartTable.command })}
-	                                </div>
-	                                {smartTable.kind === "docker-ps" ? (
-	                                  <div className="xterminal-ai-table">
-	                                    <div className="xterminal-ai-table-head xterminal-ai-table-head--docker">
-	                                      <span>{t("terminal.ai.table.docker.name")}</span>
-	                                      <span>{t("terminal.ai.table.docker.image")}</span>
-	                                      <span>{t("terminal.ai.table.docker.status")}</span>
-	                                      <span>{t("terminal.ai.table.docker.ports")}</span>
-	                                    </div>
-	                                    <div className="xterminal-ai-table-body">
-	                                      {smartTable.rows.map((row) => (
-	                                        <button
-	                                          key={row.id}
-	                                          type="button"
-	                                          className="xterminal-ai-table-row xterminal-ai-table-row--docker"
-	                                          onClick={(event) =>
-	                                            openSmartMenu(event, {
-	                                              kind: "docker-ps",
-	                                              row,
-	                                              x: event.clientX,
-	                                              y: event.clientY,
-	                                            })
-	                                          }
-	                                        >
-	                                          <span>{row.name || row.containerId}</span>
-	                                          <span>{row.image || "--"}</span>
-	                                          <span>{row.status || "--"}</span>
-	                                          <span>{row.ports || "--"}</span>
-	                                        </button>
-	                                      ))}
-	                                    </div>
-	                                  </div>
-	                                ) : (
-	                                  <div className="xterminal-ai-table">
-	                                    <div className="xterminal-ai-table-head xterminal-ai-table-head--ls">
-	                                      <span>{t("terminal.ai.table.ls.name")}</span>
-	                                      <span>{t("terminal.ai.table.ls.mode")}</span>
-	                                      <span>{t("terminal.ai.table.ls.size")}</span>
-	                                      <span>{t("terminal.ai.table.ls.modified")}</span>
-	                                    </div>
-	                                    <div className="xterminal-ai-table-body">
-	                                      {smartTable.rows.map((row) => (
-	                                        <button
-	                                          key={row.id}
-	                                          type="button"
-	                                          className="xterminal-ai-table-row xterminal-ai-table-row--ls"
-	                                          onClick={(event) =>
-	                                            openSmartMenu(event, {
-	                                              kind: "ls",
-	                                              row,
-	                                              x: event.clientX,
-	                                              y: event.clientY,
-	                                            })
-	                                          }
-	                                        >
-	                                          <span>{row.name}</span>
-	                                          <span>{row.mode}</span>
-	                                          <span>{row.size}</span>
-	                                          <span>{row.modified}</span>
-	                                        </button>
-	                                      ))}
-	                                    </div>
-	                                  </div>
-	                                )}
-	                              </section>
-	                            )}
-	                            {logSummaries.length > 0 && (
-	                              <section className="xterminal-ai-card xterminal-ai-card--log">
-	                                <div className="xterminal-ai-card-head">
-	                                  <div className="xterminal-ai-card-title">
-	                                    <AppIcon icon="material-symbols:analytics-rounded" size={15} />
-	                                    {t("terminal.ai.logSummary.title")}
-	                                  </div>
-	                                </div>
-	                                <div className="xterminal-ai-log-list">
-	                                  {[...logSummaries].reverse().map((item) => (
-	                                    <div key={item.id} className="xterminal-ai-log-item">
-	                                      <div className="xterminal-ai-log-time">
-	                                        {new Date(item.ts).toLocaleTimeString()}
-	                                      </div>
-	                                      <div className="xterminal-ai-log-text">
-	                                        {t("terminal.ai.logSummary.line", {
-	                                          loginFailed: item.loginFailed,
-	                                          dbTimeout: item.dbTimeout,
-	                                          errorCount: item.errorCount,
-	                                        })}
-	                                      </div>
-	                                    </div>
-	                                  ))}
-	                                </div>
-	                              </section>
-	                            )}
-	                          </div>
-	                        </div>
-	                      )}
-	                    </section>
-	                  )}
-                  {aiMessages.length === 0 && (
-                    <section className="xterminal-ai-empty xterminal-ai-onboard">
-                      <div className="xterminal-ai-onboard-badge">
-                        {t("terminal.ai.onboard.badge")}
-                      </div>
-                      <div className="xterminal-ai-onboard-title">
-                        {t("terminal.ai.onboard.title")}
-                      </div>
-                      <div className="xterminal-ai-onboard-hint">
-                        <AppIcon icon="material-symbols:tips-and-updates-outline-rounded" size={16} />
-                        <span>
-                          {t(
-                            hasAiInsights
-                              ? "terminal.ai.onboard.hint.ready"
-                              : "terminal.ai.onboard.hint",
-                          )}
-                        </span>
-                      </div>
-                      <div className="xterminal-ai-onboard-actions">
-                        <button
-                          type="button"
-                          className="xterminal-ai-onboard-action"
-                          onClick={() => {
-                            void handleAiOnboardAction("analyze");
-                          }}
-                        >
-                          <div className="xterminal-ai-onboard-action-title">
-                            {t("terminal.ai.onboard.action.analyze.title")}
-                          </div>
-                          <div className="xterminal-ai-onboard-action-desc">
-                            {t("terminal.ai.onboard.action.analyze.desc")}
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          className="xterminal-ai-onboard-action"
-                          onClick={() => {
-                            void handleAiOnboardAction("fix");
-                          }}
-                        >
-                          <div className="xterminal-ai-onboard-action-title">
-                            {t("terminal.ai.onboard.action.fix.title")}
-                          </div>
-                          <div className="xterminal-ai-onboard-action-desc">
-                            {t("terminal.ai.onboard.action.fix.desc")}
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          className="xterminal-ai-onboard-action"
-                          onClick={() => {
-                            void handleAiOnboardAction("ask");
-                          }}
-                        >
-                          <div className="xterminal-ai-onboard-action-title">
-                            {t("terminal.ai.onboard.action.ask.title")}
-                          </div>
-                          <div className="xterminal-ai-onboard-action-desc">
-                            {t("terminal.ai.onboard.action.ask.desc")}
-                          </div>
-                        </button>
-                      </div>
-                      <div className="xterminal-ai-onboard-shortcuts">
-                        <span className="xterminal-ai-onboard-shortcuts-label">
-                          {t("terminal.ai.onboard.shortcuts")}
-                        </span>
-                        <code>#ai</code>
-                        <code>#fix</code>
-                      </div>
-                    </section>
-                  )}
-                  {aiMessages.map((msg, index) => {
-                    const prev = aiMessages[index - 1];
-                    const grouped = prev && prev.role === msg.role;
-                    const plan = msg.agentPlan;
-                    const showThinking =
-                      msg.role === "assistant" &&
-                      !plan &&
-                      !msg.content.trim();
-                    const hasBlockedActions =
-                      !!plan?.actions.some((action) => action.status === "blocked");
-                    const hasRunnableActions =
-                      !!plan?.actions.some(
-                        (action) =>
-                          action.status === "pending" ||
-                          action.status === "approved" ||
-                          action.status === "blocked",
-                      );
-                    return (
-                    <div
-                      key={msg.id}
-                      className={`xterminal-ai-message xterminal-ai-message--${msg.role}${grouped ? " xterminal-ai-message--grouped" : ""}`}
-                    >
-                      <div className="xterminal-ai-content">
-                        {showThinking ? (
-                          <div className="xterminal-ai-thinking">
-                            <span className="xterminal-ai-thinking-dot" aria-hidden="true" />
-                            <span>
-                              {msg.agentPlanning
-                                ? t("terminal.agent.planning")
-                                : t("terminal.ai.thinking")}
-                            </span>
-                          </div>
-                        ) : (
-                          <AiRenderer content={msg.content} sessionId={sessionId} useLocal={isLocal} role={msg.role} />
-                        )}
-                      </div>
-                      {plan && (
-                        <div className="xterminal-agent-plan">
-                          <div className="xterminal-agent-plan-head">
-                            <div className="xterminal-agent-plan-title">
-                              {t("terminal.agent.card.title")}
-                            </div>
-                          </div>
-                          <div className="xterminal-agent-plan-summary">
-                            {t("terminal.agent.card.summary", {
-                              summary: plan.summary,
-                            })}
-                          </div>
-                          <div className="xterminal-agent-plan-session">
-                            {t("terminal.agent.card.session", {
-                              sessionId: plan.session_id,
-                            })}
-                          </div>
-                          {plan.actions.length === 0 && (
-                            <div className="xterminal-agent-plan-empty">
-                              {t("terminal.agent.card.empty")}
-                            </div>
-                          )}
-                          {plan.actions.map((action, actionIndex) => (
-                            <div
-                              key={action.id}
-                              className={`xterminal-agent-action xterminal-agent-action--${action.status}`}
-                            >
-                              <div className="xterminal-agent-action-head">
-                                <div className="xterminal-agent-action-index">
-                                  #{actionIndex + 1}
-                                </div>
-                                <div className="xterminal-agent-action-badges">
-                                  <span className={`xterminal-agent-risk xterminal-agent-risk--${action.risk}`}>
-                                    {riskLevelLabel(action.risk)}
-                                  </span>
-                                  <span className={`xterminal-agent-status xterminal-agent-status--${action.status}`}>
-                                    {actionStatusLabel(action.status)}
-                                  </span>
-                                </div>
-                              </div>
-
-                              <pre className="xterminal-agent-command-readonly">
-                                {action.edited_command}
-                              </pre>
-
-                              <div className="xterminal-agent-action-meta">
-                                <span>
-                                  {t("terminal.agent.action.policy", {
-                                    value: `${policyStatusLabel(action.policy.status)} / ${action.policy.reason}`,
-                                  })}
-                                </span>
-                                <span>
-                                  {t("terminal.agent.action.timeout", { value: action.timeout_sec })}
-                                </span>
-                              </div>
-                              {!!action.reason && (
-                                <div className="xterminal-agent-action-text">
-                                  {t("terminal.agent.action.reason", { value: action.reason })}
-                                </div>
-                              )}
-                              {!!action.expected_effect && (
-                                <div className="xterminal-agent-action-text">
-                                  {t("terminal.agent.action.expected", {
-                                    value: action.expected_effect,
-                                  })}
-                                </div>
-                              )}
-
-                              {!!action.execution_note && (
-                                <div className="xterminal-agent-action-note">
-                                  {action.execution_note}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                          <div className="xterminal-agent-plan-footer">
-                            <div className="xterminal-agent-plan-actions">
-                              <button
-                                type="button"
-                                className={`xterminal-agent-plan-btn${
-                                  hasBlockedActions ? " xterminal-agent-plan-btn--danger" : ""
-                                }`}
-                                onClick={() => {
-                                  if (hasBlockedActions) {
-                                    openForceRunDialog(msg.id);
-                                    return;
-                                  }
-                                  void runRemainingAgentActions(msg.id);
-                                }}
-                                disabled={
-                                  agentMode !== "confirm_then_execute" ||
-                                  plan.status === "running" ||
-                                  !hasRunnableActions ||
-                                  plan.actions.some((action) => action.status === "running")
-                                }
-                              >
-                                {t("terminal.agent.plan.executeRemaining")}
-                              </button>
-                              <button
-                                type="button"
-                                className="xterminal-agent-plan-btn xterminal-agent-plan-btn--ghost"
-                                onClick={() => stopRemainingAgentActions(msg.id)}
-                                disabled={
-                                  plan.status !== "running" &&
-                                  !plan.actions.some((action) => action.status === "running")
-                                }
-                              >
-                                {t("terminal.agent.plan.stopRemaining")}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                  })}
-                  {latestAgentPlanForActivity &&
-                    !latestAgentPlanForActivity.final_report_ready &&
-                    (latestAgentPlanForActivity.thinking ||
-                      latestAgentActivities.length > 0) && (
-                    <section className="xterminal-agent-activity-panel">
-                      <div className="xterminal-agent-activity-head">
-                        <div className="xterminal-agent-activity-title">
-                          {t("terminal.agent.activity.title")}
-                        </div>
-                        {canExpandAgentActivities && (
-                          <button
-                            type="button"
-                            className="xterminal-agent-activity-toggle"
-                            aria-expanded={agentActivityExpanded}
-                            aria-label={
-                              agentActivityExpanded
-                                ? t("terminal.agent.activity.collapse")
-                                : t("terminal.agent.activity.expand")
-                            }
-                            title={
-                              agentActivityExpanded
-                                ? t("terminal.agent.activity.collapse")
-                                : t("terminal.agent.activity.expand")
-                            }
-                            onClick={() => setAgentActivityExpanded((prev) => !prev)}
-                          >
-                            <AppIcon
-                              icon={
-                                agentActivityExpanded
-                                  ? "material-symbols:expand-less-rounded"
-                                  : "material-symbols:expand-more-rounded"
-                              }
-                              size={16}
-                            />
-                          </button>
-                        )}
-                      </div>
-                      {latestAgentPlanForActivity.thinking && (
-                        <div className="xterminal-agent-plan-thinking" role="status" aria-live="polite">
-                          <span
-                            className="xterminal-agent-plan-thinking-dot"
-                            aria-hidden="true"
-                          />
-                          <span>{t("terminal.agent.activity.thinkingStatus")}</span>
-                        </div>
-                      )}
-                      {latestAgentActivities.length > 0 && agentActivityExpanded && (
-                        <div
-                          className="xterminal-agent-activity-list"
-                          role="log"
-                          aria-live="polite"
-                          ref={agentActivityListRef}
-                        >
-                          {latestAgentActivities.map((activity) => (
-                            <div
-                              key={activity.id}
-                              className={`xterminal-agent-activity-item xterminal-agent-activity-item--${activity.tone}`}
-                            >
-                              <span className="xterminal-agent-activity-time">
-                                {formatAgentActivityTime(activity.ts)}
-                              </span>
-                              <span className="xterminal-agent-activity-text">
-                                {activity.text}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {latestAgentActivity && !agentActivityExpanded && (
-                        <div className="xterminal-agent-activity-current">
-                          <div
-                            className={`xterminal-agent-activity-item xterminal-agent-activity-item--${latestAgentActivity.tone}`}
-                          >
-                            <span className="xterminal-agent-activity-time">
-                              {formatAgentActivityTime(latestAgentActivity.ts)}
-                            </span>
-                            <span className="xterminal-agent-activity-text">
-                              {latestAgentActivity.text}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-                    </section>
-                  )}
-                </div>
+                <AgentStreamView
+                  blocks={agentBlocks}
+                  isRunning={agentRunning}
+                  pendingConfirmation={agentPendingConfirmation}
+                  onConfirm={(actionId) => {
+                    setAgentPendingConfirmation(null);
+                    agentLoopRef.current?.confirmAction(actionId);
+                  }}
+                  onReject={(actionId) => {
+                    setAgentPendingConfirmation(null);
+                    agentLoopRef.current?.rejectAction(actionId);
+                  }}
+                  onCopy={(text) => clipboardWrite(text)}
+                />
                 {aiError && <div className="xterminal-ai-error">{aiError}</div>}
                 <div className="xterminal-ai-input">
 	                  <div className="xterminal-ai-input-box">
@@ -6522,54 +5522,136 @@ export function XTerminal({
                       }}
                       disabled={aiBusy}
                     />
+                      {aiAttachments.length > 0 && (
+                        <div className="xterminal-ai-attachments">
+                          {aiAttachments.map((attachment) => (
+                            <span key={attachment.id} className="xterminal-ai-attachment-chip">
+                              <AppIcon
+                                icon={attachment.kind === "image" ? "proicons:image" : "material-symbols:description-outline-rounded"}
+                                size={14}
+                              />
+                              <span className="xterminal-ai-attachment-name">{attachment.name}</span>
+                              <button
+                                type="button"
+                                className="xterminal-ai-attachment-remove"
+                                onClick={() => removeAiAttachment(attachment.id)}
+                                aria-label={t("common.close")}
+                                title={t("common.close")}
+                                disabled={aiBusy}
+                              >
+                                <AppIcon icon="material-symbols:close-rounded" size={14} />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
 	                      <div className="xterminal-ai-input-footer">
 	                      <div className="xterminal-ai-input-meta">
-	                        <div className="xterminal-ai-model-dropdown" ref={aiModelMenuRef}>
                           <button
                             type="button"
-                            className={`xterminal-ai-model-pill${aiModelMenuOpen ? " xterminal-ai-model-pill--open" : ""}`}
-                            onClick={() => setAiModelMenuOpen((prev) => !prev)}
+                            className="xterminal-ai-footer-icon-btn"
+                            onClick={() => void handlePickAiAttachments()}
+                            title={t("terminal.ai.attach")}
+                            aria-label={t("terminal.ai.attach")}
                             disabled={aiBusy}
-                            aria-haspopup="listbox"
-                            aria-expanded={aiModelMenuOpen}
                           >
-                            <AppIcon
-                              className="xterminal-ai-model-icon"
-                              icon="proicons:egg-fried"
-                              size={16}
-                            />
-                            <span className="xterminal-ai-model-value">
-                              {aiModel || t("terminal.ai.model.placeholder")}
-                            </span>
-                            <AppIcon
-                              className="xterminal-ai-model-caret"
-                              icon="material-symbols:keyboard-arrow-down-rounded"
-                              size={16}
-                            />
+                            <AppIcon icon="material-symbols:add-rounded" size={18} />
                           </button>
-                          {aiModelMenuOpen && (
-                            <div className="xterminal-ai-model-menu" role="listbox">
-                              {modelOptionsWithCurrent.map((model) => (
-                                <button
-                                  key={model}
-                                  type="button"
-                                  className={`xterminal-ai-model-item${model === aiModel ? " is-active" : ""}`}
-                                  onClick={() => {
-                                    aiModelTouchedRef.current = true;
-                                    setAiModel(model);
-                                    setAiModelMenuOpen(false);
-                                  }}
-                                  role="option"
-                                  aria-selected={model === aiModel}
-                                >
-                                  {model}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
+                          <div className="xterminal-ai-mode-dropdown" ref={aiApprovalMenuRef}>
+                            <button
+                              type="button"
+                              className={`xterminal-ai-mode-pill${aiApprovalMenuOpen ? " xterminal-ai-mode-pill--open" : ""}`}
+                              onClick={() => {
+                                setAiModelMenuOpen(false);
+                                setAiApprovalMenuOpen((prev) => !prev);
+                              }}
+                              disabled={aiBusy}
+                              aria-haspopup="listbox"
+                              aria-expanded={aiApprovalMenuOpen}
+                              title={t("terminal.ai.approvalMode.title")}
+                            >
+                              <span className="xterminal-ai-mode-value">
+                                {activeAiApprovalMode.label}
+                              </span>
+                              <AppIcon
+                                className="xterminal-ai-model-caret"
+                                icon="material-symbols:keyboard-arrow-down-rounded"
+                                size={16}
+                              />
+                            </button>
+                            {aiApprovalMenuOpen && (
+                              <div className="xterminal-ai-mode-menu" role="listbox">
+                                {aiApprovalModeOptions.map((option) => (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    className={`xterminal-ai-mode-item${option.value === aiApprovalMode ? " is-active" : ""}`}
+                                    onClick={() => void handleSelectAiApprovalMode(option.value)}
+                                    role="option"
+                                    aria-selected={option.value === aiApprovalMode}
+                                  >
+                                    <span className="xterminal-ai-mode-copy">
+                                      <span className="xterminal-ai-mode-label">{option.label}</span>
+                                      <span className="xterminal-ai-mode-description">
+                                        {option.description}
+                                      </span>
+                                    </span>
+                                    {option.value === aiApprovalMode && (
+                                      <AppIcon
+                                        className="xterminal-ai-mode-check"
+                                        icon="material-symbols:check-rounded"
+                                        size={18}
+                                      />
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
 	                      </div>
 	                      <div className="xterminal-ai-input-actions">
+                          <div className="xterminal-ai-model-dropdown" ref={aiModelMenuRef}>
+                            <button
+                              type="button"
+                              className={`xterminal-ai-model-pill${aiModelMenuOpen ? " xterminal-ai-model-pill--open" : ""}`}
+                              onClick={() => {
+                                setAiApprovalMenuOpen(false);
+                                setAiModelMenuOpen((prev) => !prev);
+                              }}
+                              disabled={aiBusy}
+                              aria-haspopup="listbox"
+                              aria-expanded={aiModelMenuOpen}
+                            >
+                              <span className="xterminal-ai-model-value">
+                                {aiModel || t("terminal.ai.model.placeholder")}
+                              </span>
+                              <AppIcon
+                                className="xterminal-ai-model-caret"
+                                icon="material-symbols:keyboard-arrow-down-rounded"
+                                size={16}
+                              />
+                            </button>
+                            {aiModelMenuOpen && (
+                              <div className="xterminal-ai-model-menu" role="listbox">
+                                {modelOptionsWithCurrent.map((model) => (
+                                  <button
+                                    key={model}
+                                    type="button"
+                                    className={`xterminal-ai-model-item${model === aiModel ? " is-active" : ""}`}
+                                    onClick={() => {
+                                      aiModelTouchedRef.current = true;
+                                      setAiModel(model);
+                                      setAiModelMenuOpen(false);
+                                    }}
+                                    role="option"
+                                    aria-selected={model === aiModel}
+                                  >
+                                    {model}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
 	                        {aiMessages.length > 0 && (
 	                          <button
 	                            type="button"
@@ -6581,29 +5663,22 @@ export function XTerminal({
 	                            <AppIcon icon="proicons:delete" size={16} />
 	                          </button>
 	                        )}
-	                        {aiBusy && (
-	                          <button
-	                            type="button"
-	                            className="xterminal-ai-footer-icon-btn xterminal-ai-footer-icon-btn--danger"
-	                            onClick={interruptAiConversation}
-	                            title={t("terminal.ai.stop")}
-	                            aria-label={t("terminal.ai.stop")}
-	                          >
-	                            <AppIcon icon="proicons:record-stop" size={16} />
-	                          </button>
-	                        )}
 	                        <button
 	                          type="button"
 	                          className="xterminal-ai-send"
                           onClick={() => {
+                            if (aiBusy) {
+                              interruptAiConversation();
+                              return;
+                            }
                             void sendAiMessage(aiInput);
                             setAiInput("");
                           }}
-                          disabled={aiBusy || !aiInput.trim()}
-                          title={t("terminal.ai.send")}
-                          aria-label={t("terminal.ai.send")}
+                          disabled={!aiBusy && !aiInput.trim() && aiAttachments.length === 0}
+                          title={aiBusy ? t("terminal.ai.stop") : t("terminal.ai.send")}
+                          aria-label={aiBusy ? t("terminal.ai.stop") : t("terminal.ai.send")}
                         >
-                          <AppIcon icon="proicons:send" size={16}/>
+                          <AppIcon icon={aiBusy ? "proicons:record-stop" : "proicons:send"} size={16}/>
                         </button>
                       </div>
                     </div>
@@ -6616,17 +5691,41 @@ export function XTerminal({
         </div>
 
         <div className="xterminal-toolbar">
-          <div className="xterminal-toolbar-item">
+          <div className="xterminal-toolbar-item xterminal-toolbar-item--metric">
             <AppIcon icon="proicons:globe" size={16} />
-            <span className="xterminal-toolbar-label">
-              {t("terminal.toolbar.latency")}
-            </span>
             <span
-              className={`xterminal-toolbar-value xterminal-latency xterminal-latency--${latencyTone}`}
+              className={`xterminal-toolbar-value xterminal-toolbar-value--metric xterminal-latency xterminal-latency--${latencyTone}`}
+              title={t("terminal.toolbar.latency")}
             >
               {latencyMs === null ? "--" : `${latencyMs} ms`}
             </span>
           </div>
+
+          {supportsToolbarResourceStats && (
+            <>
+              <span className="xterminal-toolbar-dot" aria-hidden="true" />
+              <div className="xterminal-toolbar-item xterminal-toolbar-item--metric-group">
+                <span
+                  className="xterminal-toolbar-value xterminal-toolbar-value--resource-group"
+                  title={t("terminal.toolbar.cpuShort")}
+                >
+                  <AppIcon icon="material-symbols:developer-board-rounded" size={16} />
+                  <span className="xterminal-toolbar-value xterminal-toolbar-value--metric">
+                    {resourceCpuLabel}
+                  </span>
+                </span>
+                <span
+                  className="xterminal-toolbar-value xterminal-toolbar-value--resource-group"
+                  title={t("terminal.toolbar.memShort")}
+                >
+                  <AppIcon icon="material-symbols:view-stream-rounded" size={16} />
+                  <span className="xterminal-toolbar-value xterminal-toolbar-value--metric">
+                    {resourceMemoryLabel}
+                  </span>
+                </span>
+              </div>
+            </>
+          )}
 
           <span className="xterminal-toolbar-dot" aria-hidden="true" />
 
@@ -6635,9 +5734,6 @@ export function XTerminal({
             style={{ flex: 1, minWidth: 0 }}
           >
             <AppIcon icon="proicons:server" size={16} />
-            <span className="xterminal-toolbar-label">
-              {t("terminal.toolbar.endpoint")}
-            </span>
             <button
               type="button"
               className={`xterminal-toolbar-value xterminal-toolbar-value--copy ${
@@ -7176,69 +6272,6 @@ export function XTerminal({
               }}
             >
               {t("common.cancel")}
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal
-        open={!!forceRunDialog}
-        title={t("terminal.agent.plan.force.title")}
-        onClose={() => {
-          setForceRunDialog(null);
-          setForceRunConfirmInput("");
-          setForceRunConfirmError(null);
-        }}
-        width={460}
-      >
-        <div className="xterminal-agent-force-modal">
-          <div className="xterminal-agent-force-desc">
-            {t("terminal.agent.plan.force.desc", {
-              count: forceRunDialog?.blockedCount ?? 0,
-              keyword: t("terminal.agent.plan.force.keyword"),
-            })}
-          </div>
-          <input
-            type="text"
-            value={forceRunConfirmInput}
-            onChange={(event) => {
-              setForceRunConfirmInput(event.target.value);
-              if (forceRunConfirmError) {
-                setForceRunConfirmError(null);
-              }
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                void confirmForceRunDialog();
-              }
-            }}
-            placeholder={t("terminal.agent.plan.force.placeholder", {
-              keyword: t("terminal.agent.plan.force.keyword"),
-            })}
-          />
-          {forceRunConfirmError && (
-            <div className="xterminal-agent-force-error">{forceRunConfirmError}</div>
-          )}
-          <div className="xterminal-agent-force-actions">
-            <button
-              className="btn btn-secondary"
-              type="button"
-              onClick={() => {
-                setForceRunDialog(null);
-                setForceRunConfirmInput("");
-                setForceRunConfirmError(null);
-              }}
-            >
-              {t("common.cancel")}
-            </button>
-            <button
-              className="xterminal-agent-force-confirm"
-              type="button"
-              onClick={() => {
-                void confirmForceRunDialog();
-              }}
-            >
-              {t("terminal.agent.plan.force.confirm")}
             </button>
           </div>
         </div>

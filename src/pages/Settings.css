@@ -47,6 +47,7 @@
 
 .settings-item-info {
     flex: 1;
+    min-width: 0;
 }
 
 .settings-item-label {
@@ -67,31 +68,21 @@
     margin-left: var(--space-xl);
 }
 
-.settings-item-control--row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-}
-
-.settings-accent-picker {
-    width: 34px;
-    height: 30px;
-    padding: 0;
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-control);
-    background: transparent;
-    cursor: pointer;
-}
-
 .settings-item-control--stack {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: var(--space-sm);
+    min-width: 0;
 }
 
 .settings-item-control--stack .settings-inline-actions {
     justify-content: flex-end;
+}
+
+.settings-item-control--test {
+    flex: 0 1 min(560px, 52%);
+    width: min(560px, 52%);
 }
 
 .settings-page .btn {
@@ -204,6 +195,43 @@
     color: var(--danger);
     background: color-mix(in srgb, var(--danger) 8%, var(--bg-primary) 92%);
     border-color: color-mix(in srgb, var(--danger) 22%, var(--border-light) 78%);
+}
+
+.settings-test-status--multiline {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: var(--leading-ui);
+    border-radius: 14px;
+    padding: 10px 12px;
+    text-align: left;
+}
+
+.settings-item--responsive {
+    gap: var(--space-xl);
+}
+
+@media (max-width: 1100px) {
+    .settings-item--responsive {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .settings-item--responsive .settings-item-control {
+        margin-left: 0;
+        width: 100%;
+    }
+
+    .settings-item-control--test {
+        flex-basis: auto;
+    }
+
+    .settings-item-control--stack {
+        align-items: stretch;
+    }
 }
 
 .settings-card {

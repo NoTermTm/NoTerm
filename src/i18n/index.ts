@@ -66,9 +66,8 @@ const MESSAGES: Messages = {
   "settings.theme.desc": { "zh-CN": "选择应用主色与背景", "en-US": "Choose app colors and background" },
   "settings.theme.bright": { "zh-CN": "明亮", "en-US": "Bright" },
   "settings.theme.mint": { "zh-CN": "浅绿", "en-US": "Mint" },
+  "settings.theme.kraft": { "zh-CN": "牛皮纸", "en-US": "Kraft Paper" },
   "settings.theme.dark": { "zh-CN": "暗黑", "en-US": "Dark" },
-  "settings.theme.accent": { "zh-CN": "强调色", "en-US": "Accent color" },
-  "settings.theme.accent.desc": { "zh-CN": "自定义按钮与高亮主色", "en-US": "Customize primary highlight color" },
 
   "settings.section.connection": { "zh-CN": "连接设置", "en-US": "Connections" },
   "settings.connection.autoReconnect": { "zh-CN": "自动重连", "en-US": "Auto reconnect" },
@@ -436,6 +435,18 @@ const MESSAGES: Messages = {
   "ai.renderer.execute": { "zh-CN": "执行", "en-US": "Run" },
   "ai.renderer.copy": { "zh-CN": "复制", "en-US": "Copy" },
 
+  "agent.stop": { "zh-CN": "停止", "en-US": "Stop" },
+  "agent.confirm.title": { "zh-CN": "确认执行", "en-US": "Confirm Execution" },
+  "agent.confirm.approve": { "zh-CN": "确认", "en-US": "Confirm" },
+  "agent.confirm.reject": { "zh-CN": "拒绝", "en-US": "Reject" },
+  "agent.status.analyzingOutput": {
+    "zh-CN": "正在分析命令输出…",
+    "en-US": "Analyzing command output..."
+  },
+  "agent.scrollToBottom": { "zh-CN": "滚动到底部", "en-US": "Scroll to bottom" },
+  "agent.status.thinking": { "zh-CN": "思考中...", "en-US": "Thinking..." },
+  "agent.status.executing": { "zh-CN": "执行中...", "en-US": "Executing..." },
+
   "ai.error.disabled": { "zh-CN": "AI 未启用", "en-US": "AI is not enabled" },
   "ai.error.modelMissing": { "zh-CN": "未配置模型", "en-US": "Model is not configured" },
   "ai.error.openaiUrl": { "zh-CN": "未配置 OpenAI API 地址", "en-US": "OpenAI API URL not set" },
@@ -707,8 +718,8 @@ const MESSAGES: Messages = {
 
   "terminal.session.disconnected": { "zh-CN": "会话已断开", "en-US": "Session disconnected" },
   "terminal.session.recreated": {
-    "zh-CN": "SSH 会话已重建，未发送完成的输入已丢弃",
-    "en-US": "SSH session recreated. Unsent input was discarded",
+    "zh-CN": "SSH 会话已恢复，待发送输入已保留",
+    "en-US": "SSH session restored. Pending input was preserved",
   },
   "terminal.write.timeout": { "zh-CN": "写入超时", "en-US": "Write timeout" },
   "terminal.write.fail": { "zh-CN": "写入失败", "en-US": "Write failed" },
@@ -806,6 +817,7 @@ const MESSAGES: Messages = {
   "terminal.alert.copyLog": { "zh-CN": "复制日志", "en-US": "Copy logs" },
   "terminal.alert.close": { "zh-CN": "关闭", "en-US": "Close" },
   "terminal.sftp.dropHint": { "zh-CN": "拖放文件上传", "en-US": "Drop files to upload" },
+  "terminal.sftp.dropHintTarget": { "zh-CN": "松开以上传到 “{name}”", "en-US": "Drop to upload into “{name}”" },
   "terminal.sftp.title": { "zh-CN": "文件管理器", "en-US": "File manager" },
   "terminal.sftp.action.upload": { "zh-CN": "上传文件", "en-US": "Upload file" },
   "terminal.sftp.action.refresh": { "zh-CN": "刷新", "en-US": "Refresh" },
@@ -830,6 +842,7 @@ const MESSAGES: Messages = {
   "terminal.ai.title": { "zh-CN": "AI助手", "en-US": "AI Assistant" },
   "terminal.ai.title.chat": { "zh-CN": "Chat 助手", "en-US": "Chat Assistant" },
   "terminal.ai.title.agent": { "zh-CN": "Agent 助手", "en-US": "Agent Assistant" },
+  "terminal.ai.attach": { "zh-CN": "添加图片或文本附件", "en-US": "Add image or text attachment" },
   "terminal.ai.context.title": { "zh-CN": "终端上下文", "en-US": "Terminal context" },
   "terminal.ai.context.summary.structured": {
     "zh-CN": "已整理当前终端输出，便于直接追问",
@@ -911,6 +924,22 @@ const MESSAGES: Messages = {
   "terminal.ai.quick.fix.prefixEmpty": { "zh-CN": "请结合以下终端输出进行排障并给出可执行命令。", "en-US": "Troubleshoot based on terminal output below and provide executable commands." },
   "terminal.ai.input.placeholder": { "zh-CN": "输入你的问题，{modifier}+Enter 发送", "en-US": "Type your question, {modifier}+Enter to send" },
   "terminal.ai.model.placeholder": { "zh-CN": "选择模型", "en-US": "Select model" },
+  "terminal.ai.approvalMode.title": { "zh-CN": "审批模式", "en-US": "Approval mode" },
+  "terminal.ai.approvalMode.auto": { "zh-CN": "自动模式", "en-US": "Auto" },
+  "terminal.ai.approvalMode.auto.desc": {
+    "zh-CN": "按当前策略拦截风险操作，并在需要时提示你确认",
+    "en-US": "Follow the current policy, block risky actions, and ask for your confirmation when needed"
+  },
+  "terminal.ai.approvalMode.delegate": { "zh-CN": "替我审批", "en-US": "Approve for me" },
+  "terminal.ai.approvalMode.delegate.desc": {
+    "zh-CN": "自动批准高风险或未知命令，不再弹出人工确认",
+    "en-US": "Automatically approve high-risk or unknown commands without prompting you"
+  },
+  "terminal.ai.approvalMode.copilot": { "zh-CN": "Copilot", "en-US": "Copilot" },
+  "terminal.ai.approvalMode.copilot.desc": {
+    "zh-CN": "忽略策略拦截与确认，所有执行决策都交给 AI",
+    "en-US": "Skip policy blocks and confirmations, leaving all execution decisions to AI"
+  },
   "terminal.ai.send": { "zh-CN": "发送", "en-US": "Send" },
   "terminal.ai.stop": { "zh-CN": "终止对话", "en-US": "Stop" },
   "terminal.ai.interrupted": { "zh-CN": "已终止本次对话", "en-US": "Conversation interrupted" },
@@ -1075,6 +1104,9 @@ const MESSAGES: Messages = {
     "en-US": "Suggest-only mode. Switch to confirm mode to execute.",
   },
   "terminal.toolbar.latency": { "zh-CN": "延迟", "en-US": "Latency" },
+  "terminal.toolbar.resources": { "zh-CN": "资源", "en-US": "Resources" },
+  "terminal.toolbar.cpuShort": { "zh-CN": "CPU", "en-US": "CPU" },
+  "terminal.toolbar.memShort": { "zh-CN": "内存", "en-US": "MEM" },
   "terminal.toolbar.endpoint": { "zh-CN": "服务器 IP", "en-US": "Server IP" },
   "terminal.toolbar.endpoint.copy": { "zh-CN": "点击复制 IP", "en-US": "Click to copy IP" },
   "terminal.toolbar.endpoint.copied": { "zh-CN": "已复制", "en-US": "Copied" },

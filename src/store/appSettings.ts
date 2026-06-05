@@ -1,4 +1,5 @@
 import { Store } from "@tauri-apps/plugin-store";
+import type { AgentApprovalMode } from "../types/agent";
 
 export type TerminalThemeName =
   | "light"
@@ -20,8 +21,7 @@ export type TerminalBackgroundFit = "cover" | "contain" | "stretch";
 
 export type AppSettings = {
   "i18n.locale": "zh-CN" | "en-US";
-  "ui.theme": "bright" | "mint" | "dark";
-  "ui.accent": string;
+  "ui.theme": "bright" | "mint" | "kraft" | "dark";
   "connection.autoConnect": boolean;
   "connection.savePassword": boolean;
   "connection.keepAlive": boolean;
@@ -53,7 +53,7 @@ export type AppSettings = {
   "ai.volcengine.apiKey": string;
   "ai.model": string;
   "ai.models": string[];
-  "ai.agentMode": "suggest_only" | "confirm_then_execute";
+  "ai.approvalMode": AgentApprovalMode;
   "sync.enabled": boolean;
   "sync.provider": "webdav" | "s3";
   "sync.lastSyncedAt": string;
@@ -120,7 +120,6 @@ export const DEFAULT_TERMINAL_FONT_FAMILY = isWindowsPlatform()
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   "i18n.locale": "zh-CN",
   "ui.theme": "bright",
-  "ui.accent": "",
   "connection.autoConnect": false,
   "connection.savePassword": true,
   "connection.keepAlive": true,
@@ -152,7 +151,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   "ai.volcengine.apiKey": "",
   "ai.model": "claude-sonnet-4-5-20250929",
   "ai.models": [],
-  "ai.agentMode": "suggest_only",
+  "ai.approvalMode": "auto",
   "sync.enabled": false,
   "sync.provider": "webdav",
   "sync.lastSyncedAt": "",

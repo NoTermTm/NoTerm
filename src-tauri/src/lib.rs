@@ -191,7 +191,7 @@ fn clipboard_write_text(text: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn ssh_check_endpoint(host: String, port: u16) -> Result<EndpointCheck, String> {
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> Result<EndpointCheck, String> {
         let host = host.trim().to_string();
         if host.is_empty() {
             return Err("Host is empty".to_string());
@@ -258,7 +258,7 @@ async fn ssh_generate_keypair(
     passphrase: Option<String>,
     comment: Option<String>,
 ) -> Result<GeneratedKeypair, String> {
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> Result<GeneratedKeypair, String> {
         let base = app_handle
             .path()
             .app_data_dir()
@@ -332,9 +332,7 @@ async fn ssh_connect(
     connection: SshConnection,
 ) -> Result<String, String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || {
-        manager.connect(&connection)
-    })
+    tokio::task::spawn_blocking(move || -> anyhow::Result<String> { manager.connect(&connection) })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
@@ -346,7 +344,7 @@ async fn telnet_connect(
     connection: TelnetConnection,
 ) -> Result<String, String> {
     let manager = state.telnet_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || manager.connect(&connection))
+    tokio::task::spawn_blocking(move || -> anyhow::Result<String> { manager.connect(&connection) })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -359,7 +357,7 @@ async fn ssh_open_shell(
     session_id: String,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         manager.open_shell(&session_id, app_handle)
     })
     .await
@@ -374,7 +372,9 @@ async fn telnet_open_shell(
     session_id: String,
 ) -> Result<(), String> {
     let manager = state.telnet_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || manager.open_shell(&session_id, app_handle))
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        manager.open_shell(&session_id, app_handle)
+    })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -438,7 +438,9 @@ async fn local_open_shell(
     shell: Option<String>,
 ) -> Result<(), String> {
     let manager = state.local_pty_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || manager.open_shell(&session_id, app_handle, shell))
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        manager.open_shell(&session_id, app_handle, shell)
+    })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -513,7 +515,7 @@ async fn ssh_execute_command_controlled(
     timeout_sec: u64,
 ) -> Result<ControlledCommandResult, String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<ControlledCommandResult> {
         manager.execute_command_controlled(&session_id, &command, timeout_sec)
     })
     .await
@@ -600,7 +602,7 @@ async fn ssh_forward_start(
     config: ForwardConfig,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || manager.start_forward(config))
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> { manager.start_forward(config) })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -612,7 +614,7 @@ async fn ssh_forward_stop(
     id: String,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || manager.stop_forward(&id))
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> { manager.stop_forward(&id) })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -631,7 +633,9 @@ async fn ssh_sftp_list_dir(
     path: String,
 ) -> Result<Vec<SftpEntry>, String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || manager.sftp_list_dir(&session_id, &path))
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<SftpEntry>> {
+        manager.sftp_list_dir(&session_id, &path)
+    })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -652,7 +656,7 @@ async fn ssh_sftp_download_file(
     let cleanup_cancel_token = cancel_token.clone();
     let cleanup_manager = manager.clone();
     let cleanup_transfer_id = transfer_id.clone();
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let result = manager.sftp_download_file(
             &session_id,
             &remote_path,
@@ -707,7 +711,7 @@ async fn ssh_sftp_upload_file(
     let manager = state.ssh_manager.lock().unwrap().clone();
     let transfer_id = transfer_id.unwrap_or_else(|| format!("upload:{}", local_path));
     let use_temp_file = use_temp_file.unwrap_or(true);
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         manager.sftp_upload_file(&session_id, &local_path, &remote_path, use_temp_file, |transferred, total| {
             let percent = if total > 0 {
                 (transferred as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
@@ -740,7 +744,7 @@ async fn ssh_sftp_rename(
     to_path: String,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         manager.sftp_rename(&session_id, &from_path, &to_path)
     })
     .await
@@ -756,7 +760,9 @@ async fn ssh_sftp_chmod(
     mode: u32,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || manager.sftp_chmod(&session_id, &path, mode))
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        manager.sftp_chmod(&session_id, &path, mode)
+    })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -770,7 +776,9 @@ async fn ssh_sftp_delete(
     is_dir: bool,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || manager.sftp_delete(&session_id, &path, is_dir))
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        manager.sftp_delete(&session_id, &path, is_dir)
+    })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -783,7 +791,9 @@ async fn ssh_sftp_mkdir(
     path: String,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || manager.sftp_mkdir(&session_id, &path))
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        manager.sftp_mkdir(&session_id, &path)
+    })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -795,13 +805,19 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
             #[cfg(desktop)]
-            app.handle()
-                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            {
+                let app_handle = app.handle();
+                app_handle.plugin(tauri_plugin_updater::Builder::new().build())?;
+
+                #[cfg(debug_assertions)]
+                if let Some(main_window) = app_handle.get_webview_window("main") {
+                    main_window.open_devtools();
+                }
+            }
             Ok(())
         })
         .manage(AppState {

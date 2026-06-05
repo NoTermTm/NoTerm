@@ -15,6 +15,11 @@ export interface ControlledCommandResult {
   timedOut: boolean;
 }
 
+export interface ResourceStatsResult {
+  cpuPercent: number;
+  memoryPercent: number;
+}
+
 export const sshApi = {
   connect: async (connection: SshConnection): Promise<string> => {
     return await invoke('ssh_connect', { connection });

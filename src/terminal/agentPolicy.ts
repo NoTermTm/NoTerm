@@ -1,4 +1,14 @@
-import type { AgentAction, AgentPolicyDecision, AgentRisk } from "../types/agent";
+import type { AgentPolicyDecision, AgentRisk } from "../types/agent";
+
+/**
+ * Simplified input for policy evaluation.
+ * Replaces the old Pick<AgentAction, "command" | "risk" | "session_id"> pattern.
+ */
+export interface PolicyEvaluationInput {
+  command: string;
+  risk: AgentRisk;
+  session_id: string;
+}
 
 const RISK_LEVEL: Record<AgentRisk, number> = {
   low: 1,
@@ -144,12 +154,16 @@ const mergeRisk = (a: AgentRisk, b: AgentRisk): AgentRisk => {
   return RISK_LEVEL[a] >= RISK_LEVEL[b] ? a : b;
 };
 
-export const evaluateAgentActionPolicy = (
-  action: Pick<AgentAction, "command" | "risk" | "session_id">,
+/**
+ * Evaluate a command against the security policy.
+ * Returns a decision indicating whether the command is allowed, blocked, or needs confirmation.
+ */
+export const evaluateCommandPolicy = (
+  input: PolicyEvaluationInput,
   currentSessionId: string,
 ): AgentPolicyDecision => {
-  const normalizedCommand = normalizeCommand(action.command || "");
-  const modelRisk = normalizeRisk(action.risk);
+  const normalizedCommand = normalizeCommand(input.command || "");
+  const modelRisk = normalizeRisk(input.risk);
 
   if (!normalizedCommand) {
     return {
@@ -160,7 +174,7 @@ export const evaluateAgentActionPolicy = (
     };
   }
 
-  if ((action.session_id || "").trim() !== currentSessionId.trim()) {
+  if ((input.session_id || "").trim() !== currentSessionId.trim()) {
     return {
       status: "blocked",
       reason: "MVP 仅允许当前会话执行",
@@ -226,3 +240,12 @@ export const evaluateAgentActionPolicy = (
     normalized_risk: normalizedRisk,
   };
 };
+
+/**
+ * @deprecated Use `evaluateCommandPolicy` instead.
+ * Kept as an alias for backward compatibility during migration.
+ */
+export const evaluateAgentActionPolicy = (
+  action: PolicyEvaluationInput,
+  currentSessionId: string,
+): AgentPolicyDecision => evaluateCommandPolicy(action, currentSessionId);

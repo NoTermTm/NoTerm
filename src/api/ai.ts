@@ -1,19 +1,28 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getTranslator } from "../i18n";
-import type { AgentAction, AgentPlan, AgentPlanParseResult, AgentRisk } from "../types/agent";
 
 export type AiProvider = "openai" | "anthropic" | "volcengine";
 
+export type AiMessagePart =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "image";
+      mediaType: string;
+      dataUrl: string;
+    };
+
 export type AiMessage = {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | AiMessagePart[];
 };
 
 export type AiSettings = {
   enabled: boolean;
   provider: AiProvider;
   model: string;
-  agentMode?: "suggest_only" | "confirm_then_execute";
   openai: {
     baseUrl: string;
     apiKey: string;
@@ -65,6 +74,45 @@ const getOpenAiCompatibleChatUrl = (
     ? `${baseUrl}/v1/chat/completions`
     : `${baseUrl}/chat/completions`;
 
+const extractBase64Payload = (dataUrl: string) => {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  return {
+    mediaType: match[1],
+    data: match[2],
+  };
+};
+
+const toOpenAiCompatibleContent = (content: AiMessage["content"]) => {
+  if (typeof content === "string") return content;
+  return content.map((part) =>
+    part.type === "text"
+      ? { type: "text", text: part.text }
+      : { type: "image_url", image_url: { url: part.dataUrl } },
+  );
+};
+
+const toAnthropicContent = (content: AiMessage["content"]) => {
+  if (typeof content === "string") return content;
+  return content.map((part) => {
+    if (part.type === "text") {
+      return { type: "text", text: part.text };
+    }
+    const extracted = extractBase64Payload(part.dataUrl);
+    if (!extracted) {
+      return { type: "text", text: "[Image attachment could not be encoded]" };
+    }
+    return {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: extracted.mediaType,
+        data: extracted.data,
+      },
+    };
+  });
+};
+
 type SseEvent = {
   event: string;
   data: string;
@@ -112,130 +160,6 @@ const readSseStream = async (
   parseSseEvents(decoder.decode(), bufferRef, onEvent);
 };
 
-const createId = (prefix: string) => {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}_${crypto.randomUUID()}`;
-  }
-  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-};
-
-const normalizeRisk = (value: unknown): AgentRisk => {
-  const risk = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (risk === "low" || risk === "medium" || risk === "high" || risk === "critical") {
-    return risk;
-  }
-  return "medium";
-};
-
-const extractJsonCandidate = (text: string): { json: string | null; note: string } => {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) {
-    const note = text.replace(fenced[0], "").trim();
-    return { json: fenced[1].trim(), note };
-  }
-
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    const json = text.slice(start, end + 1).trim();
-    const note = `${text.slice(0, start)} ${text.slice(end + 1)}`.trim();
-    return { json, note };
-  }
-
-  return { json: null, note: text.trim() };
-};
-
-const normalizeAction = (
-  input: Record<string, unknown>,
-  defaultSessionId: string,
-): AgentAction | null => {
-  const command = String(input.command ?? "").trim();
-  if (!command) return null;
-
-  const timeoutRaw = Number(input.timeout_sec ?? input.timeoutSec ?? 30);
-  const timeoutSec = Number.isFinite(timeoutRaw)
-    ? Math.min(300, Math.max(3, Math.floor(timeoutRaw)))
-    : 30;
-
-  return {
-    id: String(input.id ?? createId("action")),
-    session_id: String(input.session_id ?? input.sessionId ?? defaultSessionId),
-    command,
-    risk: normalizeRisk(input.risk),
-    reason: String(input.reason ?? ""),
-    expected_effect: String(input.expected_effect ?? input.expectedEffect ?? ""),
-    timeout_sec: timeoutSec,
-  };
-};
-
-const normalizePlan = (raw: unknown): AgentPlan | null => {
-  if (!raw || typeof raw !== "object") return null;
-  const data = raw as Record<string, unknown>;
-  const container = (data.plan && typeof data.plan === "object"
-    ? (data.plan as Record<string, unknown>)
-    : data) as Record<string, unknown>;
-
-  const sessionId = String(
-    container.session_id ?? container.sessionId ?? data.session_id ?? data.sessionId ?? "",
-  ).trim();
-  if (!sessionId) return null;
-
-  const rawActions = Array.isArray(container.actions) ? container.actions : [];
-  const actions = rawActions
-    .map((item) =>
-      item && typeof item === "object"
-        ? normalizeAction(item as Record<string, unknown>, sessionId)
-        : null,
-    )
-    .filter((item): item is AgentAction => !!item)
-    .slice(0, 5);
-
-  return {
-    id: String(container.id ?? createId("plan")),
-    session_id: sessionId,
-    summary:
-      typeof container.summary === "string" ? container.summary.trim() : undefined,
-    actions,
-  };
-};
-
-export const parseAgentPlanFromText = (text: string): AgentPlanParseResult => {
-  const { json, note } = extractJsonCandidate(text || "");
-  if (!json) {
-    return {
-      plan: null,
-      note,
-      error: "未检测到 JSON 计划",
-    };
-  }
-
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    const plan = normalizePlan(parsed);
-    if (!plan) {
-      return {
-        plan: null,
-        note,
-        raw_json: json,
-        error: "JSON 解析成功，但计划结构不合法",
-      };
-    }
-
-    return {
-      plan,
-      note,
-      raw_json: json,
-    };
-  } catch {
-    return {
-      plan: null,
-      note,
-      raw_json: json,
-      error: "JSON 解析失败",
-    };
-  }
-};
-
 export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
   const t = await getTranslator();
   if (!settings.enabled) {
@@ -262,7 +186,10 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
       },
       body: JSON.stringify({
         model,
-        messages,
+        messages: messages.map((message) => ({
+          role: message.role,
+          content: toOpenAiCompatibleContent(message.content),
+        })),
         temperature: 0.2,
       }),
     });
@@ -300,8 +227,11 @@ export async function sendAiChat(settings: AiSettings, messages: AiMessage[]) {
       max_tokens: 1024,
       messages: messages
         .filter((m) => m.role !== "system")
-        .map((m) => ({ role: m.role, content: m.content })),
-      system: messages.find((m) => m.role === "system")?.content,
+        .map((m) => ({ role: m.role, content: toAnthropicContent(m.content) })),
+      system:
+        typeof messages.find((m) => m.role === "system")?.content === "string"
+          ? (messages.find((m) => m.role === "system")?.content as string)
+          : undefined,
       temperature: 0.2,
     }),
   });
@@ -357,7 +287,10 @@ export async function sendAiChatStream(
       },
       body: JSON.stringify({
         model,
-        messages,
+        messages: messages.map((message) => ({
+          role: message.role,
+          content: toOpenAiCompatibleContent(message.content),
+        })),
         temperature: 0.2,
         stream: true,
       }),
@@ -409,8 +342,11 @@ export async function sendAiChatStream(
       max_tokens: 1024,
       messages: messages
         .filter((m) => m.role !== "system")
-        .map((m) => ({ role: m.role, content: m.content })),
-      system: messages.find((m) => m.role === "system")?.content,
+        .map((m) => ({ role: m.role, content: toAnthropicContent(m.content) })),
+      system:
+        typeof messages.find((m) => m.role === "system")?.content === "string"
+          ? (messages.find((m) => m.role === "system")?.content as string)
+          : undefined,
       temperature: 0.2,
       stream: true,
     }),

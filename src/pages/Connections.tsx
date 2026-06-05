@@ -660,19 +660,31 @@ interface ConnectionsPageProps {
   setTabs: (tabs: Tab[] | ((prev: Tab[]) => Tab[])) => void;
   activeTabId: string | null;
   setActiveTabId: (id: string | null) => void;
+  activeSessions: Map<string, ActiveSession>;
+  setActiveSessions: (
+    sessions:
+      | Map<string, ActiveSession>
+      | ((prev: Map<string, ActiveSession>) => Map<string, ActiveSession>),
+  ) => void;
+  splitLayouts: Map<string, SplitLayout>;
+  setSplitLayouts: (
+    layouts:
+      | Map<string, SplitLayout>
+      | ((prev: Map<string, SplitLayout>) => Map<string, SplitLayout>),
+  ) => void;
   onTabClick: (id: string) => void;
   onTabClose: (id: string) => void;
   onNewTab: () => void;
 }
 
-interface ActiveSession {
+export interface ActiveSession {
   sessionId: string;
   connectionId: string;
   connection: ConnectionConfig;
   kind: "ssh" | "telnet" | "local";
 }
 
-interface SplitLayout {
+export interface SplitLayout {
   direction: "vertical" | "horizontal";
   secondarySessionId: string;
   ratio: number;
@@ -707,6 +719,10 @@ export function ConnectionsPage({
   setTabs,
   activeTabId,
   setActiveTabId,
+  activeSessions,
+  setActiveSessions,
+  splitLayouts,
+  setSplitLayouts,
 }: ConnectionsPageProps) {
   const navigate = useNavigate();
   const { t } = useI18n();
@@ -722,9 +738,6 @@ export function ConnectionsPage({
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [authProfiles, setAuthProfiles] = useState<AuthProfile[]>([]);
   const [authProfileId, setAuthProfileId] = useState<string>("");
-  const [activeSessions, setActiveSessions] = useState<
-    Map<string, ActiveSession>
-  >(new Map());
   const [searchQuery, setSearchQuery] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showPassphrase, setShowPassphrase] = useState(false);
@@ -733,9 +746,6 @@ export function ConnectionsPage({
     valid: boolean;
     message: string;
   } | null>(null);
-  const [splitLayouts, setSplitLayouts] = useState<Map<string, SplitLayout>>(
-    new Map(),
-  );
   const [splitPickerOpen, setSplitPickerOpen] = useState(false);
   const [splitPickerDirection, setSplitPickerDirection] =
     useState<SplitLayout["direction"]>("vertical");

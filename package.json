@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "tauri": "tauri",
     "verify:updater-release": "node scripts/verify-updater-release.mjs"
   },
@@ -36,11 +38,16 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/marked": "^5.0.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "fast-check": "^4.8.0",
+    "jsdom": "^28.1.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.1.6"
   }
 }
