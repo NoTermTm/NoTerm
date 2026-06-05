@@ -208,8 +208,7 @@ export function SettingsPage() {
   const terminalBackgroundImage = settings["terminal.backgroundImage"];
   const [terminalBackgroundUrl, setTerminalBackgroundUrl] = useState("");
   const terminalBackgroundUrlRef = useRef("");
-  const [aiTestStatus, setAiTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
-  const [aiTestMessage, setAiTestMessage] = useState<string | null>(null);
+  const [aiTestStatus, setAiTestStatus] = useState<"idle" | "testing">("idle");
   const [aiModels, setAiModels] = useState<Record<AiProvider, string[]>>({
     openai: [],
     anthropic: [],
@@ -254,7 +253,6 @@ export function SettingsPage() {
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "up-to-date" | "downloading" | "installed" | "error"
   >("idle");
-  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<{
     version?: string;
     date?: string;
@@ -560,7 +558,18 @@ export function SettingsPage() {
       }
       if (detail.error && updateStatusRef.current === "idle") {
         setUpdateStatus("error");
-        setUpdateMessage(detail.error);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("app-message", {
+              detail: {
+                title: detail.error,
+                tone: "error",
+                toast: true,
+                store: false,
+              },
+            }),
+          );
+        }
       }
     };
 
@@ -586,14 +595,23 @@ export function SettingsPage() {
       }
       if (updateStatusRef.current === "idle" || updateStatusRef.current === "up-to-date") {
         setUpdateStatus("available");
-        setUpdateMessage(
-          detail.version
-            ? t("settings.update.availableWithVersion", {
-                version: detail.version,
-                dateSuffix: "",
-              })
-            : t("settings.update.available"),
-        );
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("app-message", {
+              detail: {
+                title: detail.version
+                  ? t("settings.update.availableWithVersion", {
+                      version: detail.version,
+                      dateSuffix: "",
+                    })
+                  : t("settings.update.available"),
+                tone: "info",
+                toast: true,
+                store: false,
+              },
+            }),
+          );
+        }
       }
     };
 
@@ -631,7 +649,6 @@ export function SettingsPage() {
 
   useEffect(() => {
     setAiTestStatus("idle");
-    setAiTestMessage(null);
   }, [
     settings["ai.enabled"],
     settings["ai.provider"],
@@ -1374,31 +1391,40 @@ export function SettingsPage() {
   };
 
   const handleAiTest = async () => {
+    const showAiTestMessage = (title: string, tone: "success" | "error") => {
+      if (typeof window === "undefined") return;
+      window.dispatchEvent(
+        new CustomEvent("app-message", {
+          detail: {
+            title,
+            tone,
+            toast: true,
+            store: false,
+          },
+        }),
+      );
+    };
+
     if (!settings["ai.enabled"]) {
-      setAiTestStatus("error");
-      setAiTestMessage(t("settings.ai.error.disabled"));
+      showAiTestMessage(t("settings.ai.error.disabled"), "error");
       return;
     }
 
     if (!settings["ai.model"].trim()) {
-      setAiTestStatus("error");
-      setAiTestMessage(t("settings.ai.error.model"));
+      showAiTestMessage(t("settings.ai.error.model"), "error");
       return;
     }
 
     if (!getAiProviderBaseUrl(settings, settings["ai.provider"]).trim()) {
-      setAiTestStatus("error");
-      setAiTestMessage(t(getAiProviderUrlErrorKey(settings["ai.provider"])));
+      showAiTestMessage(t(getAiProviderUrlErrorKey(settings["ai.provider"])), "error");
       return;
     }
     if (!getAiProviderApiKey(settings, settings["ai.provider"]).trim()) {
-      setAiTestStatus("error");
-      setAiTestMessage(t(getAiProviderKeyErrorKey(settings["ai.provider"])));
+      showAiTestMessage(t(getAiProviderKeyErrorKey(settings["ai.provider"])), "error");
       return;
     }
 
     setAiTestStatus("testing");
-    setAiTestMessage(t("settings.ai.test.testing"));
 
     const messages: AiMessage[] = [
       { role: "system", content: t("settings.ai.test.systemPrompt") },
@@ -1426,24 +1452,12 @@ export function SettingsPage() {
         },
         messages,
       );
-      setAiTestStatus("success");
-      setAiTestMessage(null);
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(
-          new CustomEvent("app-message", {
-            detail: {
-              title: t("settings.ai.test.success"),
-              tone: "success",
-              toast: true,
-              store: false,
-            },
-          }),
-        );
-      }
+      showAiTestMessage(t("settings.ai.test.success"), "success");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setAiTestStatus("error");
-      setAiTestMessage(message || t("settings.ai.test.fail"));
+      showAiTestMessage(message || t("settings.ai.test.fail"), "error");
+    } finally {
+      setAiTestStatus("idle");
     }
   };
 
@@ -1463,8 +1477,21 @@ export function SettingsPage() {
   };
 
   const handleCheckUpdate = async () => {
+    const showUpdateMessage = (title: string, tone: "success" | "error" | "info") => {
+      if (typeof window === "undefined") return;
+      window.dispatchEvent(
+        new CustomEvent("app-message", {
+          detail: {
+            title,
+            tone,
+            toast: true,
+            store: false,
+          },
+        }),
+      );
+    };
+
     setUpdateStatus("checking");
-    setUpdateMessage(t("settings.update.checkingStatus"));
     setUpdateProgress(null);
     try {
       const update = await checkForUpdates();
@@ -1473,33 +1500,48 @@ export function SettingsPage() {
       updateRef.current = update;
       if (!update?.available) {
         setUpdateStatus("up-to-date");
-        setUpdateMessage(t("settings.update.upToDate"));
         setUpdateInfo(null);
+        showUpdateMessage(t("settings.update.upToDate"), "success");
         return;
       }
       setUpdateStatus("available");
-      setUpdateInfo({
+      const nextInfo = {
         version: update.version,
         date: update.date,
         notes: update.body,
-      });
-      setUpdateMessage(
-        update.version
+      };
+      setUpdateInfo(nextInfo);
+      showUpdateMessage(
+        nextInfo.version
           ? t("settings.update.availableWithVersion", {
-              version: update.version,
+              version: nextInfo.version,
               dateSuffix: "",
             })
           : t("settings.update.available"),
+        "info",
       );
     } catch (error) {
       setUpdateStatus("error");
-      setUpdateMessage(formatUpdateError(error));
+      showUpdateMessage(formatUpdateError(error), "error");
     }
   };
 
   const handleDownloadUpdate = async () => {
+    const showUpdateMessage = (title: string, tone: "success" | "error" | "info") => {
+      if (typeof window === "undefined") return;
+      window.dispatchEvent(
+        new CustomEvent("app-message", {
+          detail: {
+            title,
+            tone,
+            toast: true,
+            store: false,
+          },
+        }),
+      );
+    };
+
     setUpdateStatus("downloading");
-    setUpdateMessage(t("settings.update.downloadingStatus"));
     setUpdateProgress(0);
     try {
       let update = updateRef.current;
@@ -1510,9 +1552,9 @@ export function SettingsPage() {
       }
       if (!update?.available) {
         setUpdateStatus("up-to-date");
-        setUpdateMessage(t("settings.update.upToDate"));
         setUpdateInfo(null);
         setUpdateProgress(null);
+        showUpdateMessage(t("settings.update.upToDate"), "success");
         return;
       }
 
@@ -1547,21 +1589,12 @@ export function SettingsPage() {
         }
       });
       setUpdateStatus("installed");
-      setUpdateMessage(t("settings.update.installed"));
+      showUpdateMessage(t("settings.update.installed"), "success");
     } catch (error) {
       setUpdateStatus("error");
-      setUpdateMessage(formatUpdateError(error));
+      showUpdateMessage(formatUpdateError(error), "error");
     }
   };
-
-  const updateToneClass =
-    updateStatus === "error"
-      ? "settings-test-status--error"
-      : updateStatus === "up-to-date" || updateStatus === "installed"
-        ? "settings-test-status--success"
-        : updateStatus === "available"
-          ? "settings-test-status--success"
-          : "";
   const updateReleaseLabel = updateInfo?.date
     ? new Date(updateInfo.date).toLocaleDateString()
     : null;
@@ -2601,11 +2634,6 @@ export function SettingsPage() {
             >
               {aiTestStatus === "testing" ? t("settings.ai.test.testing") : t("settings.ai.test.action")}
             </button>
-            {aiTestMessage && aiTestStatus !== "success" && (
-              <span className={`settings-test-status settings-test-status--${aiTestStatus} settings-test-status--multiline`}>
-                {aiTestMessage}
-              </span>
-            )}
           </div>
         </div>
       </div>
@@ -3024,11 +3052,6 @@ export function SettingsPage() {
                 </button>
               )}
             </div>
-            {updateMessage && (
-              <span className={`settings-test-status ${updateToneClass}`}>
-                {updateMessage}
-              </span>
-            )}
             {updateStatus === "downloading" && updateProgress !== null && (
               <div className="settings-update-progress" aria-label={t("settings.update.progress")}>
                 <div
