@@ -13,13 +13,9 @@ use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "windows")]
-use std::fs::OpenOptions;
-#[cfg(target_os = "windows")]
 use std::io::ErrorKind;
 #[cfg(target_os = "windows")]
 use std::path::PathBuf;
-#[cfg(target_os = "windows")]
-use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,10 +50,10 @@ pub struct KeepaliveConfig {
 #[serde(tag = "type")]
 pub enum AuthType {
     Password { password: String },
-    PrivateKey { 
-        key_path: String, 
+    PrivateKey {
+        key_path: String,
         key_content: Option<String>,
-        passphrase: Option<String> 
+        passphrase: Option<String>
     },
 }
 
@@ -895,7 +891,7 @@ impl SshManager {
                     Ok(ch) => ch,
                     Err(_) => break,
                 };
-                
+
                 match channel_lock.read(&mut buffer) {
                     Ok(n) if n > 0 => {
                         consecutive_read_errors = 0;
