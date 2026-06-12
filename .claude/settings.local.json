@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(find /Volumes/CC/temp-project/my-tauri-app/src -type f \\\\\\(-name *.tsx -o -name *.ts -o -name *.md \\\\\\))"
-    ]
-  }
-}
