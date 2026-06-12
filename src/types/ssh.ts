@@ -6,6 +6,7 @@ export interface SshConnection {
   host: string;
   port: number;
   username: string;
+  host_key_fingerprint_sha256?: string;
   auth_type: AuthType;
   auth_profile_id?: string;
   encoding?: string;

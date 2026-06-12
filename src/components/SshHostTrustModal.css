@@ -1,0 +1,113 @@
+.ssh-trust-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ssh-trust-modal__alert {
+  display: flex;
+  gap: 12px;
+  border-radius: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-light);
+}
+
+.ssh-trust-modal__alert.is-info {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--bg-primary) 90%), var(--bg-primary));
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border-light) 76%);
+}
+
+.ssh-trust-modal__alert.is-warning {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--warning, #c98900) 12%, var(--bg-primary) 88%), var(--bg-primary));
+  border-color: color-mix(in srgb, var(--warning, #c98900) 28%, var(--border-light) 72%);
+}
+
+.ssh-trust-modal__alert-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
+  color: var(--text-primary);
+}
+
+.ssh-trust-modal__alert-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ssh-trust-modal__alert-title {
+  font-size: var(--type-ui);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.ssh-trust-modal__panel {
+  border-radius: 14px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+  padding: 14px 16px;
+}
+
+.ssh-trust-modal__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ssh-trust-modal__row + .ssh-trust-modal__row {
+  margin-top: 10px;
+}
+
+.ssh-trust-modal__meta-label {
+  font-size: var(--type-meta);
+  color: var(--text-secondary);
+}
+
+.ssh-trust-modal__meta-value {
+  font-size: var(--type-ui);
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+  text-align: right;
+}
+
+.ssh-trust-modal__fingerprint-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.ssh-trust-modal__fingerprint {
+  font-family: "SF Mono", Monaco, Menlo, "Ubuntu Mono", monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  letter-spacing: 0.08em;
+  color: var(--text-primary);
+  word-break: break-word;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--bg-primary);
+  border: 1px dashed var(--border-color);
+}
+
+@media (max-width: 640px) {
+  .ssh-trust-modal__row,
+  .ssh-trust-modal__fingerprint-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .ssh-trust-modal__meta-value {
+    text-align: left;
+  }
+}

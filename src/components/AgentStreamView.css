@@ -585,6 +585,16 @@
   color: #ef4444;
 }
 
+.agent-block--notice {
+  background: color-mix(in srgb, #0ea5e9 7%, var(--bg-primary) 93%);
+  border: 1px solid color-mix(in srgb, #0ea5e9 28%, var(--border-color) 72%);
+  color: var(--text-primary);
+}
+
+.agent-block--notice .agent-block__header {
+  color: #0284c7;
+}
+
 /* ─── Done block ─── */
 
 .agent-block--done {

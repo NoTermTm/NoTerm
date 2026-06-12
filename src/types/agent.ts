@@ -63,7 +63,15 @@ export interface AgentSession {
 
 // === UI 渲染块类型 ===
 
-export type AgentBlockType = "thinking" | "action" | "output" | "error" | "done" | "user" | "status";
+export type AgentBlockType =
+  | "thinking"
+  | "action"
+  | "output"
+  | "error"
+  | "done"
+  | "notice"
+  | "user"
+  | "status";
 
 export interface AgentBlock {
   id: string;

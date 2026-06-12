@@ -1,11 +1,14 @@
 {
   "name": "NoTerm",
   "private": true,
-  "version": "0.0.5",
+  "version": "0.0.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:web": "tsc && vite build",
+    "build:rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "build:rust:release-check": "cargo check --release --manifest-path src-tauri/Cargo.toml",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

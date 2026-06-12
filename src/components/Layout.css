@@ -463,6 +463,13 @@
     flex: 1;
 }
 
+.lock-input::-webkit-credentials-auto-fill-button,
+.lock-input::-webkit-contacts-auto-fill-button {
+    visibility: hidden;
+    display: none !important;
+    pointer-events: none;
+}
+
 .lock-input-shell {
     margin: 10px 0;
     height: 40px;

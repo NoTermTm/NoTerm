@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type CSSProperties,
+} from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { load } from "@tauri-apps/plugin-store";
@@ -6,15 +14,13 @@ import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
 import { useNavigate, useLocation } from "react-router-dom";
 import { TitleBar, Tab } from "./TitleBar";
 import { AppIcon } from "./AppIcon";
-import { ConnectionsPage, type ActiveSession, type SplitLayout } from "../pages/Connections";
-import { KeysPage } from "../pages/Keys";
-import { SettingsPage } from "../pages/Settings";
-import { ForwardingPage } from "../pages/Forwarding";
-import { SpacePage } from "../pages/Space";
+import type { ActiveSession, SplitLayout } from "../pages/Connections";
 import type { ScriptItem } from "../store/scripts";
 import {
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
+  normalizeAppTheme,
+  readAppSetting,
   writeAppSetting,
   type AppSettings,
 } from "../store/appSettings";
@@ -29,6 +35,39 @@ import {
 import { isMacPlatform } from "../utils/platform";
 import { useI18n } from "../i18n";
 import "./Layout.css";
+
+const ConnectionsPage = lazy(async () => {
+  const module = await import("../pages/Connections");
+  return {
+    default: module.ConnectionsPage as ComponentType<any>,
+  };
+});
+const KeysPage = lazy(async () => {
+  const module = await import("../pages/Keys");
+  return {
+    default: module.KeysPage as ComponentType,
+  };
+});
+const SettingsPage = lazy(async () => {
+  const module = await import("../pages/Settings");
+  return {
+    default: module.SettingsPage as ComponentType,
+  };
+});
+const ForwardingPage = lazy(async () => {
+  const module = await import("../pages/Forwarding");
+  return {
+    default: module.ForwardingPage as ComponentType,
+  };
+});
+const SpacePage = lazy(async () => {
+  const module = await import("../pages/Space");
+  return {
+    default: module.SpacePage as ComponentType<any>,
+  };
+});
+
+const LazyPageFallback = () => <div style={{ padding: "24px" }}>Loading...</div>;
 
 export function Layout() {
   const navigate = useNavigate();
@@ -540,41 +579,19 @@ export function Layout() {
       const config: CloudSyncConfig = {
         provider,
         webdav: {
-          endpoint:
-            (await store.get<string>("sync.webdav.endpoint")) ??
-            DEFAULT_APP_SETTINGS["sync.webdav.endpoint"],
-          username:
-            (await store.get<string>("sync.webdav.username")) ??
-            DEFAULT_APP_SETTINGS["sync.webdav.username"],
-          password:
-            (await store.get<string>("sync.webdav.password")) ??
-            DEFAULT_APP_SETTINGS["sync.webdav.password"],
-          basePath:
-            (await store.get<string>("sync.webdav.basePath")) ??
-            DEFAULT_APP_SETTINGS["sync.webdav.basePath"],
+          endpoint: await readAppSetting("sync.webdav.endpoint"),
+          username: await readAppSetting("sync.webdav.username"),
+          password: await readAppSetting("sync.webdav.password"),
+          basePath: await readAppSetting("sync.webdav.basePath"),
         },
         s3: {
-          endpoint:
-            (await store.get<string>("sync.s3.endpoint")) ??
-            DEFAULT_APP_SETTINGS["sync.s3.endpoint"],
-          region:
-            (await store.get<string>("sync.s3.region")) ??
-            DEFAULT_APP_SETTINGS["sync.s3.region"],
-          bucket:
-            (await store.get<string>("sync.s3.bucket")) ??
-            DEFAULT_APP_SETTINGS["sync.s3.bucket"],
-          prefix:
-            (await store.get<string>("sync.s3.prefix")) ??
-            DEFAULT_APP_SETTINGS["sync.s3.prefix"],
-          accessKeyId:
-            (await store.get<string>("sync.s3.accessKeyId")) ??
-            DEFAULT_APP_SETTINGS["sync.s3.accessKeyId"],
-          secretAccessKey:
-            (await store.get<string>("sync.s3.secretAccessKey")) ??
-            DEFAULT_APP_SETTINGS["sync.s3.secretAccessKey"],
-          forcePathStyle:
-            (await store.get<boolean>("sync.s3.forcePathStyle")) ??
-            DEFAULT_APP_SETTINGS["sync.s3.forcePathStyle"],
+          endpoint: await readAppSetting("sync.s3.endpoint"),
+          region: await readAppSetting("sync.s3.region"),
+          bucket: await readAppSetting("sync.s3.bucket"),
+          prefix: await readAppSetting("sync.s3.prefix"),
+          accessKeyId: await readAppSetting("sync.s3.accessKeyId"),
+          secretAccessKey: await readAppSetting("sync.s3.secretAccessKey"),
+          forcePathStyle: await readAppSetting("sync.s3.forcePathStyle"),
         },
       };
 
@@ -1063,7 +1080,7 @@ export function Layout() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     const applyTheme = (value?: AppSettings["ui.theme"] | null) => {
-      const next = (value ?? DEFAULT_APP_SETTINGS["ui.theme"]) as AppSettings["ui.theme"];
+      const next = normalizeAppTheme(value);
       document.documentElement.dataset.theme = next;
       document.documentElement.style.removeProperty("--accent");
       document.documentElement.style.removeProperty("--accent-primary");
@@ -1222,39 +1239,49 @@ export function Layout() {
           <div
             className={`main-view ${location.pathname === "/connections" ? "is-active" : "is-hidden"}`}
           >
-            <ConnectionsPage
-              activePanel={activePanel}
-              setActivePanel={setActivePanel}
-              tabs={tabs}
-              setTabs={setTabs}
-              activeTabId={activeTabId}
-              setActiveTabId={setActiveTabId}
-              activeSessions={activeSessions}
-              setActiveSessions={setActiveSessions}
-              splitLayouts={splitLayouts}
-              setSplitLayouts={setSplitLayouts}
-              onTabClick={handleTabClick}
-              onTabClose={handleTabClose}
-              onNewTab={handleNewTab}
-            />
+            <Suspense fallback={<LazyPageFallback />}>
+              <ConnectionsPage
+                activePanel={activePanel}
+                setActivePanel={setActivePanel}
+                tabs={tabs}
+                setTabs={setTabs}
+                activeTabId={activeTabId}
+                setActiveTabId={setActiveTabId}
+                activeSessions={activeSessions}
+                setActiveSessions={setActiveSessions}
+                splitLayouts={splitLayouts}
+                setSplitLayouts={setSplitLayouts}
+                onTabClick={handleTabClick}
+                onTabClose={handleTabClose}
+                onNewTab={handleNewTab}
+              />
+            </Suspense>
           </div>
           {location.pathname === "/keys" && (
-            <KeysPage />
+            <Suspense fallback={<LazyPageFallback />}>
+              <KeysPage />
+            </Suspense>
           )}
           {location.pathname === "/settings" && (
-            <SettingsPage />
+            <Suspense fallback={<LazyPageFallback />}>
+              <SettingsPage />
+            </Suspense>
           )}
           {location.pathname === "/forwarding" && (
-            <ForwardingPage />
+            <Suspense fallback={<LazyPageFallback />}>
+              <ForwardingPage />
+            </Suspense>
           )}
           {location.pathname === "/space" && (
-            <SpacePage
-              tabs={tabs}
-              setTabs={setTabs}
-              activeTabId={activeTabId}
-              onOpenScriptTab={handleOpenScriptTab}
-              onCloseTab={handleTabClose}
-            />
+            <Suspense fallback={<LazyPageFallback />}>
+              <SpacePage
+                tabs={tabs}
+                setTabs={setTabs}
+                activeTabId={activeTabId}
+                onOpenScriptTab={handleOpenScriptTab}
+                onCloseTab={handleTabClose}
+              />
+            </Suspense>
           )}
           {location.pathname === "/files" && (
             <div style={{ padding: "24px" }}>{t("placeholder.sftp")}</div>
@@ -1388,6 +1415,10 @@ export function Layout() {
                 className="lock-input"
                 placeholder={t("app.lock.placeholder")}
                 aria-label={t("app.lock.placeholder")}
+                autoComplete="new-password"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
                 value={unlockInput}
                 ref={unlockInputRef}
                 autoFocus

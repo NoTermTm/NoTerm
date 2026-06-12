@@ -1,14 +1,16 @@
 use serde::{Deserialize, Serialize};
-use ssh2::Session;
 use ssh2::FileStat;
-use ssh2::{OpenFlags, OpenType};
+use ssh2::Session;
+use ssh2::{HashType, HostKeyType, OpenFlags, OpenType};
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "windows")]
 use std::fs::OpenOptions;
@@ -27,8 +29,25 @@ pub struct SshConnection {
     pub host: String,
     pub port: u16,
     pub username: String,
+    pub host_key_fingerprint_sha256: Option<String>,
     pub auth_type: AuthType,
     pub encoding: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshHostFingerprint {
+    pub host: String,
+    pub port: u16,
+    pub algorithm: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepaliveConfig {
+    pub enabled: bool,
+    pub interval_sec: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +124,13 @@ struct TerminalDisconnected {
     reason: String,
 }
 
+#[derive(Clone, Serialize)]
+struct TerminalDebug {
+    session_id: String,
+    level: String,
+    message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlledCommandResult {
@@ -119,6 +145,7 @@ pub struct ControlledCommandResult {
 pub struct SshManager {
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
     channels: Arc<Mutex<HashMap<String, Arc<Mutex<ssh2::Channel>>>>>,
+    shell_op_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     sftp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>, // 独立的 SFTP 会话
     connections: Arc<Mutex<HashMap<String, SshConnection>>>, // 存储连接信息
     forwards: Arc<Mutex<HashMap<String, ForwardHandle>>>, // 端口转发
@@ -129,6 +156,7 @@ pub struct SshManager {
 impl SshManager {
     const LIBSSH2_ERROR_EAGAIN: i32 = -37;
     const SFTP_SESSION_TIMEOUT_MS: u32 = 120_000;
+    const DEFAULT_KEEPALIVE_INTERVAL_SEC: u32 = 15;
 
     fn open_direct_tcpip(
         session: &Arc<Mutex<Session>>,
@@ -156,10 +184,41 @@ impl SshManager {
         }
         Err(anyhow::anyhow!("Timed out opening direct-tcpip channel"))
     }
+
+    fn emit_debug(
+        app_handle: &tauri::AppHandle,
+        session_id: &str,
+        level: &str,
+        message: impl Into<String>,
+    ) {
+        let message = message.into();
+        Self::append_debug_log(session_id, level, &message);
+        let _ = app_handle.emit(
+            "terminal-debug",
+            TerminalDebug {
+                session_id: session_id.to_string(),
+                level: level.to_string(),
+                message,
+            },
+        );
+    }
+
+    fn append_debug_log(session_id: &str, level: &str, message: &str) {
+        let path = std::env::temp_dir().join("noterm-shell-debug.log");
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let sanitized = message.replace('\n', "\\n");
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "[{}] [{}] [{}] {}", ts, session_id, level, sanitized);
+        }
+    }
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             channels: Arc::new(Mutex::new(HashMap::new())),
+            shell_op_locks: Arc::new(Mutex::new(HashMap::new())),
             sftp_sessions: Arc::new(Mutex::new(HashMap::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
             forwards: Arc::new(Mutex::new(HashMap::new())),
@@ -187,7 +246,7 @@ impl SshManager {
         }
 
         let started_at = Instant::now();
-        let session = self.create_authenticated_session(connection)?;
+        let session = self.create_authenticated_session(connection, None)?;
         let session = Arc::new(Mutex::new(session));
         let keepalive_stop = Arc::new(AtomicBool::new(false));
         self.spawn_keepalive_for_forward(session.clone(), keepalive_stop.clone());
@@ -254,8 +313,97 @@ impl SshManager {
         }
     }
 
-    // 辅助方法：创建并认证 SSH 会话
-    fn create_authenticated_session(&self, connection: &SshConnection) -> anyhow::Result<Session> {
+    fn normalize_host_fingerprint(value: &str) -> String {
+        value
+            .trim()
+            .trim_start_matches("SHA256:")
+            .chars()
+            .filter(|ch| !ch.is_ascii_whitespace() && *ch != ':')
+            .collect::<String>()
+            .to_lowercase()
+    }
+
+    fn format_sha256_fingerprint(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(&mut out, "{:02x}", byte);
+        }
+        out
+    }
+
+    fn host_key_algorithm_name(kind: HostKeyType) -> &'static str {
+        match kind {
+            HostKeyType::Rsa => "ssh-rsa",
+            HostKeyType::Dss => "ssh-dss",
+            HostKeyType::Ecdsa256 => "ecdsa-sha2-nistp256",
+            HostKeyType::Ecdsa384 => "ecdsa-sha2-nistp384",
+            HostKeyType::Ecdsa521 => "ecdsa-sha2-nistp521",
+            HostKeyType::Ed25519 => "ssh-ed25519",
+            HostKeyType::Unknown => "unknown",
+        }
+    }
+
+    fn default_remote_bind_host(bind_host: Option<String>) -> String {
+        bind_host
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    }
+
+    fn read_session_host_fingerprint(
+        session: &Session,
+        host: &str,
+        port: u16,
+    ) -> anyhow::Result<SshHostFingerprint> {
+        let (_, key_type) = session
+            .host_key()
+            .ok_or_else(|| anyhow::anyhow!("SSH server did not provide a host key"))?;
+        let sha256 = session
+            .host_key_hash(HashType::Sha256)
+            .ok_or_else(|| anyhow::anyhow!("SSH server host key fingerprint is unavailable"))?;
+        Ok(SshHostFingerprint {
+            host: host.to_string(),
+            port,
+            algorithm: Self::host_key_algorithm_name(key_type).to_string(),
+            sha256: Self::format_sha256_fingerprint(sha256),
+        })
+    }
+
+    fn verify_expected_host_key(
+        session: &Session,
+        connection: &SshConnection,
+    ) -> anyhow::Result<()> {
+        let expected = connection
+            .host_key_fingerprint_sha256
+            .as_deref()
+            .map(Self::normalize_host_fingerprint)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Trusted SSH host key fingerprint is missing for {}:{}",
+                    connection.host.trim(),
+                    connection.port
+                )
+            })?;
+        let actual = Self::read_session_host_fingerprint(
+            session,
+            connection.host.trim(),
+            connection.port,
+        )?;
+        if Self::normalize_host_fingerprint(&actual.sha256) != expected {
+            return Err(anyhow::anyhow!(
+                "SSH host key verification failed for {}:{} (expected {}, got {})",
+                actual.host,
+                actual.port,
+                expected,
+                actual.sha256
+            ));
+        }
+        Ok(())
+    }
+
+    fn create_handshaked_session(&self, connection: &SshConnection) -> anyhow::Result<Session> {
         let host = connection.host.trim();
         if host.is_empty() {
             return Err(anyhow::anyhow!("Host is empty"));
@@ -271,49 +419,68 @@ impl SshManager {
         let mut sess_opt: Option<Session> = None;
         let mut attempts: Vec<String> = Vec::new();
         for addr in addrs {
-            let tcp = match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
-                Ok(tcp) => tcp,
-                Err(e) => {
-                    attempts.push(format!("{} connect failed: {}", addr, e));
-                    continue;
-                }
-            };
-
-            if let Err(e) = tcp.set_read_timeout(Some(Duration::from_secs(30))) {
-                attempts.push(format!("{} set read timeout failed: {}", addr, e));
-                continue;
-            }
-            if let Err(e) = tcp.set_write_timeout(Some(Duration::from_secs(30))) {
-                attempts.push(format!("{} set write timeout failed: {}", addr, e));
-                continue;
-            }
-            if let Err(e) = tcp.set_nonblocking(false) {
-                attempts.push(format!("{} set blocking mode failed: {}", addr, e));
-                continue;
-            }
-
-            let mut sess = Session::new()?;
-            sess.set_tcp_stream(tcp);
-            sess.set_timeout(30000); // 30秒超时
-            if let Err(e) = sess.handshake() {
-                let raw = e.to_string();
-                let reason = if raw.contains("Failed getting banner") {
-                    format!(
-                        "{} handshake failed: {} (target may not be SSH / SSHD not ready / network device interrupted banner)",
-                        addr, raw
-                    )
-                } else {
-                    format!("{} handshake failed: {}", addr, raw)
+            // Banner reads can be timing-sensitive on some servers or middleboxes,
+            // especially in release builds where the connect path runs faster.
+            // Retry a few times on the same address before giving up.
+            for attempt_index in 0..3 {
+                let tcp = match Self::connect_tcp_for_ssh(&addr) {
+                    Ok(tcp) => tcp,
+                    Err(e) => {
+                        attempts.push(format!("{} connect failed: {}", addr, e));
+                        break;
+                    }
                 };
-                attempts.push(reason);
-                continue;
+
+                if let Err(e) = tcp.set_nonblocking(false) {
+                    attempts.push(format!("{} set blocking mode failed: {}", addr, e));
+                    break;
+                }
+                let _ = tcp.set_nodelay(true);
+
+                let mut sess = Session::new()?;
+                sess.set_tcp_stream(tcp);
+                sess.set_blocking(true);
+                match sess.handshake() {
+                    Ok(()) => {
+                        sess.set_timeout(30000); // 30秒超时
+                        sess_opt = Some(sess);
+                        break;
+                    }
+                    Err(e) => {
+                        let raw = e.to_string();
+                        let is_banner_error = raw.contains("Failed getting banner");
+                        let reason = if is_banner_error {
+                            format!(
+                                "{} handshake attempt {}/3 failed: {} (target may not be SSH / SSHD not ready / network device interrupted banner)",
+                                addr,
+                                attempt_index + 1,
+                                raw
+                            )
+                        } else {
+                            format!(
+                                "{} handshake attempt {}/3 failed: {}",
+                                addr,
+                                attempt_index + 1,
+                                raw
+                            )
+                        };
+                        attempts.push(reason);
+
+                        if is_banner_error && attempt_index < 2 {
+                            std::thread::sleep(Duration::from_millis(250));
+                            continue;
+                        }
+                        break;
+                    }
+                }
             }
 
-            sess_opt = Some(sess);
-            break;
+            if sess_opt.is_some() {
+                break;
+            }
         }
 
-        let sess = sess_opt.ok_or_else(|| {
+        sess_opt.ok_or_else(|| {
             anyhow::anyhow!(
                 "SSH connection failed for {}:{}; tried {} address(es): {}",
                 host,
@@ -321,8 +488,42 @@ impl SshManager {
                 attempts.len(),
                 attempts.join(" | ")
             )
-        })?;
-        sess.set_keepalive(true, 15);
+        })
+    }
+
+    fn connect_tcp_for_ssh(addr: &std::net::SocketAddr) -> std::io::Result<TcpStream> {
+        #[cfg(target_os = "macos")]
+        {
+            return TcpStream::connect(addr);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        match TcpStream::connect_timeout(addr, Duration::from_secs(10)) {
+            Ok(stream) => Ok(stream),
+            Err(error) => {
+                if error.raw_os_error() == Some(9) {
+                    return TcpStream::connect(addr);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    // 辅助方法：创建并认证 SSH 会话
+    fn create_authenticated_session(
+        &self,
+        connection: &SshConnection,
+        keepalive: Option<KeepaliveConfig>,
+    ) -> anyhow::Result<Session> {
+        let sess = self.create_handshaked_session(connection)?;
+        Self::verify_expected_host_key(&sess, connection)?;
+
+        let keepalive = keepalive.unwrap_or(KeepaliveConfig {
+            enabled: true,
+            interval_sec: Self::DEFAULT_KEEPALIVE_INTERVAL_SEC,
+        });
+        let keepalive_interval = keepalive.interval_sec.clamp(5, 300);
+        sess.set_keepalive(keepalive.enabled, keepalive_interval);
 
         let effective_username = if connection.username.trim().is_empty() {
             std::env::var("USER")
@@ -390,13 +591,24 @@ impl SshManager {
         Ok(sess)
     }
 
+    pub fn get_host_fingerprint(
+        &self,
+        connection: &SshConnection,
+    ) -> anyhow::Result<SshHostFingerprint> {
+        let sess = self.create_handshaked_session(connection)?;
+        Self::read_session_host_fingerprint(&sess, connection.host.trim(), connection.port)
+    }
+
     fn spawn_keepalive_for_session(
         &self,
         session_id: String,
         session: Arc<Mutex<Session>>,
+        app_handle: tauri::AppHandle,
     ) {
         let sessions = self.sessions.clone();
+        let shell_op_lock = self.get_or_create_shell_op_lock(&session_id);
         std::thread::spawn(move || {
+            let mut consecutive_errors = 0u8;
             loop {
                 {
                     let sessions_guard = sessions.lock().unwrap();
@@ -405,14 +617,39 @@ impl SshManager {
                     }
                 }
                 let wait = {
+                    let _op_guard = shell_op_lock.lock().unwrap();
                     let sess = session.lock().unwrap();
                     match sess.keepalive_send() {
-                        Ok(wait) => wait,
+                        Ok(wait) => {
+                            consecutive_errors = 0;
+                            wait
+                        }
                         Err(err) => {
                             if matches!(err.code(), ssh2::ErrorCode::Session(code) if code == Self::LIBSSH2_ERROR_EAGAIN) {
+                                consecutive_errors = 0;
                                 1
                             } else {
-                                break;
+                                let still_registered = sessions
+                                    .lock()
+                                    .map(|guard| guard.contains_key(&session_id))
+                                    .unwrap_or(false);
+                                if !still_registered {
+                                    break;
+                                }
+                                if !Self::is_current_session_handle(&sessions, &session_id, &session)
+                                {
+                                    break;
+                                }
+                                consecutive_errors = consecutive_errors.saturating_add(1);
+                                if consecutive_errors >= 5 {
+                                    Self::emit_debug(
+                                        &app_handle,
+                                        &session_id,
+                                        "warn",
+                                        format!("keepalive warning ignored: {}", err),
+                                    );
+                                }
+                                1
                             }
                         }
                     }
@@ -421,6 +658,118 @@ impl SshManager {
                 std::thread::sleep(Duration::from_secs(sleep_secs as u64));
             }
         });
+    }
+
+    fn remove_session_state(
+        sessions: &Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
+        channels: &Arc<Mutex<HashMap<String, Arc<Mutex<ssh2::Channel>>>>>,
+        shell_op_locks: &Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+        sftp_sessions: &Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
+        connections: &Arc<Mutex<HashMap<String, SshConnection>>>,
+        session_id: &str,
+    ) {
+        if let Ok(mut channels) = channels.lock() {
+            channels.remove(session_id);
+        }
+        if let Ok(mut shell_op_locks) = shell_op_locks.lock() {
+            shell_op_locks.remove(session_id);
+        }
+        if let Ok(mut sftp_sessions) = sftp_sessions.lock() {
+            sftp_sessions.remove(session_id);
+        }
+        if let Ok(mut sessions) = sessions.lock() {
+            sessions.remove(session_id);
+        }
+        if let Ok(mut connections) = connections.lock() {
+            connections.remove(session_id);
+        }
+    }
+
+    fn is_current_session_handle(
+        sessions: &Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
+        session_id: &str,
+        expected: &Arc<Mutex<Session>>,
+    ) -> bool {
+        sessions
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(session_id).cloned())
+            .is_some_and(|current| Arc::ptr_eq(&current, expected))
+    }
+
+    fn is_current_channel_handle(
+        channels: &Arc<Mutex<HashMap<String, Arc<Mutex<ssh2::Channel>>>>>,
+        session_id: &str,
+        expected: &Arc<Mutex<ssh2::Channel>>,
+    ) -> bool {
+        channels
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(session_id).cloned())
+            .is_some_and(|current| Arc::ptr_eq(&current, expected))
+    }
+
+    fn replace_existing_session_state(&self, session_id: &str) {
+        if let Ok(mut channels) = self.channels.lock() {
+            if let Some(channel) = channels.remove(session_id) {
+                if let Ok(mut ch) = channel.lock() {
+                    let _ = ch.close();
+                    let _ = ch.wait_close();
+                }
+            }
+        }
+        if let Ok(mut shell_op_locks) = self.shell_op_locks.lock() {
+            shell_op_locks.remove(session_id);
+        }
+        if let Ok(mut sftp_sessions) = self.sftp_sessions.lock() {
+            if let Some(sftp_session) = sftp_sessions.remove(session_id) {
+                if let Ok(sess) = sftp_session.lock() {
+                    let _ = sess.disconnect(None, "Session replaced", None);
+                }
+            }
+        }
+        if let Ok(mut sessions) = self.sessions.lock() {
+            if let Some(session) = sessions.remove(session_id) {
+                if let Ok(sess) = session.lock() {
+                    let _ = sess.disconnect(None, "Session replaced", None);
+                }
+            }
+        }
+        if let Ok(mut connections) = self.connections.lock() {
+            connections.remove(session_id);
+        }
+    }
+
+    fn get_or_create_shell_op_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.shell_op_locks.lock().unwrap();
+        locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn is_transient_shell_read_error(error: &std::io::Error) -> bool {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ) {
+            return true;
+        }
+        let message = error.to_string().to_lowercase();
+        message.contains("transport read")
+            || message.contains("would block")
+            || message.contains("timed out")
+    }
+
+    fn is_idle_shell_read_timeout(error: &std::io::Error) -> bool {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ) {
+            return true;
+        }
+        let message = error.to_string().to_lowercase();
+        message.contains("would block") || message.contains("timed out")
     }
 
     fn spawn_keepalive_for_forward(
@@ -452,11 +801,30 @@ impl SshManager {
         });
     }
 
-    pub fn connect(&self, connection: &SshConnection) -> anyhow::Result<String> {
-        let sess = self.create_authenticated_session(connection)?;
-
+    pub fn connect(
+        &self,
+        connection: &SshConnection,
+        keepalive: Option<KeepaliveConfig>,
+        app_handle: tauri::AppHandle,
+    ) -> anyhow::Result<String> {
         let session_id = connection.id.clone();
+        Self::emit_debug(
+            &app_handle,
+            &session_id,
+            "info",
+            format!(
+                "ssh connect start host={} port={} user={}",
+                connection.host.trim(),
+                connection.port,
+                connection.username.trim()
+            ),
+        );
+        let sess = self.create_authenticated_session(connection, keepalive)?;
         let session_arc = Arc::new(Mutex::new(sess));
+
+        // Reconnects reuse the same logical id. Replace prior state first so
+        // stale background threads cannot later tear down the new session.
+        self.replace_existing_session_state(&session_id);
 
         // 存储连接信息（用于后续创建 SFTP 会话）
         let mut connections = self.connections.lock().unwrap();
@@ -468,12 +836,19 @@ impl SshManager {
         sessions.insert(session_id.clone(), session_arc.clone());
         drop(sessions);
 
-        self.spawn_keepalive_for_session(session_id.clone(), session_arc);
+        self.spawn_keepalive_for_session(session_id.clone(), session_arc, app_handle);
 
-        Ok(session_id)
+        // The shell channel is opened separately; this only confirms SSH auth/session setup.
+        // Logging it explicitly helps distinguish transport/auth failures from PTY failures.
+        // This is intentionally terse because frontend already records reconnect state changes.
+        // Keeping it here makes the copied diagnostic log self-contained.
+        //
+        // No user-facing output is emitted into the terminal stream.
+        Ok(session_id.clone())
     }
 
     pub fn open_shell(&self, session_id: &str, app_handle: tauri::AppHandle) -> anyhow::Result<()> {
+        Self::emit_debug(&app_handle, session_id, "info", "ssh open shell start");
         let sessions = self.sessions.lock().unwrap();
         let session = sessions
             .get(session_id)
@@ -484,29 +859,38 @@ impl SshManager {
         let mut channel = sess.channel_session()?;
         channel.request_pty("xterm-256color", None, Some((80, 24, 0, 0)))?;
         channel.shell()?;
-        
-        // Set channel to non-blocking mode
-        sess.set_blocking(false);
+
+        // Interactive shell is more stable with short blocking reads/writes than
+        // libssh2's fully non-blocking mode, which was surfacing transport-read
+        // and draining-flow errors during normal typing.
+        sess.set_blocking(true);
+        sess.set_timeout(100);
         drop(sess);
 
         let channel_arc = Arc::new(Mutex::new(channel));
         let mut channels = self.channels.lock().unwrap();
         channels.insert(session_id.to_string(), channel_arc.clone());
         drop(channels);
+        let shell_op_lock = self.get_or_create_shell_op_lock(session_id);
+        Self::emit_debug(&app_handle, session_id, "info", "ssh open shell success");
 
         // Start reading output in background
         let session_id_clone = session_id.to_string();
         let channel_clone = channel_arc.clone();
+        let session_clone = session.clone();
+        let shell_op_lock_clone = shell_op_lock.clone();
         let app_handle = app_handle.clone();
         let sessions_map = self.sessions.clone();
         let channels_map = self.channels.clone();
+        let shell_op_locks_map = self.shell_op_locks.clone();
         let sftp_sessions_map = self.sftp_sessions.clone();
         let connections_map = self.connections.clone();
         std::thread::spawn(move || {
             let mut buffer = [0u8; 8192];
             let mut disconnected_reason: Option<String> = None;
-            let mut zero_read_since: Option<Instant> = None;
+            let mut consecutive_read_errors = 0u8;
             loop {
+                let _op_guard = shell_op_lock_clone.lock().unwrap();
                 let mut channel_lock = match channel_clone.lock() {
                     Ok(ch) => ch,
                     Err(_) => break,
@@ -514,7 +898,7 @@ impl SshManager {
                 
                 match channel_lock.read(&mut buffer) {
                     Ok(n) if n > 0 => {
-                        zero_read_since = None;
+                        consecutive_read_errors = 0;
                         let output = String::from_utf8_lossy(&buffer[..n]).to_string();
                         let _ = app_handle.emit("terminal-output", TerminalOutput {
                             session_id: session_id_clone.clone(),
@@ -522,43 +906,77 @@ impl SshManager {
                         });
                     }
                     Ok(_) => {
-                        // In non-blocking mode, occasional zero-byte reads can happen transiently.
-                        // Only treat them as a disconnect after EOF is confirmed or they persist.
+                        // In non-blocking mode, zero-byte reads may happen on idle sessions.
+                        // Only mark the shell disconnected when libssh2 reports EOF explicitly.
                         if channel_lock.eof() {
+                            Self::emit_debug(&app_handle, &session_id_clone, "warn", "ssh shell reader observed eof");
                             disconnected_reason = Some("eof".to_string());
                             break;
                         }
-                        let started_at = zero_read_since.get_or_insert_with(Instant::now);
-                        if started_at.elapsed() >= Duration::from_secs(3) {
-                            disconnected_reason = Some("eof-like-zero-read".to_string());
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        zero_read_since = None;
-                        // No data available in non-blocking mode, continue
+                        consecutive_read_errors = 0;
                     }
                     Err(e) => {
-                        disconnected_reason = Some(format!("error: {}", e));
-                        break;
+                        if Self::is_idle_shell_read_timeout(&e) {
+                            consecutive_read_errors = 0;
+                            drop(channel_lock);
+                            std::thread::sleep(std::time::Duration::from_millis(25));
+                            continue;
+                        }
+                        if Self::is_transient_shell_read_error(&e) {
+                            consecutive_read_errors = consecutive_read_errors.saturating_add(1);
+                            if consecutive_read_errors >= 20 {
+                                Self::emit_debug(
+                                    &app_handle,
+                                    &session_id_clone,
+                                    "warn",
+                                    format!(
+                                        "ssh shell reader transient error x{}: {}",
+                                        consecutive_read_errors, e
+                                    ),
+                                );
+                                consecutive_read_errors = 0;
+                            }
+                        } else {
+                            Self::emit_debug(
+                                &app_handle,
+                                &session_id_clone,
+                                "error",
+                                format!("ssh shell reader error: {}", e),
+                            );
+                            disconnected_reason = Some(format!("error: {}", e));
+                            break;
+                        }
                     }
                 }
                 drop(channel_lock);
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             if let Some(reason) = disconnected_reason {
-                if let Ok(mut channels) = channels_map.lock() {
-                    channels.remove(&session_id_clone);
+                if !Self::is_current_channel_handle(&channels_map, &session_id_clone, &channel_clone)
+                    || !Self::is_current_session_handle(&sessions_map, &session_id_clone, &session_clone)
+                {
+                    Self::emit_debug(
+                        &app_handle,
+                        &session_id_clone,
+                        "info",
+                        "ssh disconnect ignored because session/channel was already replaced",
+                    );
+                    return;
                 }
-                if let Ok(mut sftp_sessions) = sftp_sessions_map.lock() {
-                    sftp_sessions.remove(&session_id_clone);
-                }
-                if let Ok(mut sessions) = sessions_map.lock() {
-                    sessions.remove(&session_id_clone);
-                }
-                if let Ok(mut connections) = connections_map.lock() {
-                    connections.remove(&session_id_clone);
-                }
+                Self::remove_session_state(
+                    &sessions_map,
+                    &channels_map,
+                    &shell_op_locks_map,
+                    &sftp_sessions_map,
+                    &connections_map,
+                    &session_id_clone,
+                );
+                Self::emit_debug(
+                    &app_handle,
+                    &session_id_clone,
+                    "warn",
+                    format!("ssh session state removed after reader disconnect: {}", reason),
+                );
                 let _ = app_handle.emit("terminal-disconnected", TerminalDisconnected {
                     session_id: session_id_clone.clone(),
                     reason,
@@ -570,11 +988,24 @@ impl SshManager {
     }
 
     pub fn write_to_shell(&self, session_id: &str, data: &str) -> anyhow::Result<()> {
+        fn is_retryable_shell_write_error(error: &std::io::Error) -> bool {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) {
+                return true;
+            }
+            let message = error.to_string().to_lowercase();
+            message.contains("would block") || message.contains("timed out")
+        }
+
+        let shell_op_lock = self.get_or_create_shell_op_lock(session_id);
         let channels = self.channels.lock().unwrap();
         let channel = channels
             .get(session_id)
             .ok_or_else(|| anyhow::anyhow!("Shell not found"))?;
 
+        let _op_guard = shell_op_lock.lock().unwrap();
         let mut ch = channel.lock().unwrap();
 
         // Interactive shell channel runs in non-blocking mode.
@@ -589,9 +1020,9 @@ impl SshManager {
                 Ok(written) => {
                     remaining = &remaining[written..];
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(err) if is_retryable_shell_write_error(&err) => {
                     if Instant::now() >= deadline {
-                        return Err(anyhow::anyhow!("SSH write timed out (would block)"));
+                        return Err(anyhow::anyhow!("SSH write timed out"));
                     }
                     std::thread::sleep(Duration::from_millis(6));
                 }
@@ -602,9 +1033,9 @@ impl SshManager {
         loop {
             match ch.flush() {
                 Ok(_) => break,
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(err) if is_retryable_shell_write_error(&err) => {
                     if Instant::now() >= deadline {
-                        return Err(anyhow::anyhow!("SSH flush timed out (would block)"));
+                        return Err(anyhow::anyhow!("SSH flush timed out"));
                     }
                     std::thread::sleep(Duration::from_millis(6));
                 }
@@ -701,7 +1132,7 @@ impl SshManager {
         let timeout = Duration::from_secs(timeout_sec);
         let started_at = Instant::now();
 
-        let session = self.create_authenticated_session(&connection)?;
+        let session = self.create_authenticated_session(&connection, None)?;
         session.set_blocking(false);
         session.set_timeout((timeout_sec * 1000) as u32);
         let deadline = started_at + timeout;
@@ -852,7 +1283,7 @@ impl SshManager {
         drop(connections);
 
         // 创建新的独立 SSH 会话专门用于 SFTP
-        let sess = self.create_authenticated_session(&connection)?;
+        let sess = self.create_authenticated_session(&connection, None)?;
 
         // 设置为阻塞模式（SFTP 需要）
         sess.set_blocking(true);
@@ -1002,11 +1433,13 @@ impl SshManager {
     }
 
     pub fn resize_pty(&self, session_id: &str, cols: u32, rows: u32) -> anyhow::Result<()> {
+        let shell_op_lock = self.get_or_create_shell_op_lock(session_id);
         let channels = self.channels.lock().unwrap();
         let channel = channels
             .get(session_id)
             .ok_or_else(|| anyhow::anyhow!("Shell not found"))?;
 
+        let _op_guard = shell_op_lock.lock().unwrap();
         let mut ch = channel.lock().unwrap();
         ch.request_pty_size(cols, rows, None, None)?;
 
@@ -1284,7 +1717,7 @@ impl SshManager {
                 self.start_local_forward(session.clone(), listener_stop.clone(), bind_host, bind_port, target_host, target_port)
             }
             ForwardKind::Remote => {
-                let bind_host = config.remote_bind_host.unwrap_or_else(|| "0.0.0.0".to_string());
+                let bind_host = Self::default_remote_bind_host(config.remote_bind_host);
                 let bind_port = config.remote_bind_port.ok_or_else(|| anyhow::anyhow!("Remote bind port missing"))?;
                 let target_host = config.target_host.ok_or_else(|| anyhow::anyhow!("Target host missing"))?;
                 let target_port = config.target_port.ok_or_else(|| anyhow::anyhow!("Target port missing"))?;
@@ -1567,6 +2000,35 @@ impl SshManager {
         stream.read_exact(&mut port_buf)?;
         let port = u16::from_be_bytes(port_buf);
         Ok((host, port))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SshManager;
+
+    #[test]
+    fn normalizes_host_fingerprints_for_comparison() {
+        assert_eq!(
+            SshManager::normalize_host_fingerprint("SHA256:AA:BB cc"),
+            "aabbcc"
+        );
+    }
+
+    #[test]
+    fn defaults_remote_bind_host_to_loopback() {
+        assert_eq!(
+            SshManager::default_remote_bind_host(None),
+            "127.0.0.1".to_string()
+        );
+        assert_eq!(
+            SshManager::default_remote_bind_host(Some("  ".to_string())),
+            "127.0.0.1".to_string()
+        );
+        assert_eq!(
+            SshManager::default_remote_bind_host(Some("0.0.0.0".to_string())),
+            "0.0.0.0".to_string()
+        );
     }
 }
 

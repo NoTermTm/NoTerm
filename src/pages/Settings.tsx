@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   DEFAULT_APP_SETTINGS,
+  SENSITIVE_APP_SETTING_KEYS,
   type AppSettings,
+  clearVolatileSecretAppSettings,
   writeAppSetting,
-  getAppSettingsStore,
   DEFAULT_TERMINAL_FONT_FAMILY,
+  normalizeAppTheme,
   withTerminalIconFontFallback,
 } from "../store/appSettings";
 import { load } from "@tauri-apps/plugin-store";
@@ -38,6 +40,10 @@ import { Modal } from "../components/Modal";
 import { AppIcon } from "../components/AppIcon";
 import { toRgba } from "../utils/color";
 import { loadTerminalBackgroundUrl, TERMINAL_BG_DIR } from "../utils/terminalBackground";
+import {
+  buildExportSettings,
+  mergeImportedSettings,
+} from "../utils/settingsSecurity";
 import { readAllAiModels, writeAiModels } from "../store/aiModels";
 import "./Settings.css";
 
@@ -66,7 +72,9 @@ const TERMINAL_FONT_WEIGHT_OPTIONS = [
 const APP_THEME_OPTIONS = [
   { labelKey: "settings.theme.bright", value: "bright" },
   { labelKey: "settings.theme.mint", value: "mint" },
-  { labelKey: "settings.theme.kraft", value: "kraft" },
+  { labelKey: "settings.theme.chal", value: "chal" },
+  { labelKey: "settings.theme.github", value: "github" },
+  { labelKey: "settings.theme.notinish", value: "notinish" },
   { labelKey: "settings.theme.dark", value: "dark" },
 ];
 
@@ -370,190 +378,13 @@ export function SettingsPage() {
   useEffect(() => {
     let disposed = false;
     const run = async () => {
-      const store = await getAppSettingsStore();
-      const next: AppSettings = {
-        "i18n.locale":
-          (await store.get<AppSettings["i18n.locale"]>("i18n.locale")) ??
-          DEFAULT_APP_SETTINGS["i18n.locale"],
-        "ui.theme":
-          (await store.get<AppSettings["ui.theme"]>("ui.theme")) ??
-          DEFAULT_APP_SETTINGS["ui.theme"],
-        "connection.autoConnect":
-          (await store.get<boolean>("connection.autoConnect")) ??
-          DEFAULT_APP_SETTINGS["connection.autoConnect"],
-        "connection.savePassword":
-          (await store.get<boolean>("connection.savePassword")) ??
-          DEFAULT_APP_SETTINGS["connection.savePassword"],
-        "connection.keepAlive":
-          (await store.get<boolean>("connection.keepAlive")) ??
-          DEFAULT_APP_SETTINGS["connection.keepAlive"],
-        "connection.keepAliveInterval":
-          (await store.get<number>("connection.keepAliveInterval")) ??
-          DEFAULT_APP_SETTINGS["connection.keepAliveInterval"],
-        "security.masterKeyHash":
-          (await store.get<string>("security.masterKeyHash")) ??
-          DEFAULT_APP_SETTINGS["security.masterKeyHash"],
-        "security.masterKeySalt":
-          (await store.get<string>("security.masterKeySalt")) ??
-          DEFAULT_APP_SETTINGS["security.masterKeySalt"],
-        "security.masterKeyEncSalt":
-          (await store.get<string>("security.masterKeyEncSalt")) ??
-          DEFAULT_APP_SETTINGS["security.masterKeyEncSalt"],
-        "security.lockTimeoutMinutes":
-          (await store.get<number>("security.lockTimeoutMinutes")) ??
-          DEFAULT_APP_SETTINGS["security.lockTimeoutMinutes"],
-        "terminal.theme":
-          (await store.get<AppSettings["terminal.theme"]>("terminal.theme")) ??
-          DEFAULT_APP_SETTINGS["terminal.theme"],
-        "terminal.fontSize":
-          (await store.get<number>("terminal.fontSize")) ??
-          DEFAULT_APP_SETTINGS["terminal.fontSize"],
-        "terminal.fontFamily":
-          (await store.get<string>("terminal.fontFamily")) ??
-          DEFAULT_APP_SETTINGS["terminal.fontFamily"],
-        "terminal.fontWeight":
-          (await store.get<number>("terminal.fontWeight")) ??
-          DEFAULT_APP_SETTINGS["terminal.fontWeight"],
-        "terminal.cursorStyle":
-          (await store.get<AppSettings["terminal.cursorStyle"]>("terminal.cursorStyle")) ??
-          DEFAULT_APP_SETTINGS["terminal.cursorStyle"],
-        "terminal.cursorBlink":
-          (await store.get<boolean>("terminal.cursorBlink")) ??
-          DEFAULT_APP_SETTINGS["terminal.cursorBlink"],
-        "terminal.lineHeight":
-          (await store.get<number>("terminal.lineHeight")) ??
-          DEFAULT_APP_SETTINGS["terminal.lineHeight"],
-        "terminal.autoCopy":
-          (await store.get<boolean>("terminal.autoCopy")) ??
-          DEFAULT_APP_SETTINGS["terminal.autoCopy"],
-        "terminal.reconnectWriteFailures":
-          (await store.get<number>("terminal.reconnectWriteFailures")) ??
-          DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"],
-        "terminal.backgroundImage":
-          (await store.get<string>("terminal.backgroundImage")) ??
-          DEFAULT_APP_SETTINGS["terminal.backgroundImage"],
-        "terminal.backgroundFit":
-          (await store.get<AppSettings["terminal.backgroundFit"]>("terminal.backgroundFit")) ??
-          DEFAULT_APP_SETTINGS["terminal.backgroundFit"],
-        "terminal.backgroundOpacity":
-          (await store.get<number>("terminal.backgroundOpacity")) ??
-          DEFAULT_APP_SETTINGS["terminal.backgroundOpacity"],
-        "terminal.backgroundBlur":
-          (await store.get<number>("terminal.backgroundBlur")) ??
-          DEFAULT_APP_SETTINGS["terminal.backgroundBlur"],
-        "ai.enabled":
-          (await store.get<boolean>("ai.enabled")) ??
-          DEFAULT_APP_SETTINGS["ai.enabled"],
-        "ai.provider":
-          (await store.get<AppSettings["ai.provider"]>("ai.provider")) ??
-          DEFAULT_APP_SETTINGS["ai.provider"],
-        "ai.openai.baseUrl":
-          (await store.get<string>("ai.openai.baseUrl")) ??
-          DEFAULT_APP_SETTINGS["ai.openai.baseUrl"],
-        "ai.openai.apiKey":
-          (await store.get<string>("ai.openai.apiKey")) ??
-          DEFAULT_APP_SETTINGS["ai.openai.apiKey"],
-        "ai.openai.model":
-          (await store.get<string>("ai.openai.model")) ??
-          DEFAULT_APP_SETTINGS["ai.openai.model"],
-        "ai.openai.models":
-          (await store.get<string[]>("ai.openai.models")) ??
-          DEFAULT_APP_SETTINGS["ai.openai.models"],
-        "ai.anthropic.baseUrl":
-          (await store.get<string>("ai.anthropic.baseUrl")) ??
-          DEFAULT_APP_SETTINGS["ai.anthropic.baseUrl"],
-        "ai.anthropic.apiKey":
-          (await store.get<string>("ai.anthropic.apiKey")) ??
-          DEFAULT_APP_SETTINGS["ai.anthropic.apiKey"],
-        "ai.anthropic.model":
-          (await store.get<string>("ai.anthropic.model")) ??
-          DEFAULT_APP_SETTINGS["ai.anthropic.model"],
-        "ai.anthropic.models":
-          (await store.get<string[]>("ai.anthropic.models")) ??
-          DEFAULT_APP_SETTINGS["ai.anthropic.models"],
-        "ai.volcengine.baseUrl":
-          (await store.get<string>("ai.volcengine.baseUrl")) ??
-          DEFAULT_APP_SETTINGS["ai.volcengine.baseUrl"],
-        "ai.volcengine.apiKey":
-          (await store.get<string>("ai.volcengine.apiKey")) ??
-          DEFAULT_APP_SETTINGS["ai.volcengine.apiKey"],
-        "ai.volcengine.model":
-          (await store.get<string>("ai.volcengine.model")) ??
-          DEFAULT_APP_SETTINGS["ai.volcengine.model"],
-        "ai.volcengine.models":
-          (await store.get<string[]>("ai.volcengine.models")) ??
-          DEFAULT_APP_SETTINGS["ai.volcengine.models"],
-        "ai.deepseek.baseUrl":
-          (await store.get<string>("ai.deepseek.baseUrl")) ??
-          DEFAULT_APP_SETTINGS["ai.deepseek.baseUrl"],
-        "ai.deepseek.apiKey":
-          (await store.get<string>("ai.deepseek.apiKey")) ??
-          DEFAULT_APP_SETTINGS["ai.deepseek.apiKey"],
-        "ai.deepseek.model":
-          (await store.get<string>("ai.deepseek.model")) ??
-          DEFAULT_APP_SETTINGS["ai.deepseek.model"],
-        "ai.deepseek.models":
-          (await store.get<string[]>("ai.deepseek.models")) ??
-          DEFAULT_APP_SETTINGS["ai.deepseek.models"],
-        "ai.model":
-          (await store.get<string>("ai.model")) ??
-          DEFAULT_APP_SETTINGS["ai.model"],
-        "ai.models":
-          (await store.get<string[]>("ai.models")) ??
-          DEFAULT_APP_SETTINGS["ai.models"],
-        "ai.approvalMode":
-          (await store.get<AppSettings["ai.approvalMode"]>("ai.approvalMode")) ??
-          DEFAULT_APP_SETTINGS["ai.approvalMode"],
-        "sync.enabled":
-          (await store.get<boolean>("sync.enabled")) ??
-          DEFAULT_APP_SETTINGS["sync.enabled"],
-        "sync.provider":
-          (await store.get<AppSettings["sync.provider"]>("sync.provider")) ??
-          DEFAULT_APP_SETTINGS["sync.provider"],
-        "sync.lastSyncedAt":
-          (await store.get<string>("sync.lastSyncedAt")) ??
-          DEFAULT_APP_SETTINGS["sync.lastSyncedAt"],
-        "sync.autoBackupEnabled":
-          (await store.get<boolean>("sync.autoBackupEnabled")) ??
-          DEFAULT_APP_SETTINGS["sync.autoBackupEnabled"],
-        "sync.autoBackupIntervalMinutes":
-          (await store.get<number>("sync.autoBackupIntervalMinutes")) ??
-          DEFAULT_APP_SETTINGS["sync.autoBackupIntervalMinutes"],
-        "sync.webdav.endpoint":
-          (await store.get<string>("sync.webdav.endpoint")) ??
-          DEFAULT_APP_SETTINGS["sync.webdav.endpoint"],
-        "sync.webdav.username":
-          (await store.get<string>("sync.webdav.username")) ??
-          DEFAULT_APP_SETTINGS["sync.webdav.username"],
-        "sync.webdav.password":
-          (await store.get<string>("sync.webdav.password")) ??
-          DEFAULT_APP_SETTINGS["sync.webdav.password"],
-        "sync.webdav.basePath":
-          (await store.get<string>("sync.webdav.basePath")) ??
-          DEFAULT_APP_SETTINGS["sync.webdav.basePath"],
-        "sync.s3.endpoint":
-          (await store.get<string>("sync.s3.endpoint")) ??
-          DEFAULT_APP_SETTINGS["sync.s3.endpoint"],
-        "sync.s3.region":
-          (await store.get<string>("sync.s3.region")) ??
-          DEFAULT_APP_SETTINGS["sync.s3.region"],
-        "sync.s3.bucket":
-          (await store.get<string>("sync.s3.bucket")) ??
-          DEFAULT_APP_SETTINGS["sync.s3.bucket"],
-        "sync.s3.prefix":
-          (await store.get<string>("sync.s3.prefix")) ??
-          DEFAULT_APP_SETTINGS["sync.s3.prefix"],
-        "sync.s3.accessKeyId":
-          (await store.get<string>("sync.s3.accessKeyId")) ??
-          DEFAULT_APP_SETTINGS["sync.s3.accessKeyId"],
-        "sync.s3.secretAccessKey":
-          (await store.get<string>("sync.s3.secretAccessKey")) ??
-          DEFAULT_APP_SETTINGS["sync.s3.secretAccessKey"],
-        "sync.s3.forcePathStyle":
-          (await store.get<boolean>("sync.s3.forcePathStyle")) ??
-          DEFAULT_APP_SETTINGS["sync.s3.forcePathStyle"],
-      };
-      if (!disposed) setSettings(next);
+      const next = await readSettingsSnapshot();
+      if (!disposed) {
+        setSettings({
+          ...next,
+          "ui.theme": normalizeAppTheme(next["ui.theme"]),
+        });
+      }
     };
 
     void run();
@@ -975,39 +806,9 @@ export function SettingsPage() {
         ? (payload as any).profiles
         : [];
 
-      const settingsStore = await getAppSettingsStore();
+      const current = await readSettingsSnapshot();
       const keys = Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>;
-      const current = {} as Record<keyof AppSettings, AppSettings[keyof AppSettings]>;
-      for (const key of keys) {
-        const stored = await settingsStore.get<AppSettings[typeof key]>(key);
-        current[key] = (stored ?? DEFAULT_APP_SETTINGS[key]) as AppSettings[typeof key];
-      }
-
-      const protectedKeys = new Set<keyof AppSettings>([
-        "security.masterKeyHash",
-        "security.masterKeySalt",
-        "security.masterKeyEncSalt",
-        "ai.openai.apiKey",
-        "ai.anthropic.apiKey",
-        "ai.volcengine.apiKey",
-      ]);
-
-      const next = { ...current } as Record<
-        keyof AppSettings,
-        AppSettings[keyof AppSettings]
-      >;
-      for (const key of keys) {
-        if (Object.prototype.hasOwnProperty.call(importedSettings, key)) {
-          const value = importedSettings[key];
-          if (
-            protectedKeys.has(key) &&
-            (value === "" || value === null || typeof value === "undefined")
-          ) {
-            continue;
-          }
-          next[key] = (value as AppSettings[typeof key]) ?? next[key];
-        }
-      }
+      const next = mergeImportedSettings(current, importedSettings);
 
       for (const key of keys) {
         await writeAppSetting(key, next[key] as AppSettings[typeof key]);
@@ -1102,13 +903,30 @@ export function SettingsPage() {
       const hash = await hashMasterKey(masterKeyInput, salt);
       const encSalt =
         settings["security.masterKeyEncSalt"] || generateSalt();
-      updateSetting("security.masterKeyHash", hash);
-      updateSetting("security.masterKeySalt", salt);
-      updateSetting("security.masterKeyEncSalt", encSalt);
-      if (settings["security.lockTimeoutMinutes"] <= 0) {
-        updateSetting("security.lockTimeoutMinutes", 10);
+      const nextLockTimeout =
+        settings["security.lockTimeoutMinutes"] <= 0
+          ? 10
+          : settings["security.lockTimeoutMinutes"];
+      await writeAppSetting("security.masterKeyHash", hash);
+      await writeAppSetting("security.masterKeySalt", salt);
+      await writeAppSetting("security.masterKeyEncSalt", encSalt);
+      if (nextLockTimeout !== settings["security.lockTimeoutMinutes"]) {
+        await writeAppSetting("security.lockTimeoutMinutes", nextLockTimeout);
       }
       setMasterKeySession(masterKeyInput);
+      for (const key of SENSITIVE_APP_SETTING_KEYS) {
+        const value = settings[key];
+        if (typeof value === "string" && value.trim()) {
+          await writeAppSetting(key, value as AppSettings[typeof key]);
+        }
+      }
+      setSettings((prev) => ({
+        ...prev,
+        "security.masterKeyHash": hash,
+        "security.masterKeySalt": salt,
+        "security.masterKeyEncSalt": encSalt,
+        "security.lockTimeoutMinutes": nextLockTimeout,
+      }));
       setMasterKeyInput("");
       setMasterKeyConfirm("");
       setMasterKeyStatus("success");
@@ -1152,6 +970,7 @@ export function SettingsPage() {
     updateSetting("security.masterKeyEncSalt", "");
     updateSetting("security.lockTimeoutMinutes", 0);
     clearMasterKeySession();
+    clearVolatileSecretAppSettings();
     setMasterKeyInput("");
     setMasterKeyConfirm("");
     setMasterKeyStatus("success");
@@ -1433,25 +1252,9 @@ export function SettingsPage() {
         return;
       }
 
-      const settingsStore = await getAppSettingsStore();
-      const entries = { ...DEFAULT_APP_SETTINGS } as AppSettings;
-      const typedEntries = entries as Record<keyof AppSettings, AppSettings[keyof AppSettings]>;
-      for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<
-        keyof AppSettings
-      >) {
-        const stored = await settingsStore.get<AppSettings[typeof key]>(key);
-        typedEntries[key] = (stored ?? DEFAULT_APP_SETTINGS[key]) as AppSettings[typeof key];
-      }
+      const entries = await readSettingsSnapshot();
 
-      const exportSettings = {
-        ...entries,
-        "security.masterKeyHash": "",
-        "security.masterKeySalt": "",
-        "ai.openai.apiKey": "",
-        "ai.anthropic.apiKey": "",
-        "ai.volcengine.apiKey": "",
-        "ai.deepseek.apiKey": "",
-      } as AppSettings;
+      const exportSettings = buildExportSettings(entries);
 
       const connectionStore = await load("connections.json");
       const connections = (await connectionStore.get("connections")) ?? [];

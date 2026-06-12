@@ -9,6 +9,7 @@ import {
 import {
   DEFAULT_APP_SETTINGS,
   getAppSettingsStore,
+  readAppSetting,
   type AppSettings,
 } from "../store/appSettings";
 
@@ -527,12 +528,10 @@ const readAllSettingsForSync = async () => {
 };
 
 export const readSettingsSnapshot = async () => {
-  const store = await getAppSettingsStore();
   const keys = Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>;
   const next = {} as Record<keyof AppSettings, AppSettings[keyof AppSettings]>;
   for (const key of keys) {
-    const value = await store.get<AppSettings[typeof key]>(key);
-    next[key] = (value ?? DEFAULT_APP_SETTINGS[key]) as AppSettings[typeof key];
+    next[key] = await readAppSetting(key);
   }
   return next as AppSettings;
 };

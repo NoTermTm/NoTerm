@@ -1,6 +1,18 @@
 import { invoke } from '@tauri-apps/api/core';
 import { SshConnection, SftpEntry } from '../types/ssh';
 
+export interface SshKeepaliveConfig {
+  enabled: boolean;
+  intervalSec: number;
+}
+
+export interface SshHostFingerprint {
+  host: string;
+  port: number;
+  algorithm: string;
+  sha256: string;
+}
+
 export interface EndpointCheck {
   ip: string;
   port: number;
@@ -21,12 +33,21 @@ export interface ResourceStatsResult {
 }
 
 export const sshApi = {
-  connect: async (connection: SshConnection): Promise<string> => {
-    return await invoke('ssh_connect', { connection });
+  connect: async (
+    connection: SshConnection,
+    keepalive?: SshKeepaliveConfig,
+  ): Promise<string> => {
+    return await invoke('ssh_connect', { connection, keepalive });
   },
 
   checkEndpoint: async (host: string, port: number): Promise<EndpointCheck> => {
     return await invoke('ssh_check_endpoint', { host, port });
+  },
+
+  getHostFingerprint: async (
+    connection: SshConnection,
+  ): Promise<SshHostFingerprint> => {
+    return await invoke('ssh_get_host_fingerprint', { connection });
   },
 
   openShell: async (sessionId: string): Promise<void> => {

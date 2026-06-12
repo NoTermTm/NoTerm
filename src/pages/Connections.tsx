@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useState,
   useEffect,
   useMemo,
@@ -8,7 +10,7 @@ import {
 import { createPortal } from "react-dom";
 import { AppIcon } from "../components/AppIcon";
 import { Select } from "../components/Select";
-import { sshApi } from "../api/ssh";
+import { sshApi, type SshKeepaliveConfig } from "../api/ssh";
 import { telnetApi } from "../api/telnet";
 import type {
   ConnectionConfig,
@@ -17,9 +19,9 @@ import type {
 } from "../types/connection";
 import { load } from "@tauri-apps/plugin-store";
 import { useNavigate } from "react-router-dom";
-import { XTerminal } from "../components/XTerminal";
 import { SlidePanel } from "../components/SlidePanel";
 import { Modal } from "../components/Modal";
+import { SshHostTrustModal } from "../components/SshHostTrustModal";
 import { Tab } from "../components/TitleBar";
 import type { AuthProfile } from "../types/auth";
 import { readAppSetting, writeAppSetting } from "../store/appSettings";
@@ -33,6 +35,23 @@ import {
 import { getMasterKeySession } from "../utils/securitySession";
 import { useI18n } from "../i18n";
 import "./Connections.css";
+
+const XTerminal = lazy(() =>
+  import("../components/XTerminal").then((module) => ({
+    default: module.XTerminal,
+  })),
+);
+
+const TerminalFallback = () => (
+  <div className="terminal-fullscreen">
+    <div
+      className="terminal-container"
+      style={{ alignItems: "center", justifyContent: "center" }}
+    >
+      Loading terminal...
+    </div>
+  </div>
+);
 
 const ENCODING_OPTIONS = [
   { value: "utf-8", label: "UTF-8" },
@@ -56,6 +75,15 @@ const CONNECTION_COLOR_OPTIONS = [
 ];
 
 type OsType = "windows" | "macos" | "linux" | "unknown";
+type HostTrustPromptState = {
+  host: string;
+  port: number;
+  algorithm: string;
+  fingerprint: string;
+  trustedFingerprint?: string;
+  mode: "first-use" | "changed";
+  resolve: (approved: boolean) => void;
+};
 
 const extractTagCandidates = (tags?: string[] | string | null) => {
   if (typeof tags === "string") {
@@ -108,6 +136,15 @@ const normalizeOsType = (value?: string): OsType | undefined => {
     return normalized as OsType;
   }
   return undefined;
+};
+
+const readSshKeepaliveConfig = async (): Promise<SshKeepaliveConfig> => {
+  const enabled = await readAppSetting("connection.keepAlive");
+  const intervalSec = await readAppSetting("connection.keepAliveInterval");
+  return {
+    enabled,
+    intervalSec: Math.max(5, Math.min(300, Math.round(intervalSec || 15))),
+  };
 };
 
 const SETTINGS_TAB_ID = "__settings__";
@@ -222,6 +259,7 @@ const normalizeSshConnection = (
   host: trimValue(conn.host),
   port: Number.isFinite(conn.port as number) ? (conn.port as number) : 22,
   username: trimValue(conn.username),
+  host_key_fingerprint_sha256: trimValue(conn.host_key_fingerprint_sha256),
   auth_type: normalizeSshAuthType(
     conn.auth_type ?? { type: "Password", password: "" },
   ),
@@ -755,6 +793,7 @@ export function ConnectionsPage({
   const [connectPickerOpen, setConnectPickerOpen] = useState(false);
   const [connectPickerQuery, setConnectPickerQuery] = useState("");
   const [connectPickerActiveIndex, setConnectPickerActiveIndex] = useState(0);
+  const [hostTrustPrompt, setHostTrustPrompt] = useState<HostTrustPromptState | null>(null);
   const connectPickerInputRef = useRef<HTMLInputElement | null>(null);
   const connectPickerItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [testStatus, setTestStatus] = useState<
@@ -1275,6 +1314,157 @@ export function ConnectionsPage({
     createSession(connection, true, true);
   };
 
+  const persistTrustedHostFingerprint = async (
+    connection: SshConnectionConfig,
+    fingerprint: string,
+  ) => {
+    const normalizedFingerprint = fingerprint.trim().toLowerCase();
+    const trusted = {
+      ...connection,
+      host_key_fingerprint_sha256: normalizedFingerprint,
+    };
+
+    if (connections.some((item) => item.id === connection.id)) {
+      const nextConnections = connections.map((item) =>
+        item.kind === "ssh" && item.id === connection.id
+          ? {
+              ...item,
+              host_key_fingerprint_sha256: normalizedFingerprint,
+            }
+          : item,
+      );
+      await saveConnections(nextConnections);
+    }
+
+    setSelectedConnection((prev) =>
+      prev && prev.kind === "ssh" && prev.id === connection.id
+        ? {
+            ...prev,
+            host_key_fingerprint_sha256: normalizedFingerprint,
+          }
+        : prev,
+    );
+    setEditingConnection((prev) =>
+      prev && prev.kind === "ssh" && prev.id === connection.id
+        ? {
+            ...prev,
+            host_key_fingerprint_sha256: normalizedFingerprint,
+          }
+        : prev,
+    );
+    setActiveSessions((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const [sessionId, session] of next.entries()) {
+        if (session.connection.kind !== "ssh" || session.connection.id !== connection.id) {
+          continue;
+        }
+        if (session.connection.host_key_fingerprint_sha256 === normalizedFingerprint) {
+          continue;
+        }
+        changed = true;
+        next.set(sessionId, {
+          ...session,
+          connection: {
+            ...session.connection,
+            host_key_fingerprint_sha256: normalizedFingerprint,
+          },
+        });
+      }
+      return changed ? next : prev;
+    });
+
+    return trusted;
+  };
+
+  const requestHostTrustDecision = (
+    prompt: Omit<HostTrustPromptState, "resolve">,
+  ) =>
+    new Promise<boolean>((resolve) => {
+      setHostTrustPrompt({ ...prompt, resolve });
+    });
+
+  const ensureTrustedSshHost = async (connection: SshConnectionConfig) => {
+    const fingerprint = await sshApi.getHostFingerprint(connection);
+    const actual = fingerprint.sha256.trim().toLowerCase();
+    const trusted = connection.host_key_fingerprint_sha256?.trim().toLowerCase() || "";
+
+    if (!trusted) {
+      const approved = await requestHostTrustDecision({
+        host: connection.host,
+        port: connection.port,
+        algorithm: fingerprint.algorithm,
+        fingerprint: fingerprint.sha256,
+        mode: "first-use",
+      });
+      if (!approved) {
+        throw new Error("SSH host key trust was not confirmed.");
+      }
+      return await persistTrustedHostFingerprint(connection, actual);
+    }
+
+    if (trusted !== actual) {
+      const approved = await requestHostTrustDecision({
+        host: connection.host,
+        port: connection.port,
+        algorithm: fingerprint.algorithm,
+        fingerprint: actual,
+        trustedFingerprint: trusted,
+        mode: "changed",
+      });
+      if (!approved) {
+        throw new Error("SSH host key verification failed.");
+      }
+      return await persistTrustedHostFingerprint(connection, actual);
+    }
+
+    return {
+      ...connection,
+      host_key_fingerprint_sha256: actual,
+    };
+  };
+
+  const isSshTrustRecoveryNeeded = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      message.includes("SSH host key verification failed") ||
+      message.includes("Trusted SSH host key fingerprint is missing")
+    );
+  };
+
+  const connectSshWithTrustFallback = async (
+    connection: SshConnectionConfig,
+    keepalive: SshKeepaliveConfig,
+    sessionId: string,
+  ) => {
+    const trustedFingerprint = connection.host_key_fingerprint_sha256?.trim();
+
+    if (trustedFingerprint) {
+      try {
+        return await sshApi.connect(
+          {
+            ...connection,
+            id: sessionId,
+          },
+          keepalive,
+        );
+      } catch (error) {
+        if (!isSshTrustRecoveryNeeded(error)) {
+          throw error;
+        }
+      }
+    }
+
+    const trustedConnection = await ensureTrustedSshHost(connection);
+    return await sshApi.connect(
+      {
+        ...trustedConnection,
+        id: sessionId,
+      },
+      keepalive,
+    );
+  };
+
   const openSplitPicker = (
     baseSessionId: string,
     direction: SplitLayout["direction"],
@@ -1567,16 +1757,20 @@ export function ConnectionsPage({
     setTestStatus("testing");
     setTestMessage(t("connections.test.testing"));
 
-    const testConnection: SshConnectionConfig = {
-      ...editingConnection,
-      id: crypto.randomUUID(),
-      host: trimmedHost,
-      username: trimmedUser,
-      port,
-    };
-
     try {
-      const sessionId = await sshApi.connect(testConnection);
+      const testConnection: SshConnectionConfig = {
+        ...editingConnection,
+        id: crypto.randomUUID(),
+        host: trimmedHost,
+        username: trimmedUser,
+        port,
+      };
+      const keepalive = await readSshKeepaliveConfig();
+      const sessionId = await connectSshWithTrustFallback(
+        testConnection,
+        keepalive,
+        testConnection.id,
+      );
       await sshApi.disconnect(sessionId);
       setTestStatus("success");
       setTestMessage(null);
@@ -2315,10 +2509,12 @@ export function ConnectionsPage({
           return;
         }
         if (!isSshConnection(session.connection)) return;
-        const backendSessionId = await sshApi.connect({
-          ...session.connection,
-          id: sessionId,
-        });
+        const keepalive = await readSshKeepaliveConfig();
+        const backendSessionId = await connectSshWithTrustFallback(
+          session.connection,
+          keepalive,
+          sessionId,
+        );
         await sshApi.openShell(backendSessionId);
         if (!session.connection.osType || session.connection.osType === "unknown") {
           void (async () => {
@@ -2333,19 +2529,21 @@ export function ConnectionsPage({
       };
 
       return (
-        <XTerminal
-          sessionId={sessionId}
-          host={session.connection.host}
-          port={session.connection.port}
-          isLocal={session.kind === "local"}
-          sessionKind={session.kind}
-          osType={session.connection.osType ?? "unknown"}
-          onConnect={handleTerminalConnect}
-          onRequestSplit={onRequestSplit}
-          onCloseSession={onCloseSession}
-          isSplit={isSplit}
-          onSendScript={sendScript}
-        />
+        <Suspense fallback={<TerminalFallback />}>
+          <XTerminal
+            sessionId={sessionId}
+            host={session.connection.host}
+            port={session.connection.port}
+            isLocal={session.kind === "local"}
+            sessionKind={session.kind}
+            osType={session.connection.osType ?? "unknown"}
+            onConnect={handleTerminalConnect}
+            onRequestSplit={onRequestSplit}
+            onCloseSession={onCloseSession}
+            isSplit={isSplit}
+            onSendScript={sendScript}
+          />
+        </Suspense>
       );
     };
 
@@ -3102,6 +3300,26 @@ export function ConnectionsPage({
           </div>
         </div>
       </Modal>
+
+      <SshHostTrustModal
+        open={Boolean(hostTrustPrompt)}
+        host={hostTrustPrompt?.host ?? ""}
+        port={hostTrustPrompt?.port ?? 22}
+        algorithm={hostTrustPrompt?.algorithm ?? ""}
+        fingerprint={hostTrustPrompt?.fingerprint ?? ""}
+        trustedFingerprint={hostTrustPrompt?.trustedFingerprint}
+        mode={hostTrustPrompt?.mode ?? "first-use"}
+        onCancel={() => {
+          if (!hostTrustPrompt) return;
+          hostTrustPrompt.resolve(false);
+          setHostTrustPrompt(null);
+        }}
+        onConfirm={() => {
+          if (!hostTrustPrompt) return;
+          hostTrustPrompt.resolve(true);
+          setHostTrustPrompt(null);
+        }}
+      />
     </>
   );
 }

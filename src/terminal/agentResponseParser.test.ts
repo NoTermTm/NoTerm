@@ -49,7 +49,7 @@ describe("parseAgentResponse", () => {
     expect(result.thinking).toBe("这是一个纯思考回答。");
     expect(result.action).toBeNull();
     expect(result.done).toBe(true);
-    expect(result.finalAnswer).toBe("这是一个纯思考回答。");
+    expect(result.finalAnswer).toBe("");
   });
 
   it("handles empty thinking content", () => {
@@ -117,7 +117,17 @@ describe("parseAgentResponse", () => {
 
     expect(result.done).toBe(true);
     expect(result.action).toBeNull();
-    expect(result.finalAnswer).toBe("Done");
+    expect(result.finalAnswer).toBe("");
+  });
+
+  it("does not fall back to thinking when malformed action makes the response done", () => {
+    const raw = `<thinking>内部推理\n## 最终答复\n- 第一项\n- 第二项</thinking>\n<action>not valid json</action>`;
+
+    const result = parseAgentResponse(raw);
+
+    expect(result.done).toBe(true);
+    expect(result.action).toBeNull();
+    expect(result.finalAnswer).toBe("");
   });
 
   it("prefers explicit done content over thinking for final answer", () => {

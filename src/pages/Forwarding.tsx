@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { load } from "@tauri-apps/plugin-store";
 import { AppIcon } from "../components/AppIcon";
 import { Modal } from "../components/Modal";
+import { SshHostTrustModal } from "../components/SshHostTrustModal";
 import { Select } from "../components/Select";
 import {
   readForwardRules,
@@ -9,6 +10,7 @@ import {
   type ForwardRule,
   type ForwardKind,
 } from "../store/forwardings";
+import { sshApi } from "../api/ssh";
 import { startForward, stopForward, listForwards } from "../api/forwarding";
 import type { ConnectionConfig, SshConnectionConfig } from "../types/connection";
 import type { AuthProfile } from "../types/auth";
@@ -44,6 +46,7 @@ const normalizeSshConnection = (
   host: conn.host ?? "",
   port: Number.isFinite(conn.port as number) ? (conn.port as number) : 22,
   username: conn.username ?? "",
+  host_key_fingerprint_sha256: conn.host_key_fingerprint_sha256?.trim(),
   auth_type: conn.auth_type ?? { type: "Password", password: "" },
   auth_profile_id: conn.auth_profile_id,
   encoding: conn.encoding ?? "utf-8",
@@ -171,11 +174,21 @@ const createDefaultRule = (): ForwardRule => ({
   connectionId: "",
   localBindHost: "127.0.0.1",
   localBindPort: 8080,
-  remoteBindHost: "0.0.0.0",
+  remoteBindHost: "127.0.0.1",
   remoteBindPort: 9000,
   targetHost: "127.0.0.1",
   targetPort: 3306,
 });
+
+type HostTrustPromptState = {
+  host: string;
+  port: number;
+  algorithm: string;
+  fingerprint: string;
+  trustedFingerprint?: string;
+  mode: "first-use" | "changed";
+  resolve: (approved: boolean) => void;
+};
 
 export function ForwardingPage() {
   const { t } = useI18n();
@@ -189,6 +202,7 @@ export function ForwardingPage() {
   const [editingRule, setEditingRule] = useState<ForwardRule | null>(null);
   const [draft, setDraft] = useState<ForwardRule>(createDefaultRule());
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [hostTrustPrompt, setHostTrustPrompt] = useState<HostTrustPromptState | null>(null);
 
   const reloadConnections = async () => {
     const store = await load("connections.json");
@@ -325,6 +339,86 @@ export function ForwardingPage() {
     setEditorOpen(false);
   };
 
+  const persistTrustedHostFingerprint = async (
+    connection: SshConnectionConfig,
+    fingerprint: string,
+  ) => {
+    const normalizedFingerprint = fingerprint.trim().toLowerCase();
+    const store = await load("connections.json");
+    const saved = (await store.get<ConnectionConfig[]>("connections")) ?? [];
+    const nextSaved = saved.map((item) =>
+      item.kind === "ssh" && item.id === connection.id
+        ? {
+            ...item,
+            host_key_fingerprint_sha256: normalizedFingerprint,
+          }
+        : item,
+    );
+    await store.set("connections", nextSaved);
+    await store.save();
+    setConnections((prev) =>
+      prev.map((item) =>
+        item.id === connection.id
+          ? {
+              ...item,
+              host_key_fingerprint_sha256: normalizedFingerprint,
+            }
+          : item,
+      ),
+    );
+    return {
+      ...connection,
+      host_key_fingerprint_sha256: normalizedFingerprint,
+    };
+  };
+
+  const requestHostTrustDecision = (
+    prompt: Omit<HostTrustPromptState, "resolve">,
+  ) =>
+    new Promise<boolean>((resolve) => {
+      setHostTrustPrompt({ ...prompt, resolve });
+    });
+
+  const ensureTrustedSshHost = async (connection: SshConnectionConfig) => {
+    const fingerprint = await sshApi.getHostFingerprint(connection);
+    const actual = fingerprint.sha256.trim().toLowerCase();
+    const trusted = connection.host_key_fingerprint_sha256?.trim().toLowerCase() || "";
+
+    if (!trusted) {
+      const approved = await requestHostTrustDecision({
+        host: connection.host,
+        port: connection.port,
+        algorithm: fingerprint.algorithm,
+        fingerprint: fingerprint.sha256,
+        mode: "first-use",
+      });
+      if (!approved) {
+        throw new Error("SSH host key trust was not confirmed.");
+      }
+      return await persistTrustedHostFingerprint(connection, actual);
+    }
+
+    if (trusted !== actual) {
+      const approved = await requestHostTrustDecision({
+        host: connection.host,
+        port: connection.port,
+        algorithm: fingerprint.algorithm,
+        fingerprint: actual,
+        trustedFingerprint: trusted,
+        mode: "changed",
+      });
+      if (!approved) {
+        throw new Error("SSH host key verification failed.");
+      }
+      return await persistTrustedHostFingerprint(connection, actual);
+    }
+
+    return {
+      ...connection,
+      host_key_fingerprint_sha256: actual,
+    };
+  };
+
   const handleDelete = async (rule: ForwardRule) => {
     if (!window.confirm(t("forwarding.delete.confirm"))) return;
     if (runningIds.has(rule.id)) {
@@ -356,7 +450,9 @@ export function ForwardingPage() {
   const handleStart = async (rule: ForwardRule) => {
     setBusyId(rule.id);
     try {
-      await startForward(buildConfig(rule));
+      const config = buildConfig(rule);
+      config.connection = await ensureTrustedSshHost(config.connection);
+      await startForward(config);
       await refreshRunning();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -663,6 +759,26 @@ export function ForwardingPage() {
           </div>
         </div>
       </Modal>
+
+      <SshHostTrustModal
+        open={Boolean(hostTrustPrompt)}
+        host={hostTrustPrompt?.host ?? ""}
+        port={hostTrustPrompt?.port ?? 22}
+        algorithm={hostTrustPrompt?.algorithm ?? ""}
+        fingerprint={hostTrustPrompt?.fingerprint ?? ""}
+        trustedFingerprint={hostTrustPrompt?.trustedFingerprint}
+        mode={hostTrustPrompt?.mode ?? "first-use"}
+        onCancel={() => {
+          if (!hostTrustPrompt) return;
+          hostTrustPrompt.resolve(false);
+          setHostTrustPrompt(null);
+        }}
+        onConfirm={() => {
+          if (!hostTrustPrompt) return;
+          hostTrustPrompt.resolve(true);
+          setHostTrustPrompt(null);
+        }}
+      />
     </div>
   );
 }

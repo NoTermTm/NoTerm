@@ -4,13 +4,15 @@ mod telnet_manager;
 
 use serde::Serialize;
 use local_pty::LocalPtyManager;
-use ssh_manager::{ControlledCommandResult, ForwardConfig, SftpEntry, SshConnection, SshManager};
+use ssh_manager::{ControlledCommandResult, ForwardConfig, KeepaliveConfig, SftpEntry, SshConnection, SshHostFingerprint, SshManager};
 use telnet_manager::{TelnetConnection, TelnetManager};
 use std::fs;
 use std::sync::Mutex;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::fs::OpenOptions;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 use tauri::Manager;
@@ -39,6 +41,38 @@ struct GeneratedKeypair {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct TerminalDebug {
+    session_id: String,
+    level: String,
+    message: String,
+}
+
+fn emit_terminal_debug(app: &AppHandle, session_id: &str, level: &str, message: impl Into<String>) {
+    let message = message.into();
+    append_terminal_debug_log(session_id, level, &message);
+    let _ = app.emit(
+        "terminal-debug",
+        TerminalDebug {
+            session_id: session_id.to_string(),
+            level: level.to_string(),
+            message,
+        },
+    );
+}
+
+fn append_terminal_debug_log(session_id: &str, level: &str, message: &str) {
+    let path = std::env::temp_dir().join("noterm-shell-debug.log");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let sanitized = message.replace('\n', "\\n");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "[{}] [{}] [{}] {}", ts, session_id, level, sanitized);
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct SftpTransferProgress {
     session_id: String,
     transfer_id: String,
@@ -48,6 +82,7 @@ struct SftpTransferProgress {
     percent: f64,
 }
 
+#[cfg(target_os = "linux")]
 fn command_exists(cmd: &str) -> bool {
     let checker = if cfg!(target_os = "windows") { "where" } else { "which" };
     Command::new(checker)
@@ -329,10 +364,60 @@ async fn ssh_generate_keypair(
 #[tauri::command]
 async fn ssh_connect(
     state: State<'_, AppState>,
+    app_handle: AppHandle,
     connection: SshConnection,
+    keepalive: Option<KeepaliveConfig>,
 ) -> Result<String, String> {
+    let exe_path = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|error| format!("unavailable: {}", error));
+    let resource_dir = app_handle
+        .path()
+        .resource_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|error| format!("unavailable: {}", error));
+    emit_terminal_debug(
+        &app_handle,
+        &connection.id,
+        "info",
+        format!(
+            "command ssh_connect invoked host={} port={} exe={} resource_dir={}",
+            connection.host.trim(),
+            connection.port,
+            exe_path,
+            resource_dir
+        ),
+    );
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<String> { manager.connect(&connection) })
+    let debug_app = app_handle.clone();
+    let session_id = connection.id.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        manager.connect(&connection, keepalive, app_handle)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string());
+    match &result {
+        Ok(_) => emit_terminal_debug(&debug_app, &session_id, "info", "command ssh_connect success"),
+        Err(error) => emit_terminal_debug(
+            &debug_app,
+            &session_id,
+            "error",
+            format!("command ssh_connect failed: {}", error),
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+async fn ssh_get_host_fingerprint(
+    state: State<'_, AppState>,
+    connection: SshConnection,
+) -> Result<SshHostFingerprint, String> {
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<SshHostFingerprint> {
+        manager.get_host_fingerprint(&connection)
+    })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
@@ -356,13 +441,26 @@ async fn ssh_open_shell(
     app_handle: AppHandle,
     session_id: String,
 ) -> Result<(), String> {
+    emit_terminal_debug(&app_handle, &session_id, "info", "command ssh_open_shell invoked");
     let manager = state.ssh_manager.lock().unwrap().clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+    let debug_app = app_handle.clone();
+    let debug_session_id = session_id.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         manager.open_shell(&session_id, app_handle)
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string());
+    match &result {
+        Ok(_) => emit_terminal_debug(&debug_app, &debug_session_id, "info", "command ssh_open_shell success"),
+        Err(error) => emit_terminal_debug(
+            &debug_app,
+            &debug_session_id,
+            "error",
+            format!("command ssh_open_shell failed: {}", error),
+        ),
+    }
+    result
 }
 
 #[tauri::command]
@@ -383,13 +481,29 @@ async fn telnet_open_shell(
 #[tauri::command]
 fn ssh_write_to_shell(
     state: State<AppState>,
+    app_handle: AppHandle,
     session_id: String,
     data: String,
 ) -> Result<(), String> {
+    emit_terminal_debug(
+        &app_handle,
+        &session_id,
+        "info",
+        format!("command ssh_write_to_shell bytes={}", data.len()),
+    );
     let manager = state.ssh_manager.lock().unwrap();
-    manager
+    let result = manager
         .write_to_shell(&session_id, &data)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    if let Err(error) = &result {
+        emit_terminal_debug(
+            &app_handle,
+            &session_id,
+            "error",
+            format!("command ssh_write_to_shell failed: {}", error),
+        );
+    }
+    result
 }
 
 #[tauri::command]
@@ -407,14 +521,27 @@ fn telnet_write_to_shell(
 #[tauri::command]
 fn ssh_resize_pty(
     state: State<AppState>,
+    app_handle: AppHandle,
     session_id: String,
     cols: u32,
     rows: u32,
 ) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap();
-    manager
+    let result = manager
         .resize_pty(&session_id, cols, rows)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    if let Err(error) = &result {
+        if error == "Shell not found" {
+            return result;
+        }
+        emit_terminal_debug(
+            &app_handle,
+            &session_id,
+            "warn",
+            format!("command ssh_resize_pty failed cols={} rows={} error={}", cols, rows, error),
+        );
+    }
+    result
 }
 
 #[tauri::command]
@@ -488,11 +615,25 @@ fn telnet_disconnect(state: State<AppState>, session_id: String) -> Result<(), S
 }
 
 #[tauri::command]
-fn ssh_disconnect(state: State<AppState>, session_id: String) -> Result<(), String> {
+fn ssh_disconnect(
+    state: State<AppState>,
+    app_handle: AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    emit_terminal_debug(&app_handle, &session_id, "info", "command ssh_disconnect invoked");
     let manager = state.ssh_manager.lock().unwrap();
-    manager
+    let result = manager
         .disconnect(&session_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    if let Err(error) = &result {
+        emit_terminal_debug(
+            &app_handle,
+            &session_id,
+            "warn",
+            format!("command ssh_disconnect failed: {}", error),
+        );
+    }
+    result
 }
 
 #[tauri::command]
@@ -579,9 +720,16 @@ fn telnet_is_connected(state: State<AppState>, session_id: String) -> bool {
 }
 
 #[tauri::command]
-fn ssh_is_connected(state: State<AppState>, session_id: String) -> bool {
+fn ssh_is_connected(state: State<AppState>, app_handle: AppHandle, session_id: String) -> bool {
     let manager = state.ssh_manager.lock().unwrap();
-    manager.is_connected(&session_id)
+    let connected = manager.is_connected(&session_id);
+    emit_terminal_debug(
+        &app_handle,
+        &session_id,
+        "info",
+        format!("command ssh_is_connected -> {}", connected),
+    );
+    connected
 }
 
 #[tauri::command]
@@ -832,6 +980,7 @@ pub fn run() {
             ssh_check_endpoint,
             ssh_generate_keypair,
             ssh_connect,
+            ssh_get_host_fingerprint,
             telnet_connect,
             ssh_open_shell,
             telnet_open_shell,

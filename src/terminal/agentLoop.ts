@@ -34,9 +34,15 @@ export interface AgentLoopConfig {
     action: AgentStepAction,
     policy: AgentPolicyDecision,
   ) => void;
-  onLoopComplete: (summary: string) => void;
+  onLoopFinish: (result: AgentLoopFinishResult) => void;
   onError: (error: string) => void;
   executeCommand: (command: string, timeoutSec: number) => Promise<AgentCommandResult>;
+}
+
+export interface AgentLoopFinishResult {
+  status: "completed" | "stopped";
+  summary: string;
+  reason?: "done" | "stopped_by_user" | "no_progress";
 }
 
 export interface AgentLoopController {
@@ -49,11 +55,12 @@ export interface AgentLoopController {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MAX_STEPS = 20;
 const CONFIRMATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_COMMAND_TIMEOUT_SEC = 30;
 const MAX_COMMAND_OUTPUT_CHARS = 6000;
 const MAX_COMMAND_OUTPUT_LINES = 120;
+const NO_PROGRESS_LIMIT = 3;
+const MAX_PROTOCOL_REPAIR_ATTEMPTS = 1;
 
 // ─── System Prompt Builder (Task 6.2) ─────────────────────────────────────────
 
@@ -150,6 +157,111 @@ The final user-facing answer. Do not repeat the thinking block. Give the conclus
 6. Use <done>...</done> for the final user-facing answer`;
 }
 
+export function extractDisplayableAnswerFromThinking(thinking: string): string {
+  const normalized = (thinking || "").trim();
+  if (!normalized) return "";
+
+  const finalAnswerCue =
+    /(总结给用户|给用户总结|最终答复|最终回答|最终输出|结论如下|建议如下|给用户的总结|最终结论|总结：|结论：|建议：)/i;
+  const metaLinePattern =
+    /^(-\s*)?(我应该|我还需要|我可以|我会|让我|先让我|根据规则|格式要求|不要重复|直接给用户看|内部推理|思考过程|给用户看|关于 .*我还可以|我已收集|使用 markdown 标签|使用 标签)/;
+  const markdownStartPattern =
+    /^(#{1,6}\s+|```|\|.+\||[-*+]\s+|\d+\.\s+)/;
+
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const cueIndex = lines.findIndex((line) => finalAnswerCue.test(line));
+  if (cueIndex >= 0) {
+    const answerLines: string[] = [];
+    const cueLine = lines[cueIndex];
+    const inlineAnswer = cueLine.replace(finalAnswerCue, "").replace(/^[:：\s-]+/, "").trim();
+    if (inlineAnswer) {
+      answerLines.push(inlineAnswer);
+    }
+
+    for (const line of lines.slice(cueIndex + 1)) {
+      if (metaLinePattern.test(line)) continue;
+      answerLines.push(line);
+    }
+
+    const cleaned = answerLines.join("\n").trim();
+    if (cleaned) return cleaned;
+  }
+
+  let firstHeadingStart = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/^#{1,6}\s+/.test(lines[index])) {
+      firstHeadingStart = index;
+      break;
+    }
+  }
+  if (firstHeadingStart >= 0) {
+    const cleaned = lines
+      .slice(firstHeadingStart)
+      .filter((line) => !metaLinePattern.test(line))
+      .join("\n")
+      .trim();
+    if (cleaned) return cleaned;
+  }
+
+  let lastMarkdownStart = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (markdownStartPattern.test(lines[index])) {
+      lastMarkdownStart = index;
+      break;
+    }
+  }
+  if (lastMarkdownStart >= 0) {
+    const cleaned = lines
+      .slice(lastMarkdownStart)
+      .filter((line) => !metaLinePattern.test(line))
+      .join("\n")
+      .trim();
+    if (cleaned) return cleaned;
+  }
+
+  const cleanedLines = lines.filter((line) => !metaLinePattern.test(line));
+  if (cleanedLines.length > 0) {
+    return cleanedLines.join("\n").trim();
+  }
+
+  return "";
+}
+
+export function shouldRetryProtocolResponse(parsed: ParsedAgentResponse): boolean {
+  if (!parsed.done || parsed.action || parsed.finalAnswer.trim()) {
+    return false;
+  }
+
+  const thinking = (parsed.thinking || "").trim();
+  if (!thinking) return false;
+
+  return /(格式要求|不要重复\s*thinking|直接给用户看|我应该|我还需要|我可以|总结给用户|给用户总结|最终答复|最终回答)/i.test(
+    thinking,
+  );
+}
+
+function buildProtocolRepairMessage(locale: "zh-CN" | "en-US"): string {
+  return locale === "zh-CN"
+    ? [
+        "你刚才暴露了内部 thinking，而没有按协议返回最终答复。",
+        "请立即重答，并严格遵守格式：",
+        "1. 如果任务完成，只输出 <done>...</done>，内容必须是给用户看的 Markdown。",
+        "2. 不要输出 thinking 内容、格式要求、自我说明、规则复述。",
+        "3. 如果仍需命令，则输出合法的 <action>...</action>。",
+      ].join("\n")
+    : [
+        "Your previous reply exposed internal thinking instead of a proper final answer.",
+        "Reply again and strictly follow the protocol:",
+        "1. If the task is complete, output only <done>...</done> with user-facing Markdown.",
+        "2. Do not include thinking, formatting notes, self-instructions, or rule restatements.",
+        "3. If a command is still needed, output a valid <action>...</action>.",
+      ].join("\n");
+}
+
 // ─── Agent Loop Factory (Task 6.1) ───────────────────────────────────────────
 
 /**
@@ -161,6 +273,26 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
   let pendingConfirmResolve: ((confirmed: boolean) => void) | null = null;
   let confirmationTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingActionId: string | null = null;
+
+  function stopSummary(reason: "stopped_by_user" | "no_progress"): string {
+    if (reason === "no_progress") {
+      return config.locale === "zh-CN"
+        ? "任务已暂停：Agent 连续多轮没有取得新进展。请调整目标、补充信息，或手动介入后继续。"
+        : "Task paused: the agent made no new progress across multiple turns. Refine the goal, add context, or intervene manually before continuing.";
+    }
+
+    return config.locale === "zh-CN"
+      ? "任务已停止。"
+      : "Task stopped.";
+  }
+
+  function buildOutcomeSignature(
+    kind: "blocked" | "rejected" | "executed",
+    command: string,
+    detail: string,
+  ): string {
+    return `${kind}|${command.trim()}|${detail.trim()}`;
+  }
 
   /**
    * Build the conversation history messages for the next AI call.
@@ -255,7 +387,9 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
     if (explicit) return explicit;
 
     const thinking = (parsed.thinking || "").trim();
-    if (thinking) return thinking;
+    if (thinking) {
+      return extractDisplayableAnswerFromThinking(thinking);
+    }
 
     const stripped = rawResponse
       .replace(/<\/?(thinking|action|done)>/gi, " ")
@@ -314,6 +448,8 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
     abortController = new AbortController();
 
     const steps: Array<{ aiResponse: string; commandOutput?: string }> = [];
+    let lastOutcomeSignature: string | null = null;
+    let noProgressCount = 0;
 
     // Audit: loop started
     await appendAgentAuditRecord({
@@ -323,54 +459,66 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
     }).catch(() => {});
 
     try {
-      for (let stepIndex = 0; stepIndex < MAX_STEPS; stepIndex++) {
+      for (let stepIndex = 0; running; stepIndex++) {
         if (!running) break;
 
-        // Build messages with full conversation history
-        const messages = buildMessages(userMessage, steps);
-        const requestStartedAt = Date.now();
-        let firstTokenRecorded = false;
+        let fullResponse = "";
+        let parsed: ParsedAgentResponse | null = null;
+        const baseMessages = buildMessages(userMessage, steps);
 
-        // Track streaming content for thinking extraction
-        let streamBuffer = "";
+        for (let repairAttempt = 0; repairAttempt <= MAX_PROTOCOL_REPAIR_ATTEMPTS; repairAttempt++) {
+          const messages =
+            repairAttempt === 0
+              ? baseMessages
+              : [
+                  ...baseMessages,
+                  { role: "assistant" as const, content: fullResponse },
+                  { role: "user" as const, content: buildProtocolRepairMessage(config.locale) },
+                ];
+          const requestStartedAt = Date.now();
+          let firstTokenRecorded = false;
+          let streamBuffer = "";
 
-        // Call AI with streaming
-        const fullResponse = await sendAiChatStream(
-          config.aiSettings,
-          messages,
-          (delta) => {
-            if (!firstTokenRecorded) {
-              firstTokenRecorded = true;
-              void appendAgentAuditRecord({
-                event: "step_thinking",
-                session_id: config.sessionId,
-                step_index: stepIndex,
-                reason: `first_token_ms=${Date.now() - requestStartedAt};messages=${messages.length}`,
-              }).catch(() => {});
-            }
-            // Accumulate the full response to extract thinking progressively
-            streamBuffer += delta;
-            const currentThinking = extractStreamingThinking(streamBuffer);
-            if (currentThinking) {
-              config.onThinkingDelta(currentThinking);
-            }
-          },
-          { signal: abortController!.signal },
-        );
+          fullResponse = await sendAiChatStream(
+            config.aiSettings,
+            messages,
+            (delta) => {
+              if (!firstTokenRecorded) {
+                firstTokenRecorded = true;
+                void appendAgentAuditRecord({
+                  event: "step_thinking",
+                  session_id: config.sessionId,
+                  step_index: stepIndex,
+                  reason: `first_token_ms=${Date.now() - requestStartedAt};messages=${messages.length};repair_attempt=${repairAttempt}`,
+                }).catch(() => {});
+              }
+              streamBuffer += delta;
+              const currentThinking = extractStreamingThinking(streamBuffer);
+              if (currentThinking) {
+                config.onThinkingDelta(currentThinking);
+              }
+            },
+            { signal: abortController!.signal },
+          );
 
-        if (!firstTokenRecorded) {
-          await appendAgentAuditRecord({
-            event: "step_thinking",
-            session_id: config.sessionId,
-            step_index: stepIndex,
-            reason: `first_token_ms=none;request_ms=${Date.now() - requestStartedAt};messages=${messages.length}`,
-          }).catch(() => {});
+          if (!firstTokenRecorded) {
+            await appendAgentAuditRecord({
+              event: "step_thinking",
+              session_id: config.sessionId,
+              step_index: stepIndex,
+              reason: `first_token_ms=none;request_ms=${Date.now() - requestStartedAt};messages=${messages.length};repair_attempt=${repairAttempt}`,
+            }).catch(() => {});
+          }
+
+          if (!running) break;
+
+          parsed = parseAgentResponse(fullResponse);
+          if (!shouldRetryProtocolResponse(parsed) || repairAttempt >= MAX_PROTOCOL_REPAIR_ATTEMPTS) {
+            break;
+          }
         }
 
-        if (!running) break;
-
-        // Parse the complete response
-        const parsed = parseAgentResponse(fullResponse);
+        if (!running || !parsed) break;
 
         // Notify thinking complete
         if (parsed.thinking) {
@@ -389,7 +537,11 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
             step_index: stepIndex,
           }).catch(() => {});
 
-          config.onLoopComplete(visibleSummary);
+          config.onLoopFinish({
+            status: "completed",
+            summary: visibleSummary,
+            reason: "done",
+          });
           break;
         }
 
@@ -434,6 +586,27 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
               policyDecision.reason,
             );
             steps.push({ aiResponse: fullResponse, commandOutput: blockedOutput });
+            const nextSignature = buildOutcomeSignature(
+              "blocked",
+              action.command,
+              policyDecision.reason,
+            );
+            noProgressCount = nextSignature === lastOutcomeSignature ? noProgressCount + 1 : 1;
+            lastOutcomeSignature = nextSignature;
+            if (noProgressCount >= NO_PROGRESS_LIMIT) {
+              await appendAgentAuditRecord({
+                event: "loop_stopped",
+                session_id: config.sessionId,
+                step_index: stepIndex,
+                reason: "no_progress",
+              }).catch(() => {});
+              config.onLoopFinish({
+                status: "stopped",
+                summary: stopSummary("no_progress"),
+                reason: "no_progress",
+              });
+              break;
+            }
             continue;
           }
 
@@ -478,6 +651,27 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
                 // Determine if it was a timeout or explicit rejection
                 const rejectedOutput = formatRejectedOutput(action.command);
                 steps.push({ aiResponse: fullResponse, commandOutput: rejectedOutput });
+                const nextSignature = buildOutcomeSignature(
+                  "rejected",
+                  action.command,
+                  policyDecision.normalized_risk,
+                );
+                noProgressCount = nextSignature === lastOutcomeSignature ? noProgressCount + 1 : 1;
+                lastOutcomeSignature = nextSignature;
+                if (noProgressCount >= NO_PROGRESS_LIMIT) {
+                  await appendAgentAuditRecord({
+                    event: "loop_stopped",
+                    session_id: config.sessionId,
+                    step_index: stepIndex,
+                    reason: "no_progress",
+                  }).catch(() => {});
+                  config.onLoopFinish({
+                    status: "stopped",
+                    summary: stopSummary("no_progress"),
+                    reason: "no_progress",
+                  });
+                  break;
+                }
                 continue;
               }
 
@@ -530,22 +724,28 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
           // Add to conversation history
           const commandOutput = formatCommandOutput(action.command, result);
           steps.push({ aiResponse: fullResponse, commandOutput });
+          const nextSignature = buildOutcomeSignature(
+            "executed",
+            action.command,
+            `${result.exitCode}|${result.stdout.trim()}|${result.stderr.trim()}|${result.timedOut ? "timeout" : "ok"}`,
+          );
+          noProgressCount = nextSignature === lastOutcomeSignature ? noProgressCount + 1 : 1;
+          lastOutcomeSignature = nextSignature;
+          if (noProgressCount >= NO_PROGRESS_LIMIT) {
+            await appendAgentAuditRecord({
+              event: "loop_stopped",
+              session_id: config.sessionId,
+              step_index: stepIndex,
+              reason: "no_progress",
+            }).catch(() => {});
+            config.onLoopFinish({
+              status: "stopped",
+              summary: stopSummary("no_progress"),
+              reason: "no_progress",
+            });
+            break;
+          }
         }
-      }
-
-      // If we hit max steps without completing
-      if (running && steps.length >= MAX_STEPS) {
-        config.onLoopComplete(
-          config.locale === "zh-CN"
-            ? "已达到最大步骤数限制（20步），循环结束。"
-            : "Maximum step limit reached (20 steps). Loop ended.",
-        );
-
-        await appendAgentAuditRecord({
-          event: "loop_completed",
-          session_id: config.sessionId,
-          reason: "max_steps_reached",
-        }).catch(() => {});
       }
     } catch (error: unknown) {
       if (!running) {
@@ -554,6 +754,11 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
           event: "loop_stopped",
           session_id: config.sessionId,
         }).catch(() => {});
+        config.onLoopFinish({
+          status: "stopped",
+          summary: stopSummary("stopped_by_user"),
+          reason: "stopped_by_user",
+        });
         return;
       }
 
@@ -569,6 +774,11 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoopController {
           event: "loop_stopped",
           session_id: config.sessionId,
         }).catch(() => {});
+        config.onLoopFinish({
+          status: "stopped",
+          summary: stopSummary("stopped_by_user"),
+          reason: "stopped_by_user",
+        });
         return;
       }
 

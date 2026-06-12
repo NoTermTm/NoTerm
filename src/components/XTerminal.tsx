@@ -468,6 +468,7 @@ export function XTerminal({
   const writingRef = useRef(false);
   const typingBufferRef = useRef("");
   const typingFlushTimerRef = useRef<number | null>(null);
+  const shellReadyRef = useRef(isLocal || isTelnet);
   const reconnectPromiseRef = useRef<Promise<boolean> | null>(null);
   const reconnectingRef = useRef(false);
   const writeBlockedRef = useRef(false);
@@ -1343,6 +1344,10 @@ export function XTerminal({
   const flushWriteQueue = async () => {
     if (writingRef.current) return;
     if (writeBlockedRef.current) return;
+    if (!isLocal && !isTelnet && !shellReadyRef.current) {
+      pushTerminalLog("info", `defer flush: shell not ready queued=${writeQueueRef.current.length}`);
+      return;
+    }
     writingRef.current = true;
     try {
       while (writeQueueRef.current.length > 0) {
@@ -2214,6 +2219,7 @@ export function XTerminal({
     const doConnect = onConnectRef.current;
     if (!doConnect) return;
 
+    shellReadyRef.current = isLocal || isTelnet;
     setConnStatus("connecting");
     setConnError(null);
     if (!options?.forceReset) {
@@ -2257,6 +2263,7 @@ export function XTerminal({
   };
 
   const ensureSessionReady = async (reason: "mount" | "unlock" = "mount") => {
+    shellReadyRef.current = isLocal || isTelnet;
     setConnStatus("connecting");
     setConnError(null);
     appendConnectionLog(
@@ -2287,6 +2294,7 @@ export function XTerminal({
       ).catch(() => false);
       if (connected) {
         if (!mountedRef.current) return;
+        shellReadyRef.current = true;
         setConnStatus("connected");
         appendConnectionLog(
           locale === "zh-CN" ? "检测到现有会话仍可用" : "Existing session is still alive",
@@ -3213,9 +3221,6 @@ export function XTerminal({
     ].join("\n");
   };
 
-  const normalizeAgentBlockText = (value: string) =>
-    value.replace(/\s+/g, " ").trim();
-
   const getFileExtension = (filePath: string) => {
     const normalized = filePath.split(/[\\/]/).pop() || filePath;
     const dotIndex = normalized.lastIndexOf(".");
@@ -3568,11 +3573,11 @@ export function XTerminal({
             reason: policy.reason,
           });
         },
-        onLoopComplete: (summary) => {
+        onLoopFinish: ({ status, summary, reason }) => {
           appendAgentDebugLog(
             locale === "zh-CN"
-              ? `loop 完成，summary=${summary.length} chars`
-              : `loop complete, summary=${summary.length} chars`,
+              ? `loop 结束，status=${status} reason=${reason ?? "unknown"} summary=${summary.length} chars`
+              : `loop finished, status=${status} reason=${reason ?? "unknown"} summary=${summary.length} chars`,
           );
           setAgentRunning(false);
           setAiBusy(false);
@@ -3598,15 +3603,12 @@ export function XTerminal({
             setAgentBlocks((prev) => {
               const normalized = dropTrailingAgentStatusBlock(prev);
               const last = normalized[normalized.length - 1];
-              if (
-                last?.type === "thinking" &&
-                normalizeAgentBlockText(last.content) === normalizeAgentBlockText(summary)
-              ) {
+              if (last?.type === "thinking") {
                 return [
                   ...normalized.slice(0, -1),
                   {
                     ...last,
-                    type: "done" as const,
+                    type: status === "completed" ? ("done" as const) : ("notice" as const),
                     content: summary,
                     timestamp: Date.now(),
                   },
@@ -3615,7 +3617,12 @@ export function XTerminal({
 
               return [
                 ...normalized,
-                { id: crypto.randomUUID(), type: "done", content: summary, timestamp: Date.now() },
+                {
+                  id: crypto.randomUUID(),
+                  type: status === "completed" ? "done" : "notice",
+                  content: summary,
+                  timestamp: Date.now(),
+                },
               ];
             });
           }
@@ -3948,6 +3955,10 @@ export function XTerminal({
     if (!term || !fit || !paneRef.current) return;
     if (paneRef.current.offsetParent === null) return;
     fit.fit();
+    if (!isLocal && !isTelnet && !shellReadyRef.current) {
+      pushTerminalLog("info", "skip resize: shell not ready yet");
+      return;
+    }
     try {
       await resizePty(term.cols, term.rows);
     } catch {
@@ -4061,6 +4072,7 @@ export function XTerminal({
       if (!paneRef.current) return;
       if (paneRef.current.offsetParent === null) return; // hidden (e.g. inactive tab)
       fit.fit();
+      if (!isLocal && !isTelnet && !shellReadyRef.current) return;
       resizePty(term.cols, term.rows).catch(() => {});
     };
 
@@ -4462,6 +4474,7 @@ export function XTerminal({
       }>("terminal-disconnected", (event) => {
         if (disposed) return;
         if (event.payload.session_id !== sessionId) return;
+        shellReadyRef.current = isLocal || isTelnet;
         const pendingExec = agentTerminalExecutionRef.current;
         if (pendingExec) {
           finalizeAgentTerminalExecution(pendingExec, {
@@ -4480,6 +4493,42 @@ export function XTerminal({
         setConnError(t("terminal.session.disconnected"));
       });
       unlistenDisconnect = unlistenDisconnectEvent;
+
+      const unlistenDebugEvent = await listen<{
+        session_id: string;
+        level: "info" | "warn" | "error";
+        message: string;
+      }>("terminal-debug", (event) => {
+        if (disposed) return;
+        if (event.payload.session_id !== sessionId) return;
+        pushTerminalLog(event.payload.level, `[backend] ${event.payload.message}`);
+        if (
+          event.payload.message === "command ssh_open_shell success" ||
+          event.payload.message === "ssh open shell success"
+        ) {
+          shellReadyRef.current = true;
+          void syncTerminalGeometry();
+          void flushWriteQueue();
+        }
+        if (
+          event.payload.message.includes("ssh session state removed") ||
+          event.payload.message.includes("ssh shell reader observed eof")
+        ) {
+          shellReadyRef.current = false;
+        }
+        if (event.payload.level !== "info") {
+          appendConnectionLog(
+            `${locale === "zh-CN" ? "[后端]" : "[backend]"} ${event.payload.message}`,
+          );
+        }
+      });
+      unlistenDisconnect = (() => {
+        const prev = unlistenDisconnect;
+        return () => {
+          prev?.();
+          unlistenDebugEvent();
+        };
+      })();
 
       // Handle user input
       disposable = term.onData((data) => {
@@ -4741,6 +4790,15 @@ export function XTerminal({
       return;
     }
 
+    // Avoid opening a second raw TCP connection while the real SSH handshake is in flight.
+    // Some servers or middleboxes are sensitive to concurrent banner reads on the same endpoint.
+    if (connStatus !== "connected") {
+      setEndpointIp(null);
+      endpointLatencyRef.current = null;
+      setLatencyMs(observedLatencyRef.current);
+      return;
+    }
+
     let disposed = false;
     let timer: number | null = null;
 
@@ -4750,7 +4808,7 @@ export function XTerminal({
         if (disposed) return;
         setEndpointIp(info.ip);
         const probe = `${info.ip}:${info.port}/${info.latency_ms}ms`;
-        if (connStatus === "connecting" && endpointProbeLogRef.current !== probe) {
+        if (endpointProbeLogRef.current !== probe) {
           endpointProbeLogRef.current = probe;
           appendConnectionLog(
             locale === "zh-CN"

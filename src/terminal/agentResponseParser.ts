@@ -47,7 +47,7 @@ export function parseAgentResponse(rawText: string): ParsedAgentResponse {
     thinking,
     action,
     done,
-    finalAnswer: finalAnswer || thinking,
+    finalAnswer,
   };
 }
 

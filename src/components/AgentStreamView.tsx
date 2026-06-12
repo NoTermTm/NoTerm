@@ -197,6 +197,19 @@ const ErrorBlock: React.FC<{ block: AgentBlock }> = ({ block }) => (
   </div>
 );
 
+const NoticeBlock: React.FC<{ block: AgentBlock }> = ({ block }) => (
+  <div className="agent-block agent-block--notice">
+    <div className="agent-block__header">
+      <AppIcon icon="material-symbols:info-outline" size={16} />
+      <span className="agent-block__label">Notice</span>
+    </div>
+    <div
+      className="agent-block__content agent-block__markdown"
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(block.content, { breaks: true }) }}
+    />
+  </div>
+);
+
 const UserBlock: React.FC<{ block: AgentBlock }> = ({ block }) => (
   <div className="agent-block agent-block--user">
     <div className="agent-block__header">
@@ -343,6 +356,8 @@ const AgentStreamView: React.FC<AgentStreamViewProps> = ({
         return <OutputBlock key={block.id} block={block} />;
       case "error":
         return <ErrorBlock key={block.id} block={block} />;
+      case "notice":
+        return <NoticeBlock key={block.id} block={block} />;
       case "done":
         return <DoneBlock key={block.id} block={block} onCopy={onCopy} />;
       case "user":
