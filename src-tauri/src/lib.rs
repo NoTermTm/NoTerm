@@ -2,21 +2,26 @@ mod local_pty;
 mod ssh_manager;
 mod telnet_manager;
 
-use serde::Serialize;
 use local_pty::LocalPtyManager;
-use ssh_manager::{ControlledCommandResult, ForwardConfig, KeepaliveConfig, SftpEntry, SshConnection, SshHostFingerprint, SshManager};
-use telnet_manager::{TelnetConnection, TelnetManager};
+use serde::{Deserialize, Serialize};
+use ssh_manager::{
+    ControlledCommandResult, ForwardConfig, KeepaliveConfig, SftpEntry, SshConnection,
+    SshHostFingerprint, SshManager,
+};
+use std::collections::HashMap;
 use std::fs;
-use std::sync::Mutex;
-use std::net::{TcpStream, ToSocketAddrs};
-use std::io::Write;
-use std::process::{Command, Stdio};
 use std::fs::OpenOptions;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::Write;
+#[cfg(not(target_os = "macos"))]
+use std::net::{TcpStream, ToSocketAddrs};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, State};
-use tauri::Manager;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
+use tauri::Manager;
+use tauri::{AppHandle, State};
+use telnet_manager::{TelnetConnection, TelnetManager};
 use tokio::process::Command as TokioCommand;
 
 struct AppState {
@@ -38,6 +43,22 @@ struct GeneratedKeypair {
     public_key: String,
     algorithm: String,
     comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SystemHttpRequest {
+    url: String,
+    method: String,
+    headers: Option<HashMap<String, String>>,
+    body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemHttpResponse {
+    status: u16,
+    status_text: String,
+    body: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,7 +105,11 @@ struct SftpTransferProgress {
 
 #[cfg(target_os = "linux")]
 fn command_exists(cmd: &str) -> bool {
-    let checker = if cfg!(target_os = "windows") { "where" } else { "which" };
+    let checker = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
     Command::new(checker)
         .arg(cmd)
         .output()
@@ -122,7 +147,10 @@ fn clipboard_read_text() -> Result<String, String> {
             return Ok(String::from_utf8_lossy(&output.stdout).to_string());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("PowerShell clipboard read failed: {}", stderr.trim()));
+        return Err(format!(
+            "PowerShell clipboard read failed: {}",
+            stderr.trim()
+        ));
     }
 
     #[cfg(target_os = "linux")]
@@ -232,38 +260,76 @@ async fn ssh_check_endpoint(host: String, port: u16) -> Result<EndpointCheck, St
             return Err("Host is empty".to_string());
         }
 
-        let addrs: Vec<_> = format!("{}:{}", host, port)
-            .to_socket_addrs()
-            .map_err(|e| e.to_string())?
-            .collect();
+        #[cfg(target_os = "macos")]
+        {
+            // Keep timeout-based TCP probes out of the main app process on macOS.
+            // In this runtime, a timed-out Rust connect_timeout can leave later
+            // same-process connects failing with EBADF, which also breaks SSH
+            // reconnects and unrelated plugin HTTP calls such as cloud sync.
+            let start = Instant::now();
+            let output = Command::new("/usr/bin/nc")
+                .arg("-z")
+                .arg("-G")
+                .arg("2")
+                .arg(&host)
+                .arg(port.to_string())
+                .output()
+                .map_err(|e| format!("Failed to run endpoint check: {}", e))?;
 
-        if addrs.is_empty() {
-            return Err("No resolved addresses".to_string());
+            if output.status.success() {
+                let latency_ms = start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                return Ok(EndpointCheck {
+                    ip: host,
+                    port,
+                    latency_ms,
+                });
+            }
+
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let message = if !stderr.is_empty() { stderr } else { stdout };
+            return Err(if message.is_empty() {
+                "Endpoint check failed".to_string()
+            } else {
+                message
+            });
         }
 
-        let timeout = Duration::from_millis(1500);
-        let mut last_err: Option<String> = None;
+        #[cfg(not(target_os = "macos"))]
+        {
+            let addrs: Vec<_> = format!("{}:{}", host, port)
+                .to_socket_addrs()
+                .map_err(|e| e.to_string())?
+                .collect();
 
-        for addr in addrs {
-            let start = Instant::now();
-            match TcpStream::connect_timeout(&addr, timeout) {
-                Ok(stream) => {
-                    let latency_ms =
-                        start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-                    let peer = stream.peer_addr().map_err(|e| e.to_string())?;
-                    return Ok(EndpointCheck {
-                        ip: peer.ip().to_string(),
-                        port: peer.port(),
-                        latency_ms,
-                    });
-                }
-                Err(e) => {
-                    last_err = Some(e.to_string());
+            if addrs.is_empty() {
+                return Err("No resolved addresses".to_string());
+            }
+
+            let timeout = Duration::from_millis(1500);
+            let mut last_err: Option<String> = None;
+
+            for addr in addrs {
+                let start = Instant::now();
+                match TcpStream::connect_timeout(&addr, timeout) {
+                    Ok(stream) => {
+                        let latency_ms =
+                            start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                        let peer = stream.peer_addr().map_err(|e| e.to_string())?;
+                        return Ok(EndpointCheck {
+                            ip: peer.ip().to_string(),
+                            port: peer.port(),
+                            latency_ms,
+                        });
+                    }
+                    Err(e) => {
+                        last_err = Some(e.to_string());
+                    }
                 }
             }
-        }
 
-        Err(last_err.unwrap_or_else(|| "Connect failed".to_string()))
+            Err(last_err.unwrap_or_else(|| "Connect failed".to_string()))
+        }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -328,14 +394,12 @@ async fn ssh_generate_keypair(
 
         cmd.arg("-f").arg(&key_path);
         cmd.arg("-N").arg(passphrase.clone().unwrap_or_default());
-        cmd.arg("-C").arg(comment.clone().unwrap_or_else(|| name.clone()));
+        cmd.arg("-C")
+            .arg(comment.clone().unwrap_or_else(|| name.clone()));
 
-        let output = cmd.output().map_err(|e| {
-            format!(
-                "Failed to run ssh-keygen (is it installed?): {}",
-                e
-            )
-        })?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run ssh-keygen (is it installed?): {}", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -367,6 +431,7 @@ async fn ssh_connect(
     app_handle: AppHandle,
     connection: SshConnection,
     keepalive: Option<KeepaliveConfig>,
+    attempt_id: String,
 ) -> Result<String, String> {
     let exe_path = std::env::current_exe()
         .map(|path| path.display().to_string())
@@ -391,19 +456,33 @@ async fn ssh_connect(
     let manager = state.ssh_manager.lock().unwrap().clone();
     let debug_app = app_handle.clone();
     let session_id = connection.id.clone();
+    manager.start_connect_attempt(&session_id, &attempt_id);
+    let attempt_id_for_worker = attempt_id.clone();
+    let started_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-        manager.connect(&connection, keepalive, app_handle)
+        manager.connect(
+            &connection,
+            keepalive,
+            app_handle,
+            Some(&attempt_id_for_worker),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string());
+    let elapsed_ms = started_at.elapsed().as_millis();
     match &result {
-        Ok(_) => emit_terminal_debug(&debug_app, &session_id, "info", "command ssh_connect success"),
+        Ok(_) => emit_terminal_debug(
+            &debug_app,
+            &session_id,
+            "info",
+            format!("command ssh_connect success elapsed_ms={}", elapsed_ms),
+        ),
         Err(error) => emit_terminal_debug(
             &debug_app,
             &session_id,
             "error",
-            format!("command ssh_connect failed: {}", error),
+            format!("command ssh_connect failed elapsed_ms={}: {}", elapsed_ms, error),
         ),
     }
     result
@@ -440,24 +519,41 @@ async fn ssh_open_shell(
     state: State<'_, AppState>,
     app_handle: AppHandle,
     session_id: String,
+    attempt_id: String,
 ) -> Result<(), String> {
-    emit_terminal_debug(&app_handle, &session_id, "info", "command ssh_open_shell invoked");
+    emit_terminal_debug(
+        &app_handle,
+        &session_id,
+        "info",
+        "command ssh_open_shell invoked",
+    );
     let manager = state.ssh_manager.lock().unwrap().clone();
     let debug_app = app_handle.clone();
     let debug_session_id = session_id.clone();
+    let attempt_id_for_worker = attempt_id.clone();
+    let started_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        manager.open_shell(&session_id, app_handle)
+        manager.open_shell(&session_id, app_handle, Some(&attempt_id_for_worker))
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string());
+    let elapsed_ms = started_at.elapsed().as_millis();
     match &result {
-        Ok(_) => emit_terminal_debug(&debug_app, &debug_session_id, "info", "command ssh_open_shell success"),
+        Ok(_) => emit_terminal_debug(
+            &debug_app,
+            &debug_session_id,
+            "info",
+            format!("command ssh_open_shell success elapsed_ms={}", elapsed_ms),
+        ),
         Err(error) => emit_terminal_debug(
             &debug_app,
             &debug_session_id,
             "error",
-            format!("command ssh_open_shell failed: {}", error),
+            format!(
+                "command ssh_open_shell failed elapsed_ms={}: {}",
+                elapsed_ms, error
+            ),
         ),
     }
     result
@@ -473,9 +569,9 @@ async fn telnet_open_shell(
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         manager.open_shell(&session_id, app_handle)
     })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -491,7 +587,7 @@ fn ssh_write_to_shell(
         "info",
         format!("command ssh_write_to_shell bytes={}", data.len()),
     );
-    let manager = state.ssh_manager.lock().unwrap();
+    let manager = state.ssh_manager.lock().unwrap().clone();
     let result = manager
         .write_to_shell(&session_id, &data)
         .map_err(|e| e.to_string());
@@ -526,7 +622,7 @@ fn ssh_resize_pty(
     cols: u32,
     rows: u32,
 ) -> Result<(), String> {
-    let manager = state.ssh_manager.lock().unwrap();
+    let manager = state.ssh_manager.lock().unwrap().clone();
     let result = manager
         .resize_pty(&session_id, cols, rows)
         .map_err(|e| e.to_string());
@@ -538,7 +634,10 @@ fn ssh_resize_pty(
             &app_handle,
             &session_id,
             "warn",
-            format!("command ssh_resize_pty failed cols={} rows={} error={}", cols, rows, error),
+            format!(
+                "command ssh_resize_pty failed cols={} rows={} error={}",
+                cols, rows, error
+            ),
         );
     }
     result
@@ -568,9 +667,9 @@ async fn local_open_shell(
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         manager.open_shell(&session_id, app_handle, shell)
     })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -601,34 +700,72 @@ fn local_resize_pty(
 #[tauri::command]
 fn local_disconnect(state: State<AppState>, session_id: String) -> Result<(), String> {
     let manager = state.local_pty_manager.lock().unwrap();
-    manager
-        .disconnect(&session_id)
-        .map_err(|e| e.to_string())
+    manager.disconnect(&session_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn telnet_disconnect(state: State<AppState>, session_id: String) -> Result<(), String> {
     let manager = state.telnet_manager.lock().unwrap();
-    manager
-        .disconnect(&session_id)
-        .map_err(|e| e.to_string())
+    manager.disconnect(&session_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn ssh_disconnect(
-    state: State<AppState>,
+async fn ssh_cancel_connect(
+    state: State<'_, AppState>,
     app_handle: AppHandle,
     session_id: String,
 ) -> Result<(), String> {
-    emit_terminal_debug(&app_handle, &session_id, "info", "command ssh_disconnect invoked");
-    let manager = state.ssh_manager.lock().unwrap();
-    let result = manager
-        .disconnect(&session_id)
-        .map_err(|e| e.to_string());
+    emit_terminal_debug(
+        &app_handle,
+        &session_id,
+        "info",
+        "command ssh_cancel_connect invoked",
+    );
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    let debug_app = app_handle.clone();
+    let debug_session_id = session_id.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        manager.cancel_connect(&session_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string());
     if let Err(error) = &result {
         emit_terminal_debug(
-            &app_handle,
-            &session_id,
+            &debug_app,
+            &debug_session_id,
+            "warn",
+            format!("command ssh_cancel_connect failed: {}", error),
+        );
+    }
+    result
+}
+
+#[tauri::command]
+async fn ssh_disconnect(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    emit_terminal_debug(
+        &app_handle,
+        &session_id,
+        "info",
+        "command ssh_disconnect invoked",
+    );
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    let debug_app = app_handle.clone();
+    let debug_session_id = session_id.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        manager.disconnect(&session_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string());
+    if let Err(error) = &result {
+        emit_terminal_debug(
+            &debug_app,
+            &debug_session_id,
             "warn",
             format!("command ssh_disconnect failed: {}", error),
         );
@@ -637,15 +774,18 @@ fn ssh_disconnect(
 }
 
 #[tauri::command]
-fn ssh_execute_command(
-    state: State<AppState>,
+async fn ssh_execute_command(
+    state: State<'_, AppState>,
     session_id: String,
     command: String,
 ) -> Result<String, String> {
-    let manager = state.ssh_manager.lock().unwrap();
-    manager
-        .execute_command(&session_id, &command)
-        .map_err(|e| e.to_string())
+    let manager = state.ssh_manager.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        manager.execute_command(&session_id, &command)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -721,7 +861,7 @@ fn telnet_is_connected(state: State<AppState>, session_id: String) -> bool {
 
 #[tauri::command]
 fn ssh_is_connected(state: State<AppState>, app_handle: AppHandle, session_id: String) -> bool {
-    let manager = state.ssh_manager.lock().unwrap();
+    let manager = state.ssh_manager.lock().unwrap().clone();
     let connected = manager.is_connected(&session_id);
     emit_terminal_debug(
         &app_handle,
@@ -740,7 +880,7 @@ fn telnet_list_sessions(state: State<AppState>) -> Vec<String> {
 
 #[tauri::command]
 fn ssh_list_sessions(state: State<AppState>) -> Vec<String> {
-    let manager = state.ssh_manager.lock().unwrap();
+    let manager = state.ssh_manager.lock().unwrap().clone();
     manager.list_sessions()
 }
 
@@ -757,10 +897,7 @@ async fn ssh_forward_start(
 }
 
 #[tauri::command]
-async fn ssh_forward_stop(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+async fn ssh_forward_stop(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let manager = state.ssh_manager.lock().unwrap().clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> { manager.stop_forward(&id) })
         .await
@@ -770,7 +907,7 @@ async fn ssh_forward_stop(
 
 #[tauri::command]
 fn ssh_forward_list(state: State<AppState>) -> Vec<String> {
-    let manager = state.ssh_manager.lock().unwrap();
+    let manager = state.ssh_manager.lock().unwrap().clone();
     manager.list_forwards()
 }
 
@@ -784,9 +921,9 @@ async fn ssh_sftp_list_dir(
     tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<SftpEntry>> {
         manager.sftp_list_dir(&session_id, &path)
     })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -838,10 +975,7 @@ async fn ssh_sftp_download_file(
 }
 
 #[tauri::command]
-fn ssh_sftp_cancel_transfer(
-    state: State<'_, AppState>,
-    transfer_id: String,
-) -> bool {
+fn ssh_sftp_cancel_transfer(state: State<'_, AppState>, transfer_id: String) -> bool {
     let manager = state.ssh_manager.lock().unwrap();
     manager.cancel_transfer(&transfer_id)
 }
@@ -860,24 +994,30 @@ async fn ssh_sftp_upload_file(
     let transfer_id = transfer_id.unwrap_or_else(|| format!("upload:{}", local_path));
     let use_temp_file = use_temp_file.unwrap_or(true);
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        manager.sftp_upload_file(&session_id, &local_path, &remote_path, use_temp_file, |transferred, total| {
-            let percent = if total > 0 {
-                (transferred as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
-            } else {
-                0.0
-            };
-            let _ = app.emit(
-                "sftp-transfer-progress",
-                SftpTransferProgress {
-                    session_id: session_id.clone(),
-                    transfer_id: transfer_id.clone(),
-                    direction: "upload".to_string(),
-                    transferred,
-                    total,
-                    percent,
-                },
-            );
-        })
+        manager.sftp_upload_file(
+            &session_id,
+            &local_path,
+            &remote_path,
+            use_temp_file,
+            |transferred, total| {
+                let percent = if total > 0 {
+                    (transferred as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+                } else {
+                    0.0
+                };
+                let _ = app.emit(
+                    "sftp-transfer-progress",
+                    SftpTransferProgress {
+                        session_id: session_id.clone(),
+                        transfer_id: transfer_id.clone(),
+                        direction: "upload".to_string(),
+                        transferred,
+                        total,
+                        percent,
+                    },
+                );
+            },
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -911,9 +1051,9 @@ async fn ssh_sftp_chmod(
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         manager.sftp_chmod(&session_id, &path, mode)
     })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -927,9 +1067,9 @@ async fn ssh_sftp_delete(
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         manager.sftp_delete(&session_id, &path, is_dir)
     })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -942,9 +1082,103 @@ async fn ssh_sftp_mkdir(
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         manager.sftp_mkdir(&session_id, &path)
     })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn system_http_request(request: SystemHttpRequest) -> Result<SystemHttpResponse, String> {
+    tokio::task::spawn_blocking(move || -> Result<SystemHttpResponse, String> {
+        let url = request.url.trim();
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err("Only http(s) URLs are supported".to_string());
+        }
+
+        let method = request.method.trim().to_uppercase();
+        if method.is_empty() {
+            return Err("HTTP method is empty".to_string());
+        }
+
+        let status_marker = "\n__NOTERM_HTTP_STATUS__:";
+        let mut cmd = Command::new("/usr/bin/curl");
+        cmd.arg("--silent")
+            .arg("--show-error")
+            .arg("--max-time")
+            .arg("60")
+            .arg("--request")
+            .arg(&method);
+
+        if let Some(headers) = request.headers {
+            for (name, value) in headers {
+                if name.contains('\n') || value.contains('\n') {
+                    return Err("HTTP headers must not contain newlines".to_string());
+                }
+                cmd.arg("--header").arg(format!("{}: {}", name, value));
+            }
+        }
+
+        let has_body = request.body.is_some();
+        if has_body {
+            cmd.arg("--data-binary").arg("@-");
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
+
+        cmd.arg("--write-out")
+            .arg(format!("{}%{{http_code}}", status_marker))
+            .arg(url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to run curl: {}", e))?;
+
+        if let Some(body) = request.body {
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(body.as_bytes())
+                    .map_err(|e| format!("Failed to write curl request body: {}", e))?;
+            }
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("Failed to wait for curl: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let Some((body, status_raw)) = stdout.rsplit_once(status_marker) else {
+            return Err(if stderr.is_empty() {
+                "curl did not return an HTTP status".to_string()
+            } else {
+                stderr
+            });
+        };
+
+        let status = status_raw
+            .trim()
+            .parse::<u16>()
+            .map_err(|_| format!("Invalid curl HTTP status: {}", status_raw.trim()))?;
+
+        if !output.status.success() && status == 0 {
+            return Err(if stderr.is_empty() {
+                "curl request failed".to_string()
+            } else {
+                stderr
+            });
+        }
+
+        Ok(SystemHttpResponse {
+            status,
+            status_text: String::new(),
+            body: body.to_string(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -986,12 +1220,13 @@ pub fn run() {
             telnet_open_shell,
             ssh_write_to_shell,
             telnet_write_to_shell,
+            local_write_to_shell,
             ssh_resize_pty,
             telnet_resize_pty,
+            ssh_cancel_connect,
             ssh_disconnect,
             telnet_disconnect,
             local_open_shell,
-            local_write_to_shell,
             local_resize_pty,
             local_disconnect,
             ssh_execute_command,
@@ -1011,7 +1246,8 @@ pub fn run() {
             ssh_sftp_rename,
             ssh_sftp_chmod,
             ssh_sftp_delete,
-            ssh_sftp_mkdir
+            ssh_sftp_mkdir,
+            system_http_request
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

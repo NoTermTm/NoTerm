@@ -2584,15 +2584,18 @@
     border: 1px solid var(--ai-code-border, var(--ai-border));
     display: flex;
     flex-direction: column;
+    flex-shrink: 0;
     min-width: 0;
     max-width: 100%;
 }
 .ai-code-block pre {
     margin: 0;
     padding: 30px 10px 8px;
+    flex-shrink: 0;
     min-width: 0;
     max-width: 100%;
     overflow-x: auto;
+    white-space: pre;
 }
 .ai-code-block pre code.hljs,
 .ai-code-block pre .hljs {

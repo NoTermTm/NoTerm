@@ -109,9 +109,7 @@ const normalizeTags = (tags?: string[] | string | null) =>
   Array.from(new Set(extractTagCandidates(tags))).slice(0, 8);
 
 const normalizeSingleTag = (value?: string | null) =>
-  (value ?? "")
-    .split(/[，,]/g)[0]
-    ?.trim() ?? "";
+  (value ?? "").split(/[，,]/g)[0]?.trim() ?? "";
 
 const normalizeEditableTags = (value?: string | null) => {
   const tag = normalizeSingleTag(value);
@@ -517,7 +515,10 @@ const deserializeConnection = async (
   return normalizeConnection(ssh, fallbackName);
 };
 
-const serializeConnection = async (conn: ConnectionConfig, ctx: SecurityContext) => {
+const serializeConnection = async (
+  conn: ConnectionConfig,
+  ctx: SecurityContext,
+) => {
   if (conn.kind === "telnet") {
     return {
       ...conn,
@@ -583,7 +584,10 @@ const mergeStoredConnectionSecrets = (
   return conn;
 };
 
-const deserializeProfile = async (profile: AuthProfile, ctx: SecurityContext) => {
+const deserializeProfile = async (
+  profile: AuthProfile,
+  ctx: SecurityContext,
+) => {
   if (profile.auth_type.type === "Password") {
     return {
       ...profile,
@@ -658,7 +662,9 @@ const mergeStoredProfileSecrets = (
   return profile;
 };
 
-const cloneAuthType = (authType: AuthProfile["auth_type"]): AuthProfile["auth_type"] => {
+const cloneAuthType = (
+  authType: AuthProfile["auth_type"],
+): AuthProfile["auth_type"] => {
   if (authType.type === "Password") {
     return {
       type: "Password",
@@ -747,7 +753,10 @@ const buildSessionTab = (
   id: sessionId,
   title: title ?? session.connection.name,
   subtitle: subtitle ?? formatSessionEndpoint(session.connection),
-  color: session.kind !== "local" ? normalizeColor(session.connection.color) : undefined,
+  color:
+    session.kind !== "local"
+      ? normalizeColor(session.connection.color)
+      : undefined,
 });
 
 export function ConnectionsPage({
@@ -793,7 +802,8 @@ export function ConnectionsPage({
   const [connectPickerOpen, setConnectPickerOpen] = useState(false);
   const [connectPickerQuery, setConnectPickerQuery] = useState("");
   const [connectPickerActiveIndex, setConnectPickerActiveIndex] = useState(0);
-  const [hostTrustPrompt, setHostTrustPrompt] = useState<HostTrustPromptState | null>(null);
+  const [hostTrustPrompt, setHostTrustPrompt] =
+    useState<HostTrustPromptState | null>(null);
   const connectPickerInputRef = useRef<HTMLInputElement | null>(null);
   const connectPickerItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [testStatus, setTestStatus] = useState<
@@ -802,7 +812,9 @@ export function ConnectionsPage({
   const [testMessage, setTestMessage] = useState<string | null>(null);
   const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
   const [colorFilter, setColorFilter] = useState<string>("all");
-  const [expandedTagGroups, setExpandedTagGroups] = useState<Record<string, boolean>>({});
+  const [expandedTagGroups, setExpandedTagGroups] = useState<
+    Record<string, boolean>
+  >({});
   const [actionMenu, setActionMenu] = useState<{
     id: string;
     x: number;
@@ -820,7 +832,9 @@ export function ConnectionsPage({
   useEffect(() => {
     if (!splitResizing) return;
     const onMove = (event: PointerEvent) => {
-      const container = splitContainerRefs.current.get(splitResizing.baseSessionId);
+      const container = splitContainerRefs.current.get(
+        splitResizing.baseSessionId,
+      );
       if (!container) return;
       const containerSize =
         splitResizing.direction === "vertical"
@@ -883,7 +897,10 @@ export function ConnectionsPage({
     };
     window.addEventListener("auth-profiles-updated", onAuthProfilesUpdated);
     return () => {
-      window.removeEventListener("auth-profiles-updated", onAuthProfilesUpdated);
+      window.removeEventListener(
+        "auth-profiles-updated",
+        onAuthProfilesUpdated,
+      );
     };
   }, [connections]);
 
@@ -965,7 +982,9 @@ export function ConnectionsPage({
             deserializeConnection(
               conn,
               ctx,
-              conn?.kind === "telnet" ? fallbackNames.telnet : fallbackNames.ssh,
+              conn?.kind === "telnet"
+                ? fallbackNames.telnet
+                : fallbackNames.ssh,
             ),
           ),
         )
@@ -979,7 +998,9 @@ export function ConnectionsPage({
     const saved = await s.get<AuthProfile[]>("profiles");
     if (!saved) return [] as AuthProfile[];
     const ctx = await getSecurityContext();
-    const next = await Promise.all(saved.map((p) => deserializeProfile(p, ctx)));
+    const next = await Promise.all(
+      saved.map((p) => deserializeProfile(p, ctx)),
+    );
     setAuthProfiles(next);
     return next;
   };
@@ -1046,7 +1067,9 @@ export function ConnectionsPage({
     const s = await getKeyStore();
     const ctx = await getSecurityContext();
     const stored = await s.get<AuthProfile[]>("profiles");
-    const storedMap = new Map((stored ?? []).map((profile) => [profile.id, profile]));
+    const storedMap = new Map(
+      (stored ?? []).map((profile) => [profile.id, profile]),
+    );
     const persisted = await Promise.all(
       next.map((profile) => {
         if (!ctx.masterKey && ctx.savePassword) {
@@ -1069,7 +1092,9 @@ export function ConnectionsPage({
 
   const syncConnectionsByProfiles = async (profilesToApply: AuthProfile[]) => {
     if (profilesToApply.length === 0) return;
-    const profileMap = new Map(profilesToApply.map((profile) => [profile.id, profile]));
+    const profileMap = new Map(
+      profilesToApply.map((profile) => [profile.id, profile]),
+    );
     let changed = false;
     const nextConnections = connections.map((conn) => {
       if (!isSshConnection(conn) || !conn.auth_profile_id) return conn;
@@ -1356,10 +1381,16 @@ export function ConnectionsPage({
       let changed = false;
       const next = new Map(prev);
       for (const [sessionId, session] of next.entries()) {
-        if (session.connection.kind !== "ssh" || session.connection.id !== connection.id) {
+        if (
+          session.connection.kind !== "ssh" ||
+          session.connection.id !== connection.id
+        ) {
           continue;
         }
-        if (session.connection.host_key_fingerprint_sha256 === normalizedFingerprint) {
+        if (
+          session.connection.host_key_fingerprint_sha256 ===
+          normalizedFingerprint
+        ) {
           continue;
         }
         changed = true;
@@ -1387,7 +1418,8 @@ export function ConnectionsPage({
   const ensureTrustedSshHost = async (connection: SshConnectionConfig) => {
     const fingerprint = await sshApi.getHostFingerprint(connection);
     const actual = fingerprint.sha256.trim().toLowerCase();
-    const trusted = connection.host_key_fingerprint_sha256?.trim().toLowerCase() || "";
+    const trusted =
+      connection.host_key_fingerprint_sha256?.trim().toLowerCase() || "";
 
     if (!trusted) {
       const approved = await requestHostTrustDecision({
@@ -1436,6 +1468,7 @@ export function ConnectionsPage({
     connection: SshConnectionConfig,
     keepalive: SshKeepaliveConfig,
     sessionId: string,
+    attemptId: string,
   ) => {
     const trustedFingerprint = connection.host_key_fingerprint_sha256?.trim();
 
@@ -1447,6 +1480,7 @@ export function ConnectionsPage({
             id: sessionId,
           },
           keepalive,
+          attemptId,
         );
       } catch (error) {
         if (!isSshTrustRecoveryNeeded(error)) {
@@ -1462,6 +1496,7 @@ export function ConnectionsPage({
         id: sessionId,
       },
       keepalive,
+      attemptId,
     );
   };
 
@@ -1524,7 +1559,9 @@ export function ConnectionsPage({
       );
 
       if (splitForPrimary) {
-        const promotedSession = activeSessions.get(splitForPrimary.secondarySessionId);
+        const promotedSession = activeSessions.get(
+          splitForPrimary.secondarySessionId,
+        );
         await disconnectSession(sessionId);
 
         setActiveSessions((prev) => {
@@ -1543,7 +1580,10 @@ export function ConnectionsPage({
           setTabs((prev) =>
             prev.map((tab) =>
               tab.id === sessionId
-                ? buildSessionTab(splitForPrimary.secondarySessionId, promotedSession)
+                ? buildSessionTab(
+                    splitForPrimary.secondarySessionId,
+                    promotedSession,
+                  )
                 : tab,
             ),
           );
@@ -1770,6 +1810,7 @@ export function ConnectionsPage({
         testConnection,
         keepalive,
         testConnection.id,
+        `${testConnection.id}:test`,
       );
       await sshApi.disconnect(sessionId);
       setTestStatus("success");
@@ -1797,7 +1838,9 @@ export function ConnectionsPage({
     if (!editingConnection) return null;
 
     const isSshEditing = isSshConnection(editingConnection);
-    const authType = isSshEditing ? editingConnection.auth_type.type : "Password";
+    const authType = isSshEditing
+      ? editingConnection.auth_type.type
+      : "Password";
     const currentPkMode =
       isSshEditing &&
       authType === "PrivateKey" &&
@@ -1811,7 +1854,9 @@ export function ConnectionsPage({
       new Set([
         "",
         ...availableTags,
-        ...(primaryTag && !availableTags.includes(primaryTag) ? [primaryTag] : []),
+        ...(primaryTag && !availableTags.includes(primaryTag)
+          ? [primaryTag]
+          : []),
       ]),
     ).map((tag) => ({
       value: tag,
@@ -1947,7 +1992,9 @@ export function ConnectionsPage({
                     {t("connections.quickAuth.save")}
                   </button>
                 </div>
-                <div className="quick-auth-hint">{t("connections.quickAuth.hint")}</div>
+                <div className="quick-auth-hint">
+                  {t("connections.quickAuth.hint")}
+                </div>
               </div>
 
               <div className="connection-form-grid">
@@ -2140,7 +2187,9 @@ export function ConnectionsPage({
                     <label>{t("connections.pk.path")}</label>
                     <input
                       type="text"
-                      value={(editingConnection.auth_type as any).key_path || ""}
+                      value={
+                        (editingConnection.auth_type as any).key_path || ""
+                      }
                       onChange={(e) =>
                         setEditingConnection({
                           ...editingConnection,
@@ -2160,7 +2209,9 @@ export function ConnectionsPage({
                     <div className="password-input-wrapper">
                       <input
                         type={showPassphrase ? "text" : "password"}
-                        value={(editingConnection.auth_type as any).passphrase || ""}
+                        value={
+                          (editingConnection.auth_type as any).passphrase || ""
+                        }
                         onChange={(e) =>
                           setEditingConnection({
                             ...editingConnection,
@@ -2202,7 +2253,9 @@ export function ConnectionsPage({
                     <label>{t("connections.pk.content")}</label>
                     <textarea
                       className="keys-pem-textarea"
-                      value={(editingConnection.auth_type as any).key_content || ""}
+                      value={
+                        (editingConnection.auth_type as any).key_content || ""
+                      }
                       onChange={(e) => {
                         const content = e.target.value;
                         setEditingConnection({
@@ -2249,8 +2302,8 @@ export function ConnectionsPage({
                       {t("connections.pk.hint.desc")}
                       <br />• <code>-----BEGIN RSA PRIVATE KEY-----</code>{" "}
                       (OpenSSH RSA)
-                      <br />• <code>-----BEGIN OPENSSH PRIVATE KEY-----</code>{" "}
-                      ({t("connections.pk.hint.opensshNew")})
+                      <br />• <code>-----BEGIN OPENSSH PRIVATE KEY-----</code> (
+                      {t("connections.pk.hint.opensshNew")})
                       <br />• <code>-----BEGIN EC PRIVATE KEY-----</code>{" "}
                       (ECDSA)
                       <br />• {t("connections.pk.hint.ensureFull")}
@@ -2262,7 +2315,9 @@ export function ConnectionsPage({
                     <div className="password-input-wrapper">
                       <input
                         type={showPassphrase ? "text" : "password"}
-                        value={(editingConnection.auth_type as any).passphrase || ""}
+                        value={
+                          (editingConnection.auth_type as any).passphrase || ""
+                        }
                         onChange={(e) =>
                           setEditingConnection({
                             ...editingConnection,
@@ -2308,7 +2363,9 @@ export function ConnectionsPage({
             className="connection-more-toggle"
             onClick={() => setShowAdvancedConfig((prev) => !prev)}
           >
-            <span className="connection-more-label">{t("connections.more.label")}</span>
+            <span className="connection-more-label">
+              {t("connections.more.label")}
+            </span>
             <span className="connection-more-summary">{moreConfigSummary}</span>
             <AppIcon
               icon={
@@ -2495,12 +2552,15 @@ export function ConnectionsPage({
         }
         await sshApi.writeToShell(sessionId, content).catch(() => {});
       };
-      const handleTerminalConnect = async () => {
+      const handleTerminalConnect = async (attemptId: string) => {
         if (session.kind === "local") {
           await sshApi.localOpenShell(sessionId);
           return;
         }
-        if (session.kind === "telnet" && isTelnetConnection(session.connection)) {
+        if (
+          session.kind === "telnet" &&
+          isTelnetConnection(session.connection)
+        ) {
           const backendSessionId = await telnetApi.connect({
             ...session.connection,
             id: sessionId,
@@ -2514,9 +2574,13 @@ export function ConnectionsPage({
           session.connection,
           keepalive,
           sessionId,
+          attemptId,
         );
-        await sshApi.openShell(backendSessionId);
-        if (!session.connection.osType || session.connection.osType === "unknown") {
+        await sshApi.openShell(backendSessionId, attemptId);
+        if (
+          !session.connection.osType ||
+          session.connection.osType === "unknown"
+        ) {
           void (async () => {
             try {
               const osType = await detectRemoteOsType(backendSessionId);
@@ -2593,7 +2657,9 @@ export function ConnectionsPage({
             >
               <div
                 className="terminal-split-pane"
-                style={{ flex: `0 0 ${Math.round(split.ratio * 10000) / 100}%` }}
+                style={{
+                  flex: `0 0 ${Math.round(split.ratio * 10000) / 100}%`,
+                }}
               >
                 {renderTerminal(
                   sessionId,
@@ -2608,7 +2674,9 @@ export function ConnectionsPage({
                 onPointerDown={(event) => {
                   event.preventDefault();
                   const startPos =
-                    split.direction === "vertical" ? event.clientX : event.clientY;
+                    split.direction === "vertical"
+                      ? event.clientX
+                      : event.clientY;
                   setSplitResizing({
                     baseSessionId: sessionId,
                     direction: split.direction,
@@ -2619,7 +2687,9 @@ export function ConnectionsPage({
               />
               <div
                 className="terminal-split-pane"
-                style={{ flex: `0 0 ${Math.round((1 - split.ratio) * 10000) / 100}%` }}
+                style={{
+                  flex: `0 0 ${Math.round((1 - split.ratio) * 10000) / 100}%`,
+                }}
               >
                 {renderTerminal(
                   split.secondarySessionId,
@@ -2663,44 +2733,76 @@ export function ConnectionsPage({
           <span className="connections-welcome-icon" aria-hidden="true">
             <AppIcon icon="material-symbols:terminal-rounded" size={36} />
           </span>
-          <h2 className="connections-welcome-title">{t("connections.welcome.title")}</h2>
-          <p className="connections-welcome-desc">{t("connections.welcome.subtitle")}</p>
+          <h2 className="connections-welcome-title">
+            {t("connections.welcome.title")}
+          </h2>
+          <p className="connections-welcome-desc">
+            {t("connections.welcome.subtitle")}
+          </p>
         </div>
         <div className="connections-welcome-features">
           <div className="connections-welcome-feature">
-            <span className="connections-welcome-feature-icon" aria-hidden="true">
+            <span
+              className="connections-welcome-feature-icon"
+              aria-hidden="true"
+            >
               <AppIcon icon="material-symbols:tab-rounded" size={16} />
             </span>
             <div>
-              <p className="connections-welcome-feature-title">{t("connections.welcome.feature.tabs")}</p>
-              <p className="connections-welcome-feature-desc">{t("connections.welcome.feature.tabsDesc")}</p>
+              <p className="connections-welcome-feature-title">
+                {t("connections.welcome.feature.tabs")}
+              </p>
+              <p className="connections-welcome-feature-desc">
+                {t("connections.welcome.feature.tabsDesc")}
+              </p>
             </div>
           </div>
           <div className="connections-welcome-feature">
-            <span className="connections-welcome-feature-icon" aria-hidden="true">
+            <span
+              className="connections-welcome-feature-icon"
+              aria-hidden="true"
+            >
               <AppIcon icon="material-symbols:folder-open-rounded" size={16} />
             </span>
             <div>
-              <p className="connections-welcome-feature-title">{t("connections.welcome.feature.sftp")}</p>
-              <p className="connections-welcome-feature-desc">{t("connections.welcome.feature.sftpDesc")}</p>
+              <p className="connections-welcome-feature-title">
+                {t("connections.welcome.feature.sftp")}
+              </p>
+              <p className="connections-welcome-feature-desc">
+                {t("connections.welcome.feature.sftpDesc")}
+              </p>
             </div>
           </div>
           <div className="connections-welcome-feature">
-            <span className="connections-welcome-feature-icon" aria-hidden="true">
+            <span
+              className="connections-welcome-feature-icon"
+              aria-hidden="true"
+            >
               <AppIcon icon="material-symbols:smart-toy-rounded" size={16} />
             </span>
             <div>
-              <p className="connections-welcome-feature-title">{t("connections.welcome.feature.ai")}</p>
-              <p className="connections-welcome-feature-desc">{t("connections.welcome.feature.aiDesc")}</p>
+              <p className="connections-welcome-feature-title">
+                {t("connections.welcome.feature.ai")}
+              </p>
+              <p className="connections-welcome-feature-desc">
+                {t("connections.welcome.feature.aiDesc")}
+              </p>
             </div>
           </div>
           <div className="connections-welcome-feature">
-            <span className="connections-welcome-feature-icon" aria-hidden="true">
+            <span
+              className="connections-welcome-feature-icon"
+              aria-hidden="true"
+            >
               <AppIcon icon="material-symbols:code-rounded" size={16} />
             </span>
             <div>
-              <p className="connections-welcome-feature-title">{t("connections.welcome.feature.scripts")}</p>
-              <p className="connections-welcome-feature-desc">{t("connections.welcome.feature.scriptsDesc")}</p>
+              <p className="connections-welcome-feature-title">
+                {t("connections.welcome.feature.scripts")}
+              </p>
+              <p className="connections-welcome-feature-desc">
+                {t("connections.welcome.feature.scriptsDesc")}
+              </p>
             </div>
           </div>
         </div>
@@ -2802,13 +2904,7 @@ export function ConnectionsPage({
     const tokens = query.split(/\s+/).filter(Boolean);
     return connections.filter((conn) => {
       const tags = (conn.tags ?? []).join(" ");
-      const haystack = [
-        conn.name,
-        conn.host,
-        conn.username,
-        conn.kind,
-        tags,
-      ]
+      const haystack = [conn.name, conn.host, conn.username, conn.kind, tags]
         .join(" ")
         .toLowerCase();
       return tokens.every((token) => haystack.includes(token));
@@ -2823,7 +2919,8 @@ export function ConnectionsPage({
     }
     setConnectPickerActiveIndex((prev) => {
       if (prev < 0) return 0;
-      if (prev >= connectPickerResults.length) return connectPickerResults.length - 1;
+      if (prev >= connectPickerResults.length)
+        return connectPickerResults.length - 1;
       return prev;
     });
   }, [connectPickerOpen, connectPickerResults]);
@@ -2863,7 +2960,9 @@ export function ConnectionsPage({
             <div className="connection-name-row">
               <div className="connection-name">{conn.name}</div>
             </div>
-            <div className="connection-details">{formatConnectionEndpoint(conn)}</div>
+            <div className="connection-details">
+              {formatConnectionEndpoint(conn)}
+            </div>
           </div>
           <div
             className={`connection-actions ${actionMenu?.id === conn.id ? "open" : ""}`}
@@ -2905,9 +3004,7 @@ export function ConnectionsPage({
 
   return (
     <>
-      <div
-        className={`connections-page ${activePanel === "connections" ? "connections-page--panel-open" : ""}`}
-      >
+      <div className="connections-page">
         <SlidePanel
           isOpen={activePanel === "connections"}
           title={t("connections.panel.title")}
@@ -2964,14 +3061,21 @@ export function ConnectionsPage({
             </div>
           </div>
           <div className="connections-list-items">
-            {filteredConnections.length === 0 && (
-              connections.length === 0 ? (
+            {filteredConnections.length === 0 &&
+              (connections.length === 0 ? (
                 <div className="connections-onboard">
                   <span className="connections-onboard-icon" aria-hidden="true">
-                    <AppIcon icon="material-symbols:terminal-rounded" size={28} />
+                    <AppIcon
+                      icon="material-symbols:terminal-rounded"
+                      size={28}
+                    />
                   </span>
-                  <p className="connections-onboard-title">{t("connections.onboard.title")}</p>
-                  <p className="connections-onboard-desc">{t("connections.onboard.subtitle")}</p>
+                  <p className="connections-onboard-title">
+                    {t("connections.onboard.title")}
+                  </p>
+                  <p className="connections-onboard-desc">
+                    {t("connections.onboard.subtitle")}
+                  </p>
                   <button
                     className="btn btn-primary connections-onboard-btn"
                     onClick={() => void handleAddConnection()}
@@ -2983,10 +3087,11 @@ export function ConnectionsPage({
                 <div className="connections-empty-hint">
                   {t("connections.list.empty")}
                 </div>
-              )
-            )}
+              ))}
             {groupedConnections.map((group) => {
-              const expanded = normalizedQuery ? true : Boolean(expandedTagGroups[group.key]);
+              const expanded = normalizedQuery
+                ? true
+                : Boolean(expandedTagGroups[group.key]);
               return (
                 <div key={group.key} className="connection-group">
                   <button
@@ -3000,7 +3105,10 @@ export function ConnectionsPage({
                     }
                     aria-expanded={expanded}
                   >
-                    <span className="connection-group-toggle-icon" aria-hidden="true">
+                    <span
+                      className="connection-group-toggle-icon"
+                      aria-hidden="true"
+                    >
                       <AppIcon
                         icon={
                           expanded
@@ -3010,12 +3118,18 @@ export function ConnectionsPage({
                         size={18}
                       />
                     </span>
-                    <span className="connection-group-label">{group.label}</span>
-                    <span className="connection-group-count">{group.connections.length}</span>
+                    <span className="connection-group-label">
+                      {group.label}
+                    </span>
+                    <span className="connection-group-count">
+                      {group.connections.length}
+                    </span>
                   </button>
                   {expanded && (
                     <div className="connection-group-items">
-                      {group.connections.map((conn) => renderConnectionListItem(conn))}
+                      {group.connections.map((conn) =>
+                        renderConnectionListItem(conn),
+                      )}
                     </div>
                   )}
                 </div>
@@ -3043,7 +3157,9 @@ export function ConnectionsPage({
               }}
             >
               {(() => {
-                const conn = connections.find((item) => item.id === actionMenu.id);
+                const conn = connections.find(
+                  (item) => item.id === actionMenu.id,
+                );
                 if (!conn) return null;
                 return (
                   <>
@@ -3055,10 +3171,7 @@ export function ConnectionsPage({
                         handleConnect(conn);
                       }}
                     >
-                      <AppIcon
-                        icon="proicons:play"
-                        size={16}
-                      />
+                      <AppIcon icon="proicons:play" size={16} />
                       {t("connections.action.connect")}
                     </button>
                     <button
@@ -3072,7 +3185,9 @@ export function ConnectionsPage({
                           tags: normalizeEditableTags(getPrimaryTag(conn.tags)),
                         });
                         setAuthProfileId(
-                          isSshConnection(conn) ? conn.auth_profile_id ?? "" : "",
+                          isSshConnection(conn)
+                            ? (conn.auth_profile_id ?? "")
+                            : "",
                         );
                         // 根据连接的 auth_type 设置 pkMode
                         if (
@@ -3100,10 +3215,7 @@ export function ConnectionsPage({
                         handleDeleteConnection(conn.id);
                       }}
                     >
-                      <AppIcon
-                        icon="proicons:delete"
-                        size={16}
-                      />
+                      <AppIcon icon="proicons:delete" size={16} />
                       {t("common.delete")}
                     </button>
                   </>
@@ -3148,7 +3260,9 @@ export function ConnectionsPage({
       >
         <div className="split-picker">
           {connections.length === 0 && (
-            <div className="split-picker-empty">{t("connections.split.empty")}</div>
+            <div className="split-picker-empty">
+              {t("connections.split.empty")}
+            </div>
           )}
           {connections.filter(isSshConnection).map((conn) => (
             <button
@@ -3224,8 +3338,11 @@ export function ConnectionsPage({
                 if (event.key === "ArrowDown") {
                   event.preventDefault();
                   setConnectPickerActiveIndex((prev) => {
-                    const next = prev < 0 ? 0 : (prev + 1) % connectPickerResults.length;
-                    connectPickerItemRefs.current[next]?.scrollIntoView({ block: "nearest" });
+                    const next =
+                      prev < 0 ? 0 : (prev + 1) % connectPickerResults.length;
+                    connectPickerItemRefs.current[next]?.scrollIntoView({
+                      block: "nearest",
+                    });
                     return next;
                   });
                   return;
@@ -3236,8 +3353,11 @@ export function ConnectionsPage({
                     const next =
                       prev < 0
                         ? connectPickerResults.length - 1
-                        : (prev - 1 + connectPickerResults.length) % connectPickerResults.length;
-                    connectPickerItemRefs.current[next]?.scrollIntoView({ block: "nearest" });
+                        : (prev - 1 + connectPickerResults.length) %
+                          connectPickerResults.length;
+                    connectPickerItemRefs.current[next]?.scrollIntoView({
+                      block: "nearest",
+                    });
                     return next;
                   });
                   return;

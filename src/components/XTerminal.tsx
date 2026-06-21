@@ -15,8 +15,19 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { mkdir, readFile, readTextFile, remove, stat, watch, type UnwatchFn } from "@tauri-apps/plugin-fs";
+import {
+  open as openDialog,
+  save as saveDialog,
+} from "@tauri-apps/plugin-dialog";
+import {
+  mkdir,
+  readFile,
+  readTextFile,
+  remove,
+  stat,
+  watch,
+  type UnwatchFn,
+} from "@tauri-apps/plugin-fs";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { sshApi } from "../api/ssh";
 import { telnetApi } from "../api/telnet";
@@ -50,16 +61,18 @@ import {
   type LsTableRow,
   type SmartCommandInfo,
 } from "../terminal/smartTerminal";
-import { createAgentLoop, type AgentLoopController } from "../terminal/agentLoop";
-import type {
-  AgentApprovalMode,
-  AgentBlock,
-  AgentRisk,
-} from "../types/agent";
+import {
+  createAgentLoop,
+  type AgentLoopController,
+} from "../terminal/agentLoop";
+import type { AgentApprovalMode, AgentBlock, AgentRisk } from "../types/agent";
 import { getModifierKeyAbbr, getModifierKeyLabel } from "../utils/platform";
 import { toRgba } from "../utils/color";
 import { loadTerminalBackgroundUrl } from "../utils/terminalBackground";
-import { getResourceStatsCommand, parseResourceStatsOutput } from "../utils/resourceStats";
+import {
+  getResourceStatsCommand,
+  parseResourceStatsOutput,
+} from "../utils/resourceStats";
 import { useI18n } from "../i18n";
 
 interface XTerminalProps {
@@ -69,11 +82,14 @@ interface XTerminalProps {
   isLocal?: boolean;
   sessionKind?: "ssh" | "telnet" | "local";
   osType?: "windows" | "macos" | "linux" | "unknown";
-  onConnect?: () => Promise<void>;
+  onConnect?: (attemptId: string) => Promise<void>;
   onRequestSplit?: (direction: "vertical" | "horizontal") => void;
   onCloseSession?: () => void;
   isSplit?: boolean;
-  onSendScript?: (content: string, scope: "current" | "all") => Promise<void> | void;
+  onSendScript?: (
+    content: string,
+    scope: "current" | "all",
+  ) => Promise<void> | void;
 }
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
@@ -135,13 +151,11 @@ type SftpEditSession = {
 type TransferUiProgressState = {
   lastAt: number;
   timer: number | null;
-  latest:
-    | {
-        progress: number;
-        speedBps: number;
-        detail: string;
-      }
-    | null;
+  latest: {
+    progress: number;
+    speedBps: number;
+    detail: string;
+  } | null;
 };
 
 type SmartTableState =
@@ -237,7 +251,9 @@ type ToolbarResourceStats = {
   memoryPercent: number | null;
 };
 
-const parseTerminalHashCommand = (input: string): TerminalHashCommand | null => {
+const parseTerminalHashCommand = (
+  input: string,
+): TerminalHashCommand | null => {
   const trimmed = input.trim();
   if (!trimmed.startsWith("#")) return null;
   if (trimmed === "#") return { kind: "help" };
@@ -252,7 +268,11 @@ const parseTerminalHashCommand = (input: string): TerminalHashCommand | null => 
   if (commandName === "fix") {
     return { kind: "fix", query };
   }
-  if (commandName === "help" || commandName === "commands" || commandName === "?") {
+  if (
+    commandName === "help" ||
+    commandName === "commands" ||
+    commandName === "?"
+  ) {
     return { kind: "help" };
   }
   return { kind: "unknown", name: `#${commandName}` };
@@ -267,15 +287,20 @@ const hasExecutableCommand = (text: string): boolean => {
   );
 };
 
-const escapeForRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeForRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const normalizeFsPath = (value: string) => value.replace(/\\/g, "/");
 const SFTP_EDIT_CACHE_DIR = "sftp-edit-cache";
+const CONNECT_UI_TIMEOUT_MS = 12_000;
+const RESOURCE_STATS_INITIAL_DELAY_MS = 8_000;
 const SFTP_LIST_TIMEOUT_MS = 20_000;
 const SFTP_EDIT_SYNC_DEBOUNCE_MS = 1200;
 const SFTP_SYNC_ERROR_TOAST_DEDUPE_MS = 15000;
 
 const toSafePathSegment = (value: string) => {
-  const sanitized = value.replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "");
+  const sanitized = value
+    .replace(/[^a-z0-9._-]+/gi, "_")
+    .replace(/^_+|_+$/g, "");
   return sanitized || "file";
 };
 
@@ -348,7 +373,9 @@ const RECONNECT_PROMPT_PATTERN = /(?:^|\n)([^\n]*[@:][^\n]*[#$] )/;
 const stripReconnectBanner = (value: string) => {
   const promptMatch = value.match(RECONNECT_PROMPT_PATTERN);
   if (!promptMatch || promptMatch.index === undefined) return null;
-  return value.slice(promptMatch.index + (promptMatch[0].startsWith("\n") ? 1 : 0));
+  return value.slice(
+    promptMatch.index + (promptMatch[0].startsWith("\n") ? 1 : 0),
+  );
 };
 
 const createMessageId = () => {
@@ -406,10 +433,11 @@ export function XTerminal({
   const [connectionLogOpen, setConnectionLogOpen] = useState(false);
   const [endpointIp, setEndpointIp] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
-  const [toolbarResourceStats, setToolbarResourceStats] = useState<ToolbarResourceStats>({
-    cpuPercent: null,
-    memoryPercent: null,
-  });
+  const [toolbarResourceStats, setToolbarResourceStats] =
+    useState<ToolbarResourceStats>({
+      cpuPercent: null,
+      memoryPercent: null,
+    });
   const endpointProbeLogRef = useRef<string>("");
   const endpointLatencyRef = useRef<number | null>(null);
   const observedLatencyRef = useRef<number | null>(null);
@@ -430,9 +458,13 @@ export function XTerminal({
   const [terminalBgFit, setTerminalBgFit] = useState<TerminalBackgroundFit>(
     DEFAULT_APP_SETTINGS["terminal.backgroundFit"],
   );
-  const terminalBgImageRef = useRef<string>(DEFAULT_APP_SETTINGS["terminal.backgroundImage"]);
+  const terminalBgImageRef = useRef<string>(
+    DEFAULT_APP_SETTINGS["terminal.backgroundImage"],
+  );
   const terminalBgObjectUrlRef = useRef<string>("");
-  const themeNameRef = useRef<TerminalThemeName>(DEFAULT_APP_SETTINGS["terminal.theme"]);
+  const themeNameRef = useRef<TerminalThemeName>(
+    DEFAULT_APP_SETTINGS["terminal.theme"],
+  );
   const [sftpOpen, setSftpOpen] = useState(false);
   const [sftpPath, setSftpPath] = useState("/");
   const [sftpEntries, setSftpEntries] = useState<SftpEntry[]>([]);
@@ -469,7 +501,10 @@ export function XTerminal({
   const typingBufferRef = useRef("");
   const typingFlushTimerRef = useRef<number | null>(null);
   const shellReadyRef = useRef(isLocal || isTelnet);
+  const connectAttemptSeqRef = useRef(0);
+  const currentConnectAttemptRef = useRef<string | null>(null);
   const reconnectPromiseRef = useRef<Promise<boolean> | null>(null);
+  const reconnectRunIdRef = useRef(0);
   const reconnectingRef = useRef(false);
   const writeBlockedRef = useRef(false);
   const writeFailureCountRef = useRef(0);
@@ -490,9 +525,13 @@ export function XTerminal({
   const transferRateRef = useRef<
     Record<string, { transferred: number; ts: number; speedBps: number }>
   >({});
-  const transferUiProgressRef = useRef<Record<string, TransferUiProgressState>>({});
+  const transferUiProgressRef = useRef<Record<string, TransferUiProgressState>>(
+    {},
+  );
   const [aiOpen, setAiOpen] = useState(false);
-  const [scriptTarget, setScriptTarget] = useState<"current" | "all">("current");
+  const [scriptTarget, setScriptTarget] = useState<"current" | "all">(
+    "current",
+  );
   const [scriptText, setScriptText] = useState("");
   const [aiMessages, setAiMessages] = useState<AiChatMessage[]>([]);
   const aiMessagesRef = useRef<AiChatMessage[]>([]);
@@ -555,7 +594,9 @@ export function XTerminal({
   >([]);
   const lastOutputAtRef = useRef<number>(0);
   const lastInputAtRef = useRef<number>(0);
-  const [termMenu, setTermMenu] = useState<{ x: number; y: number } | null>(null);
+  const [termMenu, setTermMenu] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const termMenuRef = useRef<HTMLDivElement>(null);
   // @ts-expect-error smartTable read value temporarily unused after AI panel refactor (smart insights will be re-integrated)
   const [smartTable, setSmartTable] = useState<SmartTableState | null>(null);
@@ -566,13 +607,24 @@ export function XTerminal({
   const inputCommandBufferRef = useRef("");
   const inputEscapeModeRef = useRef(false);
   const terminalQuickDraftRef = useRef("");
-  const agentTerminalExecutionRef = useRef<AgentTerminalExecutionState | null>(null);
+  const agentTerminalExecutionRef = useRef<AgentTerminalExecutionState | null>(
+    null,
+  );
   const trackedCommandRef = useRef<SmartTrackedCommand | null>(null);
   const logSignalsRef = useRef<LogSignal[]>([]);
   const logSummaryTimerRef = useRef<number | null>(null);
-  const autoCopyRef = useRef<boolean>(DEFAULT_APP_SETTINGS["terminal.autoCopy"]);
+  const autoCopyRef = useRef<boolean>(
+    DEFAULT_APP_SETTINGS["terminal.autoCopy"],
+  );
   const lastSelectionRef = useRef<string>("");
   const lastCopyAtRef = useRef<number>(0);
+  // 记录最近一次已同步到后端的终端尺寸，避免重复 PTY resize。
+  const lastSyncedPtySizeRef = useRef<{ cols: number; rows: number } | null>(
+    null,
+  );
+  // 把频繁的容器尺寸变化合并到单帧内，减少动画期间的主线程压力。
+  const resizeAnimationFrameRef = useRef<number | null>(null);
+  const resizeSettleTimerRef = useRef<number | null>(null);
   const modelOptions =
     aiModelOptions.length > 0 ? aiModelOptions : aiModel ? [aiModel] : [];
   const modelOptionsWithCurrent =
@@ -581,9 +633,7 @@ export function XTerminal({
       : modelOptions;
   const aiHistoryKey = `ai.history.${sessionId}`;
   const transferHistoryKey = useMemo(() => {
-    const scope = isLocal
-      ? "local"
-      : `${host.trim().toLowerCase()}:${port}`;
+    const scope = isLocal ? "local" : `${host.trim().toLowerCase()}:${port}`;
     return `noterm.transfer.history.${createStableHash(scope)}`;
   }, [host, isLocal, port]);
   const aiHistoryLoadedRef = useRef(false);
@@ -630,50 +680,63 @@ export function XTerminal({
 
   const syncTerminalQuickDraftFromBuffer = (buffer: string) => {
     const normalized = buffer.trimStart();
-    const nextDraft = normalized.startsWith("#") ? normalized.slice(0, 160) : "";
+    const nextDraft = normalized.startsWith("#")
+      ? normalized.slice(0, 160)
+      : "";
     setTerminalQuickDraftState(nextDraft);
   };
 
-  const normalizeTransferTask = useCallback((value: unknown): TransferTask | null => {
-    if (!value || typeof value !== "object") return null;
-    const task = value as Partial<TransferTask>;
-    if (typeof task.id !== "string" || !task.id.trim()) return null;
-    if (task.direction !== "upload" && task.direction !== "download") return null;
-    if (typeof task.name !== "string") return null;
-    if (typeof task.sourcePath !== "string" || typeof task.targetPath !== "string") {
-      return null;
-    }
-    if (!isTransferTaskStatus(task.status)) return null;
-    const startedAt = Number(task.startedAt);
-    if (!Number.isFinite(startedAt) || startedAt <= 0) return null;
-    const progressRaw = Number(task.progress);
-    const progress = Number.isFinite(progressRaw)
-      ? Math.max(0, Math.min(100, Math.round(progressRaw)))
-      : 0;
-    const finishedAtRaw = task.finishedAt;
-    const finishedAt =
-      typeof finishedAtRaw === "number" && Number.isFinite(finishedAtRaw) && finishedAtRaw > 0
-        ? finishedAtRaw
-        : undefined;
-    const speedBpsRaw = task.speedBps;
-    const speedBps =
-      typeof speedBpsRaw === "number" && Number.isFinite(speedBpsRaw) && speedBpsRaw > 0
-        ? speedBpsRaw
-        : undefined;
-    return {
-      id: task.id,
-      direction: task.direction,
-      name: task.name,
-      sourcePath: task.sourcePath,
-      targetPath: task.targetPath,
-      status: task.status,
-      progress,
-      detail: typeof task.detail === "string" ? task.detail : undefined,
-      speedBps,
-      startedAt,
-      finishedAt,
-    };
-  }, []);
+  const normalizeTransferTask = useCallback(
+    (value: unknown): TransferTask | null => {
+      if (!value || typeof value !== "object") return null;
+      const task = value as Partial<TransferTask>;
+      if (typeof task.id !== "string" || !task.id.trim()) return null;
+      if (task.direction !== "upload" && task.direction !== "download")
+        return null;
+      if (typeof task.name !== "string") return null;
+      if (
+        typeof task.sourcePath !== "string" ||
+        typeof task.targetPath !== "string"
+      ) {
+        return null;
+      }
+      if (!isTransferTaskStatus(task.status)) return null;
+      const startedAt = Number(task.startedAt);
+      if (!Number.isFinite(startedAt) || startedAt <= 0) return null;
+      const progressRaw = Number(task.progress);
+      const progress = Number.isFinite(progressRaw)
+        ? Math.max(0, Math.min(100, Math.round(progressRaw)))
+        : 0;
+      const finishedAtRaw = task.finishedAt;
+      const finishedAt =
+        typeof finishedAtRaw === "number" &&
+        Number.isFinite(finishedAtRaw) &&
+        finishedAtRaw > 0
+          ? finishedAtRaw
+          : undefined;
+      const speedBpsRaw = task.speedBps;
+      const speedBps =
+        typeof speedBpsRaw === "number" &&
+        Number.isFinite(speedBpsRaw) &&
+        speedBpsRaw > 0
+          ? speedBpsRaw
+          : undefined;
+      return {
+        id: task.id,
+        direction: task.direction,
+        name: task.name,
+        sourcePath: task.sourcePath,
+        targetPath: task.targetPath,
+        status: task.status,
+        progress,
+        detail: typeof task.detail === "string" ? task.detail : undefined,
+        speedBps,
+        startedAt,
+        finishedAt,
+      };
+    },
+    [],
+  );
 
   const persistTransferTasks = useCallback(
     (tasks: TransferTask[]) => {
@@ -700,8 +763,7 @@ export function XTerminal({
               status: "failed" as const,
               finishedAt: task.finishedAt ?? now,
               speedBps: undefined,
-              detail:
-                t("terminal.transfer.interrupted.detail"),
+              detail: t("terminal.transfer.interrupted.detail"),
             }
           : task,
       );
@@ -715,7 +777,9 @@ export function XTerminal({
       logSummaryTimerRef.current = null;
       const now = Date.now();
       const windowStart = now - LOG_SUMMARY_WINDOW_MS;
-      const recentSignals = logSignalsRef.current.filter((item) => item.ts >= windowStart);
+      const recentSignals = logSignalsRef.current.filter(
+        (item) => item.ts >= windowStart,
+      );
       logSignalsRef.current = logSignalsRef.current.filter(
         (item) => item.ts >= now - LOG_SUMMARY_WINDOW_MS * 5,
       );
@@ -727,7 +791,9 @@ export function XTerminal({
       const dbTimeout = recentSignals.filter(
         (item) => item.category === "db_timeout",
       ).length;
-      const errorCount = recentSignals.filter((item) => item.category === "error").length;
+      const errorCount = recentSignals.filter(
+        (item) => item.category === "error",
+      ).length;
       if (loginFailed === 0 && dbTimeout === 0 && errorCount === 0) return;
 
       setLogSummaries((prev) => {
@@ -772,7 +838,10 @@ export function XTerminal({
     if (signals.length === 0) return;
     logSignalsRef.current = [...logSignalsRef.current, ...signals];
     if (logSignalsRef.current.length > MAX_LOG_SIGNALS) {
-      logSignalsRef.current.splice(0, logSignalsRef.current.length - MAX_LOG_SIGNALS);
+      logSignalsRef.current.splice(
+        0,
+        logSignalsRef.current.length - MAX_LOG_SIGNALS,
+      );
     }
     scheduleLogSummaryUpdate();
   };
@@ -840,7 +909,10 @@ export function XTerminal({
       }
 
       if (ch === "\u007f" || ch === "\b") {
-        inputCommandBufferRef.current = inputCommandBufferRef.current.slice(0, -1);
+        inputCommandBufferRef.current = inputCommandBufferRef.current.slice(
+          0,
+          -1,
+        );
         syncTerminalQuickDraftFromBuffer(inputCommandBufferRef.current);
         continue;
       }
@@ -849,7 +921,8 @@ export function XTerminal({
 
       inputCommandBufferRef.current += ch;
       if (inputCommandBufferRef.current.length > 320) {
-        inputCommandBufferRef.current = inputCommandBufferRef.current.slice(-320);
+        inputCommandBufferRef.current =
+          inputCommandBufferRef.current.slice(-320);
       }
       syncTerminalQuickDraftFromBuffer(inputCommandBufferRef.current);
     }
@@ -893,7 +966,9 @@ export function XTerminal({
     const cleanChunk = sanitizeTerminalChunk(chunk);
     if (!cleanChunk) return;
 
-    state.output = (state.output + cleanChunk).slice(-AGENT_TERMINAL_CAPTURE_CHARS);
+    state.output = (state.output + cleanChunk).slice(
+      -AGENT_TERMINAL_CAPTURE_CHARS,
+    );
     const markerMatch = state.output.match(
       new RegExp(`${escapeForRegExp(state.marker)}:(-?\\d+)`),
     );
@@ -904,7 +979,9 @@ export function XTerminal({
     ).trimEnd();
     const exitCode = Number(markerMatch[1] || "-1");
     const stderr =
-      exitCode === 0 ? "" : `exit code ${exitCode} (details are in terminal output)`;
+      exitCode === 0
+        ? ""
+        : `exit code ${exitCode} (details are in terminal output)`;
     finalizeAgentTerminalExecution(state, {
       exitCode,
       stdout,
@@ -927,7 +1004,10 @@ export function XTerminal({
       throw new Error("Agent command is already running in terminal");
     }
 
-    const safeTimeoutSec = Math.max(3, Math.min(300, Math.round(timeoutSec || 30)));
+    const safeTimeoutSec = Math.max(
+      3,
+      Math.min(300, Math.round(timeoutSec || 30)),
+    );
     const marker = `__CODEX_AGENT_DONE_${Date.now()}_${Math.random().toString(16).slice(2)}__`;
     return await new Promise((resolve) => {
       const startedAt = Date.now();
@@ -951,7 +1031,9 @@ export function XTerminal({
           state.timeoutId = window.setTimeout(() => {
             finalizeAgentTerminalExecution(state, {
               exitCode: -1,
-              stdout: stripAgentInternalOutput(state.output.trimEnd()).trimEnd(),
+              stdout: stripAgentInternalOutput(
+                state.output.trimEnd(),
+              ).trimEnd(),
               stderr: "Command timed out",
               timedOut: true,
             });
@@ -967,9 +1049,7 @@ export function XTerminal({
       }, safeTimeoutSec * 1000);
       agentTerminalExecutionRef.current = state;
       // Execute in current PTY, then emit a marker line containing previous command exit code.
-      enqueueTerminalWrite(
-        `${command}\nprintf "\\n${marker}:%s\\n" "$?"\n`,
-      );
+      enqueueTerminalWrite(`${command}\nprintf "\\n${marker}:%s\\n" "$?"\n`);
       pushTerminalLog("info", `agent command enqueued marker=${marker}`);
     });
   };
@@ -1017,22 +1097,33 @@ export function XTerminal({
     terminalLogRef.current = next;
   };
 
-  const appendConnectionLog = useCallback((message: string) => {
-    const stamp = new Date().toLocaleTimeString(locale === "zh-CN" ? "zh-CN" : "en-US", {
-      hour12: false,
-    });
-    setConnectionLogs((prev) => {
-      const next = [...prev, `[${stamp}] ${message}`];
-      if (next.length > 80) {
-        next.splice(0, next.length - 80);
-      }
-      return next;
-    });
-  }, [locale]);
+  const appendConnectionLog = useCallback(
+    (message: string) => {
+      const stamp = new Date().toLocaleTimeString(
+        locale === "zh-CN" ? "zh-CN" : "en-US",
+        {
+          hour12: false,
+        },
+      );
+      setConnectionLogs((prev) => {
+        const next = [...prev, `[${stamp}] ${message}`];
+        if (next.length > 80) {
+          next.splice(0, next.length - 80);
+        }
+        return next;
+      });
+    },
+    [locale],
+  );
 
-  const appendAgentDebugLog = useCallback((message: string) => {
-    appendConnectionLog(`${locale === "zh-CN" ? "[Agent]" : "[Agent]"} ${message}`);
-  }, [appendConnectionLog, locale]);
+  const appendAgentDebugLog = useCallback(
+    (message: string) => {
+      appendConnectionLog(
+        `${locale === "zh-CN" ? "[Agent]" : "[Agent]"} ${message}`,
+      );
+    },
+    [appendConnectionLog, locale],
+  );
 
   const captureTerminalSnapshot = useCallback(() => {
     const term = terminalInstance.current;
@@ -1056,17 +1147,20 @@ export function XTerminal({
     });
   }, [sessionId]);
 
-  const restoreTerminalSnapshot = useCallback((term: Terminal) => {
-    const snapshot = terminalSnapshotCache.get(sessionId);
-    if (!snapshot || snapshot.lines.length === 0) return;
-    const content = snapshot.lines.join("\r\n");
-    if (!content.trim()) return;
-    term.write(content, () => {
-      if (snapshot.viewportY > 0) {
-        term.scrollToLine(snapshot.viewportY);
-      }
-    });
-  }, [sessionId]);
+  const restoreTerminalSnapshot = useCallback(
+    (term: Terminal) => {
+      const snapshot = terminalSnapshotCache.get(sessionId);
+      if (!snapshot || snapshot.lines.length === 0) return;
+      const content = snapshot.lines.join("\r\n");
+      if (!content.trim()) return;
+      term.write(content, () => {
+        if (snapshot.viewportY > 0) {
+          term.scrollToLine(snapshot.viewportY);
+        }
+      });
+    },
+    [sessionId],
+  );
 
   const copyTerminalLog = async () => {
     const header = `session=${sessionId} type=${sessionKind} conn=${connStatus} sftp=${sftpOpen} ai=${aiOpen} lastInput=${lastInputAtRef.current} lastOutput=${lastOutputAtRef.current}`;
@@ -1178,7 +1272,10 @@ export function XTerminal({
     typingBufferRef.current = "";
     if (pendingTyping) {
       writeQueueRef.current.push(pendingTyping);
-      pushTerminalLog("info", `preserved pending input bytes=${pendingTyping.length}`);
+      pushTerminalLog(
+        "info",
+        `preserved pending input bytes=${pendingTyping.length}`,
+      );
     }
   };
 
@@ -1191,6 +1288,8 @@ export function XTerminal({
       return;
     }
     reconnectCooldownUntilRef.current = now + 10_000;
+    const reconnectRunId = reconnectRunIdRef.current + 1;
+    reconnectRunIdRef.current = reconnectRunId;
     drainTypingBufferToWriteQueue();
     writeFailureCountRef.current = 0;
     writeBlockedRef.current = true;
@@ -1199,15 +1298,21 @@ export function XTerminal({
     reconnectBannerBufferRef.current = "";
     setConnStatus("connecting");
     setConnError(null);
-    reconnectPromiseRef.current = (async () => {
+    const reconnectPromise = (async () => {
       let ok = false;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
+        if (reconnectRunId !== reconnectRunIdRef.current) {
+          return false;
+        }
         try {
           const connectedBeforeReconnect = await (
             isTelnet
               ? telnetApi.isConnected(sessionId)
               : sshApi.isConnected(sessionId)
           ).catch(() => false);
+          if (reconnectRunId !== reconnectRunIdRef.current) {
+            return false;
+          }
           if (connectedBeforeReconnect) {
             ok = true;
             pushTerminalLog("info", "reconnect skipped (session still alive)");
@@ -1216,9 +1321,15 @@ export function XTerminal({
 
           pushTerminalLog("info", `reconnect attempt ${attempt}`);
           await connectNow({ forceReset: attempt > 1 });
+          if (reconnectRunId !== reconnectRunIdRef.current) {
+            return false;
+          }
           const connected = isTelnet
             ? await telnetApi.isConnected(sessionId)
             : await sshApi.isConnected(sessionId);
+          if (reconnectRunId !== reconnectRunIdRef.current) {
+            return false;
+          }
           if (connected) {
             ok = true;
             pushTerminalLog("info", "reconnect ok");
@@ -1227,22 +1338,33 @@ export function XTerminal({
         } catch (error) {
           pushTerminalLog("warn", `reconnect error: ${formatError(error)}`);
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 300 * attempt));
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, 300 * attempt),
+        );
       }
       if (!ok) {
         pushTerminalLog("warn", "reconnect failed");
       }
       return ok;
     })().finally(() => {
+      if (reconnectRunId !== reconnectRunIdRef.current) {
+        return;
+      }
       writeBlockedRef.current = false;
       reconnectingRef.current = false;
       reconnectPromiseRef.current = null;
     });
-    reconnectPromiseRef.current
+    reconnectPromiseRef.current = reconnectPromise;
+    reconnectPromise
       .then((ok) => {
+        if (reconnectRunId !== reconnectRunIdRef.current) {
+          return;
+        }
         if (ok) {
           trackedCommandRef.current = null;
-          terminalInstance.current?.write(`\r\n\x1b[33m[${t("terminal.session.recreated")}]\x1b[0m\r\n`);
+          terminalInstance.current?.write(
+            `\r\n\x1b[33m[${t("terminal.session.recreated")}]\x1b[0m\r\n`,
+          );
           void flushWriteQueue();
         } else {
           suppressReconnectBannerRef.current = false;
@@ -1304,7 +1426,10 @@ export function XTerminal({
           continue;
         }
         writeFailureCountRef.current += 1;
-        observedLatencyRef.current = Math.max(observedLatencyRef.current ?? 0, 1200);
+        observedLatencyRef.current = Math.max(
+          observedLatencyRef.current ?? 0,
+          1200,
+        );
         updateDisplayLatency();
         if (!terminalIssueRef.current) {
           setTerminalIssue({
@@ -1322,9 +1447,7 @@ export function XTerminal({
               : sshApi.isConnected(sessionId)
           ).catch(() => false);
           pushTerminalLog(
-            stillConnected
-              ? "warn"
-              : "error",
+            stillConnected ? "warn" : "error",
             `write failures reached threshold connected=${stillConnected}`,
           );
           if (!stillConnected) {
@@ -1345,7 +1468,10 @@ export function XTerminal({
     if (writingRef.current) return;
     if (writeBlockedRef.current) return;
     if (!isLocal && !isTelnet && !shellReadyRef.current) {
-      pushTerminalLog("info", `defer flush: shell not ready queued=${writeQueueRef.current.length}`);
+      pushTerminalLog(
+        "info",
+        `defer flush: shell not ready queued=${writeQueueRef.current.length}`,
+      );
       return;
     }
     writingRef.current = true;
@@ -1399,6 +1525,49 @@ export function XTerminal({
       return telnetApi.disconnect(sessionId);
     }
     return sshApi.disconnect(sessionId);
+  };
+
+  const beginConnectAttempt = () => {
+    connectAttemptSeqRef.current += 1;
+    const attemptId = `${sessionId}:connect:${connectAttemptSeqRef.current}`;
+    currentConnectAttemptRef.current = attemptId;
+    return attemptId;
+  };
+
+  const isCurrentConnectAttempt = (attemptId: string) =>
+    mountedRef.current && currentConnectAttemptRef.current === attemptId;
+
+  const finishConnectAttempt = (attemptId: string) => {
+    if (currentConnectAttemptRef.current === attemptId) {
+      currentConnectAttemptRef.current = null;
+    }
+  };
+
+  const cancelPendingConnect = async (reason: "user" | "unmount" = "user") => {
+    const hadPending =
+      currentConnectAttemptRef.current !== null ||
+      reconnectingRef.current ||
+      connStatus === "connecting";
+    currentConnectAttemptRef.current = null;
+    reconnectRunIdRef.current += 1;
+    reconnectPromiseRef.current = null;
+    reconnectingRef.current = false;
+    writeBlockedRef.current = false;
+    suppressReconnectBannerRef.current = false;
+    reconnectBannerBufferRef.current = "";
+    shellReadyRef.current = isLocal || isTelnet;
+
+    if (reason === "user" && mountedRef.current && hadPending) {
+      setConnStatus("idle");
+      setConnError(null);
+      appendConnectionLog(
+        locale === "zh-CN" ? "已取消连接尝试" : "Connection attempt cancelled",
+      );
+    }
+
+    if (!isLocal && !isTelnet && hadPending) {
+      void sshApi.cancelConnect(sessionId).catch(() => {});
+    }
   };
 
   const clipboardWrite = async (text: string) => {
@@ -1532,7 +1701,9 @@ export function XTerminal({
   const syncAiSettings = async () => {
     const settings = await readAiSettings();
     setAiModelOptions(settings.models ?? []);
-    setAiApprovalMode(settings.approvalMode ?? DEFAULT_APP_SETTINGS["ai.approvalMode"]);
+    setAiApprovalMode(
+      settings.approvalMode ?? DEFAULT_APP_SETTINGS["ai.approvalMode"],
+    );
     if (!aiModelTouchedRef.current) {
       setAiModel(settings.model);
     }
@@ -1548,12 +1719,22 @@ export function XTerminal({
     return () => {
       aiStreamAbortRef.current?.abort();
       aiStreamAbortRef.current = null;
+      currentConnectAttemptRef.current = null;
+      reconnectRunIdRef.current += 1;
+      reconnectPromiseRef.current = null;
+      reconnectingRef.current = false;
+      writeBlockedRef.current = false;
+      suppressReconnectBannerRef.current = false;
+      reconnectBannerBufferRef.current = "";
+      if (!isLocal && !isTelnet) {
+        void sshApi.cancelConnect(sessionId).catch(() => {});
+      }
       for (const remotePath of Object.keys(sftpEditSessionsRef.current)) {
         disposeSftpEditSession(remotePath);
       }
       mountedRef.current = false;
     };
-  }, []);
+  }, [isLocal, isTelnet, sessionId]);
 
   useEffect(() => {
     aiMessagesRef.current = aiMessages;
@@ -1564,12 +1745,15 @@ export function XTerminal({
     const loadHistory = async () => {
       try {
         const store = await getAppSettingsStore();
-        const raw = await store.get<
-          Array<AiMessage & { createdAt?: number; id?: string }>
-        >(aiHistoryKey);
+        const raw =
+          await store.get<
+            Array<AiMessage & { createdAt?: number; id?: string }>
+          >(aiHistoryKey);
         if (!disposed && Array.isArray(raw) && raw.length > 0) {
           const normalized = raw
-            .filter((item) => item && typeof item.content === "string" && item.role)
+            .filter(
+              (item) => item && typeof item.content === "string" && item.role,
+            )
             .map((item) => ({
               role: item.role,
               content: item.content,
@@ -1633,7 +1817,11 @@ export function XTerminal({
     } finally {
       transferHistoryLoadedRef.current = true;
     }
-  }, [markRunningTransfersInterrupted, normalizeTransferTask, transferHistoryKey]);
+  }, [
+    markRunningTransfersInterrupted,
+    normalizeTransferTask,
+    transferHistoryKey,
+  ]);
 
   useEffect(() => {
     if (!transferHistoryLoadedRef.current) return;
@@ -1659,7 +1847,8 @@ export function XTerminal({
 
   const formatError = (error: unknown) => {
     if (typeof error === "string") return normalizeBackendErrorMessage(error);
-    if (error instanceof Error) return normalizeBackendErrorMessage(error.message);
+    if (error instanceof Error)
+      return normalizeBackendErrorMessage(error.message);
     try {
       return normalizeBackendErrorMessage(JSON.stringify(error));
     } catch {
@@ -1672,10 +1861,7 @@ export function XTerminal({
     window.dispatchEvent(new CustomEvent("app-message", { detail }));
   };
 
-  const showSftpNotice = (
-    message: string,
-    tone: AppMessageTone = "error",
-  ) => {
+  const showSftpNotice = (message: string, tone: AppMessageTone = "error") => {
     emitAppMessage({
       title: t("terminal.sftp.title"),
       detail: message,
@@ -1689,10 +1875,7 @@ export function XTerminal({
   const isPermissionDeniedError = (message: string) =>
     /\bpermission denied\b/i.test(message);
 
-  const reportSftpSyncFailure = (
-    session: SftpEditSession,
-    message: string,
-  ) => {
+  const reportSftpSyncFailure = (session: SftpEditSession, message: string) => {
     const permissionDenied = isPermissionDeniedError(message);
     showSftpNotice(
       permissionDenied
@@ -1916,7 +2099,12 @@ export function XTerminal({
       finishedAt: undefined,
     });
     try {
-      await sshApi.downloadFile(sessionId, task.sourcePath, task.targetPath, task.id);
+      await sshApi.downloadFile(
+        sessionId,
+        task.sourcePath,
+        task.targetPath,
+        task.id,
+      );
       updateTransferTask(task.id, {
         status: "success",
         progress: 100,
@@ -1962,7 +2150,11 @@ export function XTerminal({
     removeTransferRuntimeState(task.id);
     setTransferTasks((prev) => prev.filter((item) => item.id !== task.id));
 
-    if (task.direction === "download" && task.status !== "success" && task.targetPath) {
+    if (
+      task.direction === "download" &&
+      task.status !== "success" &&
+      task.targetPath
+    ) {
       try {
         await remove(task.targetPath);
       } catch {
@@ -1986,7 +2178,9 @@ export function XTerminal({
         Object.entries(transferRateRef.current).filter(([id]) => keep.has(id)),
       );
       transferUiProgressRef.current = Object.fromEntries(
-        Object.entries(transferUiProgressRef.current).filter(([id]) => keep.has(id)),
+        Object.entries(transferUiProgressRef.current).filter(([id]) =>
+          keep.has(id),
+        ),
       );
       return active;
     });
@@ -2097,9 +2291,13 @@ export function XTerminal({
 
   const supportsToolbarResourceStats = !isTelnet && _osType !== "windows";
   const resourceCpuLabel =
-    toolbarResourceStats.cpuPercent === null ? "--" : `${toolbarResourceStats.cpuPercent}%`;
+    toolbarResourceStats.cpuPercent === null
+      ? "--"
+      : `${toolbarResourceStats.cpuPercent}%`;
   const resourceMemoryLabel =
-    toolbarResourceStats.memoryPercent === null ? "--" : `${toolbarResourceStats.memoryPercent}%`;
+    toolbarResourceStats.memoryPercent === null
+      ? "--"
+      : `${toolbarResourceStats.memoryPercent}%`;
 
   useEffect(() => {
     if (!supportsToolbarResourceStats || connStatus !== "connected") {
@@ -2114,8 +2312,10 @@ export function XTerminal({
     const command = getResourceStatsCommand();
     appendConnectionLog(
       locale === "zh-CN"
-        ? "资源监控已启动：每 5 秒采样一次 CPU/内存"
-        : "Resource monitor started: sampling CPU/memory every 5 seconds",
+        ? `资源监控将在 ${Math.round(RESOURCE_STATS_INITIAL_DELAY_MS / 1000)} 秒后启动`
+        : `Resource monitor will start in ${Math.round(
+            RESOURCE_STATS_INITIAL_DELAY_MS / 1000,
+          )} seconds`,
     );
 
     const pollResourceStats = async () => {
@@ -2144,7 +2344,8 @@ export function XTerminal({
 
         const parsed = parseResourceStatsOutput(result.stdout);
         if (!parsed) {
-          const stdoutPreview = result.stdout.replace(/\s+/g, " ").trim().slice(0, 180) || "empty";
+          const stdoutPreview =
+            result.stdout.replace(/\s+/g, " ").trim().slice(0, 180) || "empty";
           const nextError = `resource stats parse failed stdout=${stdoutPreview}`;
           if (resourceStatsLastErrorRef.current !== nextError) {
             pushTerminalLog("warn", nextError);
@@ -2201,8 +2402,13 @@ export function XTerminal({
     };
 
     const initialDelayId = window.setTimeout(() => {
+      appendConnectionLog(
+        locale === "zh-CN"
+          ? "资源监控已启动：每 5 秒采样一次 CPU/内存"
+          : "Resource monitor started: sampling CPU/memory every 5 seconds",
+      );
       void pollResourceStats();
-    }, 1800);
+    }, RESOURCE_STATS_INITIAL_DELAY_MS);
     const intervalId = window.setInterval(() => {
       void pollResourceStats();
     }, 5000);
@@ -2215,14 +2421,20 @@ export function XTerminal({
     };
   }, [connStatus, isLocal, sessionId, supportsToolbarResourceStats]);
 
-  const connectNow = async (options?: { forceReset?: boolean }) => {
+  const connectNow = async (options?: {
+    forceReset?: boolean;
+    attemptId?: string;
+    preserveLogs?: boolean;
+  }) => {
     const doConnect = onConnectRef.current;
     if (!doConnect) return;
 
+    const attemptId = options?.attemptId ?? beginConnectAttempt();
+    currentConnectAttemptRef.current = attemptId;
     shellReadyRef.current = isLocal || isTelnet;
     setConnStatus("connecting");
     setConnError(null);
-    if (!options?.forceReset) {
+    if (!options?.preserveLogs && !options?.forceReset) {
       setConnectionLogs([]);
       endpointProbeLogRef.current = "";
     }
@@ -2237,32 +2449,78 @@ export function XTerminal({
     );
 
     if (options?.forceReset) {
-      // Best-effort reset when explicitly requested.
       appendConnectionLog(
-        locale === "zh-CN" ? "执行连接重置（force reset）" : "Running force reset before reconnect",
+        locale === "zh-CN"
+          ? "执行连接重置（force reset）"
+          : "Running force reset before reconnect",
       );
       await disconnectShell().catch(() => {});
+      if (!isCurrentConnectAttempt(attemptId)) {
+        return;
+      }
     }
 
     try {
-      appendConnectionLog(locale === "zh-CN" ? "调用后端连接接口..." : "Calling backend connect...");
-      await doConnect();
-      if (!mountedRef.current) return;
+      appendConnectionLog(
+        locale === "zh-CN"
+          ? "调用后端连接接口..."
+          : "Calling backend connect...",
+      );
+      const timeoutMessage =
+        locale === "zh-CN"
+          ? `连接超过 ${Math.round(CONNECT_UI_TIMEOUT_MS / 1000)} 秒，已停止等待本次后端结果`
+          : `Connection exceeded ${Math.round(CONNECT_UI_TIMEOUT_MS / 1000)} seconds; stopped waiting for this backend result`;
+      let timeoutId: number | null = null;
+      // Tauri invoke promises cannot be aborted from WebView code, so this
+      // keeps the UI responsive and lets the attemptId guard discard late work.
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error(timeoutMessage));
+        }, CONNECT_UI_TIMEOUT_MS);
+      });
+      try {
+        await Promise.race([doConnect(attemptId), timeoutPromise]);
+      } finally {
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+        }
+      }
+      if (!isCurrentConnectAttempt(attemptId)) {
+        appendConnectionLog(
+          locale === "zh-CN"
+            ? "已忽略过期连接结果"
+            : "Ignored stale connection result",
+        );
+        return;
+      }
+      shellReadyRef.current = true;
       setConnStatus("connected");
-      appendConnectionLog(locale === "zh-CN" ? "连接成功" : "Connection established");
+      finishConnectAttempt(attemptId);
+      appendConnectionLog(
+        locale === "zh-CN" ? "连接成功" : "Connection established",
+      );
       void syncTerminalGeometry();
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || !isCurrentConnectAttempt(attemptId)) {
+        return;
+      }
       const message = formatError(error);
+      if (!isLocal && !isTelnet) {
+        void sshApi.cancelConnect(sessionId).catch(() => {});
+      }
+      finishConnectAttempt(attemptId);
       setConnStatus("error");
       setConnError(message);
       appendConnectionLog(
-        locale === "zh-CN" ? `连接失败：${message}` : `Connection failed: ${message}`,
+        locale === "zh-CN"
+          ? `连接失败：${message}`
+          : `Connection failed: ${message}`,
       );
     }
   };
 
   const ensureSessionReady = async (reason: "mount" | "unlock" = "mount") => {
+    const attemptId = beginConnectAttempt();
     shellReadyRef.current = isLocal || isTelnet;
     setConnStatus("connecting");
     setConnError(null);
@@ -2273,13 +2531,14 @@ export function XTerminal({
           : "检测到终端重新挂载，尝试恢复会话"
         : reason === "unlock"
           ? "Session unlock detected, attempting recovery"
-          : "Terminal remounted, attempting session recovery",
+          : "Terminal remounted, attempting recovery",
     );
     try {
       if (isLocal) {
         await sshApi.localOpenShell(sessionId);
-        if (!mountedRef.current) return;
+        if (!isCurrentConnectAttempt(attemptId)) return;
         setConnStatus("connected");
+        finishConnectAttempt(attemptId);
         appendConnectionLog(
           locale === "zh-CN" ? "本地会话恢复成功" : "Local session recovered",
         );
@@ -2292,25 +2551,33 @@ export function XTerminal({
           ? telnetApi.isConnected(sessionId)
           : sshApi.isConnected(sessionId)
       ).catch(() => false);
+      if (!isCurrentConnectAttempt(attemptId)) {
+        return;
+      }
       if (connected) {
-        if (!mountedRef.current) return;
         shellReadyRef.current = true;
         setConnStatus("connected");
+        finishConnectAttempt(attemptId);
         appendConnectionLog(
-          locale === "zh-CN" ? "检测到现有会话仍可用" : "Existing session is still alive",
+          locale === "zh-CN"
+            ? "检测到现有会话仍可用"
+            : "Existing session is still alive",
         );
         void syncTerminalGeometry();
         return;
       }
 
-      await connectNow();
+      await connectNow({ attemptId, preserveLogs: true });
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || !isCurrentConnectAttempt(attemptId)) return;
       const message = formatError(error);
+      finishConnectAttempt(attemptId);
       setConnStatus("error");
       setConnError(message);
       appendConnectionLog(
-        locale === "zh-CN" ? `恢复失败：${message}` : `Recovery failed: ${message}`,
+        locale === "zh-CN"
+          ? `恢复失败：${message}`
+          : `Recovery failed: ${message}`,
       );
     }
   };
@@ -2346,10 +2613,13 @@ export function XTerminal({
   };
 
   const buildNestedRemotePath = (basePath: string, name: string) => {
-    return basePath.endsWith("/") ? `${basePath}${name}` : `${basePath}/${name}`;
+    return basePath.endsWith("/")
+      ? `${basePath}${name}`
+      : `${basePath}/${name}`;
   };
 
-  const getSftpEditSessionKey = (remotePath: string) => normalizeFsPath(remotePath);
+  const getSftpEditSessionKey = (remotePath: string) =>
+    normalizeFsPath(remotePath);
 
   const getRemoteParentPath = (remotePath: string) => {
     const parts = normalizeFsPath(remotePath).split("/").filter(Boolean);
@@ -2373,7 +2643,10 @@ export function XTerminal({
     delete sftpEditSessionsRef.current[key];
   };
 
-  const buildSftpEditLocalPaths = async (remotePath: string, fileName: string) => {
+  const buildSftpEditLocalPaths = async (
+    remotePath: string,
+    fileName: string,
+  ) => {
     const baseDir = await appLocalDataDir();
     const localDir = await join(
       baseDir,
@@ -2410,8 +2683,15 @@ export function XTerminal({
     session.syncing = true;
     session.pendingSync = false;
     try {
-      taskId = createTransferTask("upload", session.name, session.localPath, session.remotePath);
-      setUploadProgress(t("terminal.sftp.edit.sync.progress", { name: session.name }));
+      taskId = createTransferTask(
+        "upload",
+        session.name,
+        session.localPath,
+        session.remotePath,
+      );
+      setUploadProgress(
+        t("terminal.sftp.edit.sync.progress", { name: session.name }),
+      );
       await sshApi.uploadFile(
         sessionId,
         session.localPath,
@@ -2430,7 +2710,10 @@ export function XTerminal({
           finishedAt: Date.now(),
         });
       }
-      if (getRemoteParentPath(session.remotePath) === normalizeFsPath(sftpPathRef.current || "/")) {
+      if (
+        getRemoteParentPath(session.remotePath) ===
+        normalizeFsPath(sftpPathRef.current || "/")
+      ) {
         void loadSftpEntries(sftpPathRef.current || "/");
       }
     } catch (error) {
@@ -2538,14 +2821,30 @@ export function XTerminal({
 
     let taskId: string | null = null;
     try {
-      const { localDir, localPath } = await buildSftpEditLocalPaths(remotePath, entry.name);
+      const { localDir, localPath } = await buildSftpEditLocalPaths(
+        remotePath,
+        entry.name,
+      );
       await mkdir(localDir, { recursive: true });
 
-      taskId = createTransferTask("download", entry.name, remotePath, localPath);
-      setUploadProgress(t("terminal.sftp.edit.download.progress", { name: entry.name }));
+      taskId = createTransferTask(
+        "download",
+        entry.name,
+        remotePath,
+        localPath,
+      );
+      setUploadProgress(
+        t("terminal.sftp.edit.download.progress", { name: entry.name }),
+      );
       await sshApi.downloadFile(sessionId, remotePath, localPath, taskId);
       const signature = await getLocalFileSignature(localPath);
-      await ensureSftpEditSession(remotePath, entry.name, localDir, localPath, signature);
+      await ensureSftpEditSession(
+        remotePath,
+        entry.name,
+        localDir,
+        localPath,
+        signature,
+      );
       await openPath(localPath);
       if (taskId) {
         updateTransferTask(taskId, {
@@ -2714,7 +3013,11 @@ export function XTerminal({
     const closeMenu = () => setSftpMenu(null);
     const onPointerDown = (event: Event) => {
       const target = event.target as Node | null;
-      if (sftpMenuRef.current && target && sftpMenuRef.current.contains(target)) {
+      if (
+        sftpMenuRef.current &&
+        target &&
+        sftpMenuRef.current.contains(target)
+      ) {
         return;
       }
       closeMenu();
@@ -2760,7 +3063,9 @@ export function XTerminal({
     const getDropTargetFromPosition = (position?: { x: number; y: number }) => {
       if (!position) return null;
       const hovered = document.elementFromPoint(position.x, position.y);
-      const row = hovered?.closest?.(".xterminal-sftp-item--dir") as HTMLElement | null;
+      const row = hovered?.closest?.(
+        ".xterminal-sftp-item--dir",
+      ) as HTMLElement | null;
       const path = row?.dataset.dropPath;
       const name = row?.dataset.dropName;
       if (!path || !name) return null;
@@ -2776,7 +3081,9 @@ export function XTerminal({
     const register = async () => {
       unlistenHover = await listen("tauri://file-drop-hover", (event) => {
         if (!active) return;
-        const payload = event.payload as { position?: { x: number; y: number } } | null;
+        const payload = event.payload as {
+          position?: { x: number; y: number };
+        } | null;
         if (payload?.position) {
           setSftpDragging(true);
           setSftpDropTarget(getDropTargetFromPosition(payload.position));
@@ -2792,12 +3099,15 @@ export function XTerminal({
 
       unlistenDrop = await listen("tauri://file-drop", (event) => {
         if (!active) return;
-        const payload = event.payload as
-          | { paths?: string[]; position?: { x: number; y: number } }
-          | null;
-        const inside =
-          payload?.position ? withinSftpPanel(payload.position) : sftpDraggingRef.current;
-        const dropTarget = getDropTargetFromPosition(payload?.position) ?? sftpDropTarget;
+        const payload = event.payload as {
+          paths?: string[];
+          position?: { x: number; y: number };
+        } | null;
+        const inside = payload?.position
+          ? withinSftpPanel(payload.position)
+          : sftpDraggingRef.current;
+        const dropTarget =
+          getDropTargetFromPosition(payload?.position) ?? sftpDropTarget;
         resetDragging();
         if (!inside && !sftpDraggingRef.current) return;
         const paths = Array.isArray(payload?.paths) ? payload?.paths : [];
@@ -2828,7 +3138,7 @@ export function XTerminal({
 
     if (entry.name === "..") {
       // 返回上一级
-      const parts = currentPath.split("/").filter(p => p);
+      const parts = currentPath.split("/").filter((p) => p);
       if (parts.length > 0) {
         parts.pop();
         newPath = parts.length > 0 ? "/" + parts.join("/") : "/";
@@ -2850,7 +3160,12 @@ export function XTerminal({
   };
 
   const openSftpMenu = (
-    event: { preventDefault: () => void; stopPropagation: () => void; clientX: number; clientY: number },
+    event: {
+      preventDefault: () => void;
+      stopPropagation: () => void;
+      clientX: number;
+      clientY: number;
+    },
     entry?: SftpEntry | null,
   ) => {
     event.preventDefault();
@@ -2882,10 +3197,7 @@ export function XTerminal({
       const otherWidth =
         (resizing.type === "sftp" || !sftpOpen ? 0 : sftpWidth) +
         (resizing.type === "ai" || !aiOpen ? 0 : aiWidth);
-      const minWidth =
-        resizing.type === "sftp"
-          ? 220
-          : 260;
+      const minWidth = resizing.type === "sftp" ? 220 : 260;
       const maxWidth = paneWidth
         ? Math.max(minWidth, paneWidth - otherWidth - 240)
         : minWidth + 320;
@@ -2911,7 +3223,11 @@ export function XTerminal({
     const closeMenu = () => setTermMenu(null);
     const onPointerDown = (event: Event) => {
       const target = event.target as Node | null;
-      if (termMenuRef.current && target && termMenuRef.current.contains(target)) {
+      if (
+        termMenuRef.current &&
+        target &&
+        termMenuRef.current.contains(target)
+      ) {
         return;
       }
       closeMenu();
@@ -2936,7 +3252,11 @@ export function XTerminal({
     const closeMenu = () => setSmartMenu(null);
     const onPointerDown = (event: Event) => {
       const target = event.target as Node | null;
-      if (smartMenuRef.current && target && smartMenuRef.current.contains(target)) {
+      if (
+        smartMenuRef.current &&
+        target &&
+        smartMenuRef.current.contains(target)
+      ) {
         return;
       }
       closeMenu();
@@ -3018,7 +3338,12 @@ export function XTerminal({
 
       if (!localPath) return; // 用户取消
 
-      taskId = createTransferTask("download", entry.name, remotePath, localPath);
+      taskId = createTransferTask(
+        "download",
+        entry.name,
+        remotePath,
+        localPath,
+      );
       setUploadProgress(
         t("terminal.sftp.download.progress", { name: entry.name }),
       );
@@ -3055,11 +3380,15 @@ export function XTerminal({
     }
   };
 
-  const handleUploadFiles = async (filePaths: string[], targetDirectory?: string) => {
+  const handleUploadFiles = async (
+    filePaths: string[],
+    targetDirectory?: string,
+  ) => {
     for (const filePath of filePaths) {
       let taskId: string | null = null;
       try {
-        const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'unknown';
+        const fileName =
+          filePath.split("/").pop() || filePath.split("\\").pop() || "unknown";
         setUploadProgress(
           t("terminal.sftp.upload.progress", { name: fileName }),
         );
@@ -3139,7 +3468,9 @@ export function XTerminal({
     if (!isFileDrag(event)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    const hovered = (event.target as Element | null)?.closest?.(".xterminal-sftp-item--dir") as HTMLElement | null;
+    const hovered = (event.target as Element | null)?.closest?.(
+      ".xterminal-sftp-item--dir",
+    ) as HTMLElement | null;
     const path = hovered?.dataset.dropPath;
     const name = hovered?.dataset.dropName;
     setSftpDropTarget(path && name ? { path, name } : null);
@@ -3214,11 +3545,7 @@ export function XTerminal({
         context,
       ].join("\n");
     }
-    return [
-      t("terminal.ai.prompt.ask.line1"),
-      "",
-      context,
-    ].join("\n");
+    return [t("terminal.ai.prompt.ask.line1"), "", context].join("\n");
   };
 
   const getFileExtension = (filePath: string) => {
@@ -3227,7 +3554,10 @@ export function XTerminal({
     return dotIndex >= 0 ? normalized.slice(dotIndex + 1).toLowerCase() : "";
   };
 
-  const buildAiDisplayMessageWithAttachments = (content: string, attachments: AiAttachment[]) => {
+  const buildAiDisplayMessageWithAttachments = (
+    content: string,
+    attachments: AiAttachment[],
+  ) => {
     const trimmed = content.trim();
     if (attachments.length === 0) return trimmed;
 
@@ -3239,9 +3569,7 @@ export function XTerminal({
         ].join("\n");
       }
 
-      return [
-        `**Text attachment:** ${attachment.name}`,
-      ].join("\n");
+      return [`**Text attachment:** ${attachment.name}`].join("\n");
     });
 
     return [trimmed, ...attachmentSections].filter(Boolean).join("\n\n");
@@ -3252,7 +3580,9 @@ export function XTerminal({
     attachments: AiAttachment[],
   ): AiMessage["content"] => {
     const trimmed = content.trim();
-    const hasImageAttachment = attachments.some((attachment) => attachment.kind === "image");
+    const hasImageAttachment = attachments.some(
+      (attachment) => attachment.kind === "image",
+    );
 
     if (!hasImageAttachment) {
       const attachmentSections = attachments.map((attachment) =>
@@ -3303,9 +3633,36 @@ export function XTerminal({
           {
             name: "Attachments",
             extensions: [
-              "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg",
-              "txt", "md", "markdown", "log", "json", "yaml", "yml", "xml", "csv", "tsv",
-              "ini", "conf", "config", "sh", "bash", "zsh", "js", "ts", "tsx", "jsx", "py", "rs", "sql",
+              "png",
+              "jpg",
+              "jpeg",
+              "webp",
+              "gif",
+              "bmp",
+              "svg",
+              "txt",
+              "md",
+              "markdown",
+              "log",
+              "json",
+              "yaml",
+              "yml",
+              "xml",
+              "csv",
+              "tsv",
+              "ini",
+              "conf",
+              "config",
+              "sh",
+              "bash",
+              "zsh",
+              "js",
+              "ts",
+              "tsx",
+              "jsx",
+              "py",
+              "rs",
+              "sql",
             ],
           },
         ],
@@ -3313,39 +3670,45 @@ export function XTerminal({
       if (!selected) return;
 
       const paths = Array.isArray(selected) ? selected : [selected];
-      const nextAttachments = await Promise.all(paths.map(async (filePath) => {
-        const name = filePath.split(/[\\/]/).pop() || filePath;
-        const ext = getFileExtension(filePath);
+      const nextAttachments = await Promise.all(
+        paths.map(async (filePath) => {
+          const name = filePath.split(/[\\/]/).pop() || filePath;
+          const ext = getFileExtension(filePath);
 
-        if (ext in IMAGE_MIME_BY_EXTENSION) {
-          const bytes = await readFile(filePath);
-          const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
-          return {
-            id: createMessageId(),
-            kind: "image" as const,
-            name,
-            mimeType: IMAGE_MIME_BY_EXTENSION[ext] || "image/png",
-            content: `data:${IMAGE_MIME_BY_EXTENSION[ext] || "image/png"};base64,${btoa(binary)}`,
-            filePath,
-          };
-        }
+          if (ext in IMAGE_MIME_BY_EXTENSION) {
+            const bytes = await readFile(filePath);
+            const binary = Array.from(bytes, (byte) =>
+              String.fromCharCode(byte),
+            ).join("");
+            return {
+              id: createMessageId(),
+              kind: "image" as const,
+              name,
+              mimeType: IMAGE_MIME_BY_EXTENSION[ext] || "image/png",
+              content: `data:${IMAGE_MIME_BY_EXTENSION[ext] || "image/png"};base64,${btoa(binary)}`,
+              filePath,
+            };
+          }
 
-        if (TEXT_ATTACHMENT_EXTENSIONS.has(ext)) {
-          const raw = await readTextFile(filePath);
-          return {
-            id: createMessageId(),
-            kind: "text" as const,
-            name,
-            mimeType: "text/plain",
-            content: raw,
-            filePath,
-          };
-        }
+          if (TEXT_ATTACHMENT_EXTENSIONS.has(ext)) {
+            const raw = await readTextFile(filePath);
+            return {
+              id: createMessageId(),
+              kind: "text" as const,
+              name,
+              mimeType: "text/plain",
+              content: raw,
+              filePath,
+            };
+          }
 
-        return null;
-      }));
+          return null;
+        }),
+      );
 
-      const validAttachments = nextAttachments.filter((item): item is AiAttachment => Boolean(item));
+      const validAttachments = nextAttachments.filter(
+        (item): item is AiAttachment => Boolean(item),
+      );
       if (validAttachments.length === 0) {
         setAiError("Only image and text attachments are supported.");
         return;
@@ -3368,12 +3731,17 @@ export function XTerminal({
     content: string,
     _options?: SendAiMessageOptions,
   ): Promise<string | null> => {
-    const displayContent = buildAiDisplayMessageWithAttachments(content, aiAttachments);
+    const displayContent = buildAiDisplayMessageWithAttachments(
+      content,
+      aiAttachments,
+    );
     const apiContent = buildAiApiMessageWithAttachments(content, aiAttachments);
     const hasApiTextContent =
       typeof apiContent === "string"
         ? apiContent.trim().length > 0
-        : apiContent.some((part) => part.type === "image" || part.text.trim().length > 0);
+        : apiContent.some(
+            (part) => part.type === "image" || part.text.trim().length > 0,
+          );
     if (!hasApiTextContent) return null;
     setAiError(null);
     setAiBusy(true);
@@ -3412,9 +3780,13 @@ export function XTerminal({
     try {
       const settings = await readAiSettings();
       const selectedModel = aiModel.trim() || settings.model;
-      const nextSettings = selectedModel ? { ...settings, model: selectedModel } : settings;
+      const nextSettings = selectedModel
+        ? { ...settings, model: selectedModel }
+        : settings;
       const nextApprovalMode =
-        aiApprovalMode || settings.approvalMode || DEFAULT_APP_SETTINGS["ai.approvalMode"];
+        aiApprovalMode ||
+        settings.approvalMode ||
+        DEFAULT_APP_SETTINGS["ai.approvalMode"];
       const priorConversationHistory = [...agentConversationHistoryRef.current];
       appendAgentDebugLog(
         locale === "zh-CN"
@@ -3451,19 +3823,27 @@ export function XTerminal({
           multimodalUserMessage,
           { role: "assistant", content: reply },
         ];
-        agentConversationHistoryRef.current = nextMultimodalConversationHistory.slice(-MAX_AI_MESSAGES);
-        setAiMessages((prev) => [
-          ...prev,
-          {
-            id: createMessageId(),
-            role: "assistant" as const,
-            content: reply,
-            createdAt: Date.now(),
-          },
-        ].slice(-MAX_AI_MESSAGES));
+        agentConversationHistoryRef.current =
+          nextMultimodalConversationHistory.slice(-MAX_AI_MESSAGES);
+        setAiMessages((prev) =>
+          [
+            ...prev,
+            {
+              id: createMessageId(),
+              role: "assistant" as const,
+              content: reply,
+              createdAt: Date.now(),
+            },
+          ].slice(-MAX_AI_MESSAGES),
+        );
         setAgentBlocks((prev) => [
           ...prev,
-          { id: crypto.randomUUID(), type: "done", content: reply, timestamp: Date.now() },
+          {
+            id: crypto.randomUUID(),
+            type: "done",
+            content: reply,
+            timestamp: Date.now(),
+          },
         ]);
         return reply;
       }
@@ -3485,7 +3865,10 @@ export function XTerminal({
             const normalized = dropTrailingAgentStatusBlock(prev);
             const last = normalized[normalized.length - 1];
             if (last?.type === "thinking") {
-              return [...normalized.slice(0, -1), { ...last, content: thinking }];
+              return [
+                ...normalized.slice(0, -1),
+                { ...last, content: thinking },
+              ];
             }
             return [
               ...normalized,
@@ -3503,7 +3886,10 @@ export function XTerminal({
             const normalized = dropTrailingAgentStatusBlock(prev);
             const last = normalized[normalized.length - 1];
             if (last?.type === "thinking") {
-              return [...normalized.slice(0, -1), { ...last, content: thinkingContent }];
+              return [
+                ...normalized.slice(0, -1),
+                { ...last, content: thinkingContent },
+              ];
             }
             return normalized;
           });
@@ -3537,7 +3923,11 @@ export function XTerminal({
               : `command status ${actionId}: ${status}`,
           );
           setAgentBlocks((prev) =>
-            prev.map((b) => (b.id === actionId ? { ...b, status: status as AgentBlock["status"] } : b)),
+            prev.map((b) =>
+              b.id === actionId
+                ? { ...b, status: status as AgentBlock["status"] }
+                : b,
+            ),
           );
         },
         onOutputReceived: (actionId, result) => {
@@ -3585,19 +3975,24 @@ export function XTerminal({
           const nextConversationHistory: AiMessage[] = [
             ...priorConversationHistory,
             { role: "user", content: apiContent },
-            ...(summary.trim() ? [{ role: "assistant" as const, content: summary }] : []),
+            ...(summary.trim()
+              ? [{ role: "assistant" as const, content: summary }]
+              : []),
           ];
-          agentConversationHistoryRef.current = nextConversationHistory.slice(-MAX_AI_MESSAGES);
+          agentConversationHistoryRef.current =
+            nextConversationHistory.slice(-MAX_AI_MESSAGES);
           if (summary.trim()) {
-            setAiMessages((prev) => [
-              ...prev,
-              {
-                id: createMessageId(),
-                role: "assistant" as const,
-                content: summary,
-                createdAt: Date.now(),
-              },
-            ].slice(-MAX_AI_MESSAGES));
+            setAiMessages((prev) =>
+              [
+                ...prev,
+                {
+                  id: createMessageId(),
+                  role: "assistant" as const,
+                  content: summary,
+                  createdAt: Date.now(),
+                },
+              ].slice(-MAX_AI_MESSAGES),
+            );
           }
           if (summary) {
             setAgentBlocks((prev) => {
@@ -3608,7 +4003,10 @@ export function XTerminal({
                   ...normalized.slice(0, -1),
                   {
                     ...last,
-                    type: status === "completed" ? ("done" as const) : ("notice" as const),
+                    type:
+                      status === "completed"
+                        ? ("done" as const)
+                        : ("notice" as const),
                     content: summary,
                     timestamp: Date.now(),
                   },
@@ -3636,7 +4034,12 @@ export function XTerminal({
           setAgentPendingConfirmation(null);
           setAgentBlocks((prev) => [
             ...dropTrailingAgentStatusBlock(prev),
-            { id: crypto.randomUUID(), type: "error", content: error, timestamp: Date.now() },
+            {
+              id: crypto.randomUUID(),
+              type: "error",
+              content: error,
+              timestamp: Date.now(),
+            },
           ]);
           setAiError(error);
         },
@@ -3744,7 +4147,9 @@ export function XTerminal({
     const fixPromptPrefix = parsed.query
       ? t("terminal.ai.quick.fix.prefix", { query: parsed.query })
       : t("terminal.ai.quick.fix.prefixEmpty");
-    const prompt = [fixPromptPrefix, "", buildAiPrompt("fix", context)].join("\n");
+    const prompt = [fixPromptPrefix, "", buildAiPrompt("fix", context)].join(
+      "\n",
+    );
     setAiInput("");
     const firstReply = await sendAiMessage(prompt, {
       extraSystemPrompt: strictCommandPrompt,
@@ -3818,7 +4223,10 @@ export function XTerminal({
       if (aiModelMenuRef.current && !aiModelMenuRef.current.contains(target)) {
         setAiModelMenuOpen(false);
       }
-      if (aiApprovalMenuRef.current && !aiApprovalMenuRef.current.contains(target)) {
+      if (
+        aiApprovalMenuRef.current &&
+        !aiApprovalMenuRef.current.contains(target)
+      ) {
         setAiApprovalMenuOpen(false);
       }
     };
@@ -3908,7 +4316,10 @@ export function XTerminal({
 
     window.addEventListener("app-reconnect-terminals", onReconnectAllTerminals);
     return () => {
-      window.removeEventListener("app-reconnect-terminals", onReconnectAllTerminals);
+      window.removeEventListener(
+        "app-reconnect-terminals",
+        onReconnectAllTerminals,
+      );
     };
   }, [connStatus, sessionId]);
 
@@ -3959,8 +4370,18 @@ export function XTerminal({
       pushTerminalLog("info", "skip resize: shell not ready yet");
       return;
     }
+    const nextSize = { cols: term.cols, rows: term.rows };
+    const prevSize = lastSyncedPtySizeRef.current;
+    if (
+      prevSize &&
+      prevSize.cols === nextSize.cols &&
+      prevSize.rows === nextSize.rows
+    ) {
+      return;
+    }
     try {
-      await resizePty(term.cols, term.rows);
+      await resizePty(nextSize.cols, nextSize.rows);
+      lastSyncedPtySizeRef.current = nextSize;
     } catch {
       // Paste can proceed even if PTY resize fails; this is a best-effort sync.
     }
@@ -4066,14 +4487,54 @@ export function XTerminal({
     let selectionDisposable: { dispose: () => void } | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let removeContextMenu: (() => void) | null = null;
+    let initialConnectTimer: number | null = null;
 
-    const fitAndResize = () => {
+    const fitAndResize = (syncRemote = true) => {
       if (!term || !fit) return;
       if (!paneRef.current) return;
       if (paneRef.current.offsetParent === null) return; // hidden (e.g. inactive tab)
       fit.fit();
+      if (!syncRemote) return;
       if (!isLocal && !isTelnet && !shellReadyRef.current) return;
-      resizePty(term.cols, term.rows).catch(() => {});
+      const nextSize = { cols: term.cols, rows: term.rows };
+      const prevSize = lastSyncedPtySizeRef.current;
+      if (
+        prevSize &&
+        prevSize.cols === nextSize.cols &&
+        prevSize.rows === nextSize.rows
+      ) {
+        return;
+      }
+      resizePty(nextSize.cols, nextSize.rows)
+        .then(() => {
+          lastSyncedPtySizeRef.current = nextSize;
+        })
+        .catch(() => {});
+    };
+
+    let pendingRemoteResize = false;
+    const scheduleFitAndResize = (syncRemote = false) => {
+      if (syncRemote) {
+        pendingRemoteResize = true;
+      }
+      if (resizeAnimationFrameRef.current !== null) return;
+      resizeAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        resizeAnimationFrameRef.current = null;
+        const shouldSyncRemote = pendingRemoteResize;
+        pendingRemoteResize = false;
+        fitAndResize(shouldSyncRemote);
+      });
+    };
+
+    const scheduleSettledRemoteResize = () => {
+      if (resizeSettleTimerRef.current !== null) {
+        window.clearTimeout(resizeSettleTimerRef.current);
+      }
+      // 等待布局动画稳定后再同步远端 PTY，避免面板开合期间高频 invoke。
+      resizeSettleTimerRef.current = window.setTimeout(() => {
+        resizeSettleTimerRef.current = null;
+        scheduleFitAndResize(true);
+      }, 140);
     };
 
     const init = async () => {
@@ -4091,8 +4552,9 @@ export function XTerminal({
         (await store.get<number>("terminal.fontWeight")) ??
         DEFAULT_APP_SETTINGS["terminal.fontWeight"];
       const cursorStyle =
-        (await store.get<"block" | "underline" | "bar">("terminal.cursorStyle")) ??
-        DEFAULT_APP_SETTINGS["terminal.cursorStyle"];
+        (await store.get<"block" | "underline" | "bar">(
+          "terminal.cursorStyle",
+        )) ?? DEFAULT_APP_SETTINGS["terminal.cursorStyle"];
       const cursorBlink =
         (await store.get<boolean>("terminal.cursorBlink")) ??
         DEFAULT_APP_SETTINGS["terminal.cursorBlink"];
@@ -4124,7 +4586,8 @@ export function XTerminal({
       const baseBg = xtermTheme.background ?? "#0f111a";
       const hasBgImage = Boolean(backgroundImage);
       const themeBg = hasBgImage ? "transparent" : baseBg;
-      const resolvedBackgroundImage = await loadTerminalBackgroundUrl(backgroundImage);
+      const resolvedBackgroundImage =
+        await loadTerminalBackgroundUrl(backgroundImage);
       if (disposed) {
         if (resolvedBackgroundImage.startsWith("blob:")) {
           URL.revokeObjectURL(resolvedBackgroundImage);
@@ -4138,8 +4601,11 @@ export function XTerminal({
       ) {
         URL.revokeObjectURL(terminalBgObjectUrlRef.current);
       }
-      terminalBgObjectUrlRef.current =
-        resolvedBackgroundImage.startsWith("blob:") ? resolvedBackgroundImage : "";
+      terminalBgObjectUrlRef.current = resolvedBackgroundImage.startsWith(
+        "blob:",
+      )
+        ? resolvedBackgroundImage
+        : "";
       themeNameRef.current = themeName;
       terminalBgImageRef.current = backgroundImage;
       setTerminalBgImage(resolvedBackgroundImage);
@@ -4214,7 +4680,9 @@ export function XTerminal({
         if (ev.type !== "keydown") return true;
 
         const key = ev.key.toLowerCase();
-        const isMac = /mac|iphone|ipad|ipod/.test(navigator.platform.toLowerCase());
+        const isMac = /mac|iphone|ipad|ipod/.test(
+          navigator.platform.toLowerCase(),
+        );
         const isCmdOrCtrl = ev.metaKey || ev.ctrlKey;
         const isCopy =
           (ev.ctrlKey && ev.shiftKey && key === "c") ||
@@ -4230,9 +4698,7 @@ export function XTerminal({
             (ev.ctrlKey && ev.shiftKey && key === "c") ||
             (ev.ctrlKey && ev.shiftKey && key === "v")
           ) &&
-          (key === "+" ||
-            key === "=" ||
-            ev.code === "NumpadAdd");
+          (key === "+" || key === "=" || ev.code === "NumpadAdd");
         const isZoomOut =
           isCmdOrCtrl &&
           !ev.altKey &&
@@ -4339,12 +4805,24 @@ export function XTerminal({
         removeContextMenu = () => {
           const activeTerm = term;
           el.removeEventListener("contextmenu", onContextMenu);
-          activeTerm?.textarea?.removeEventListener("paste", syncGeometryOnNativePaste, true);
-          activeTerm?.element?.removeEventListener("paste", syncGeometryOnNativePaste, true);
+          activeTerm?.textarea?.removeEventListener(
+            "paste",
+            syncGeometryOnNativePaste,
+            true,
+          );
+          activeTerm?.element?.removeEventListener(
+            "paste",
+            syncGeometryOnNativePaste,
+            true,
+          );
         };
       }
 
-      void ensureSessionReady("mount");
+      // Let the terminal and toolbar paint before the first backend connect.
+      initialConnectTimer = window.setTimeout(() => {
+        if (disposed) return;
+        void ensureSessionReady("mount");
+      }, 0);
 
       // Listen for terminal output from backend
       const unlisten = await listen<{ session_id: string; data: string }>(
@@ -4355,9 +4833,14 @@ export function XTerminal({
             let nextChunk = event.payload.data;
             if (suppressReconnectBannerRef.current) {
               reconnectBannerBufferRef.current += nextChunk;
-              const stripped = stripReconnectBanner(reconnectBannerBufferRef.current);
+              const stripped = stripReconnectBanner(
+                reconnectBannerBufferRef.current,
+              );
               if (stripped === null) {
-                if (reconnectBannerBufferRef.current.length < 4096 && reconnectingRef.current) {
+                if (
+                  reconnectBannerBufferRef.current.length < 4096 &&
+                  reconnectingRef.current
+                ) {
                   return;
                 }
                 nextChunk = reconnectBannerBufferRef.current;
@@ -4479,7 +4962,9 @@ export function XTerminal({
         if (pendingExec) {
           finalizeAgentTerminalExecution(pendingExec, {
             exitCode: -1,
-            stdout: stripAgentInternalOutput(pendingExec.output.trimEnd()).trimEnd(),
+            stdout: stripAgentInternalOutput(
+              pendingExec.output.trimEnd(),
+            ).trimEnd(),
             stderr: event.payload.reason || "terminal disconnected",
             timedOut: false,
           });
@@ -4501,9 +4986,12 @@ export function XTerminal({
       }>("terminal-debug", (event) => {
         if (disposed) return;
         if (event.payload.session_id !== sessionId) return;
-        pushTerminalLog(event.payload.level, `[backend] ${event.payload.message}`);
+        pushTerminalLog(
+          event.payload.level,
+          `[backend] ${event.payload.message}`,
+        );
         if (
-          event.payload.message === "command ssh_open_shell success" ||
+          event.payload.message.startsWith("command ssh_open_shell success") ||
           event.payload.message === "ssh open shell success"
         ) {
           shellReadyRef.current = true;
@@ -4539,16 +5027,15 @@ export function XTerminal({
 
       // Handle terminal resize
       const handleResize = () => {
-        fitAndResize();
+        scheduleFitAndResize(false);
+        scheduleSettledRemoteResize();
       };
       window.addEventListener("resize", handleResize);
 
       resizeObserver = new ResizeObserver(() => {
         if (disposed) return;
-        // Next tick: let layout settle before fitting.
-        setTimeout(() => {
-          fitAndResize();
-        }, 0);
+        scheduleFitAndResize(false);
+        scheduleSettledRemoteResize();
       });
       if (paneRef.current) {
         resizeObserver.observe(paneRef.current);
@@ -4597,7 +5084,8 @@ export function XTerminal({
         "terminal.fontWeight",
         (v) => {
           if (!term || disposed) return;
-          term.options.fontWeight = v ?? DEFAULT_APP_SETTINGS["terminal.fontWeight"];
+          term.options.fontWeight =
+            v ?? DEFAULT_APP_SETTINGS["terminal.fontWeight"];
           requestAnimationFrame(() => {
             fitAndResize();
           });
@@ -4607,20 +5095,23 @@ export function XTerminal({
         "block" | "underline" | "bar"
       >("terminal.cursorStyle", (v) => {
         if (!term || disposed) return;
-        term.options.cursorStyle = v ?? DEFAULT_APP_SETTINGS["terminal.cursorStyle"];
+        term.options.cursorStyle =
+          v ?? DEFAULT_APP_SETTINGS["terminal.cursorStyle"];
       });
       unlistenCursorBlink = await store.onKeyChange<boolean>(
         "terminal.cursorBlink",
         (v) => {
           if (!term || disposed) return;
-          term.options.cursorBlink = v ?? DEFAULT_APP_SETTINGS["terminal.cursorBlink"];
+          term.options.cursorBlink =
+            v ?? DEFAULT_APP_SETTINGS["terminal.cursorBlink"];
         },
       );
       unlistenLineHeight = await store.onKeyChange<number>(
         "terminal.lineHeight",
         (v) => {
           if (!term || disposed) return;
-          term.options.lineHeight = v ?? DEFAULT_APP_SETTINGS["terminal.lineHeight"];
+          term.options.lineHeight =
+            v ?? DEFAULT_APP_SETTINGS["terminal.lineHeight"];
           requestAnimationFrame(() => {
             fitAndResize();
           });
@@ -4639,7 +5130,8 @@ export function XTerminal({
         "terminal.reconnectWriteFailures",
         (v) => {
           if (disposed) return;
-          const next = v ?? DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"];
+          const next =
+            v ?? DEFAULT_APP_SETTINGS["terminal.reconnectWriteFailures"];
           reconnectWriteFailuresRef.current = Math.max(1, Math.min(15, next));
         },
       );
@@ -4683,8 +5175,9 @@ export function XTerminal({
             ) {
               URL.revokeObjectURL(terminalBgObjectUrlRef.current);
             }
-            terminalBgObjectUrlRef.current =
-              resolved.startsWith("blob:") ? resolved : "";
+            terminalBgObjectUrlRef.current = resolved.startsWith("blob:")
+              ? resolved
+              : "";
             setTerminalBgImage(resolved);
           });
         },
@@ -4693,14 +5186,18 @@ export function XTerminal({
         "terminal.backgroundOpacity",
         (v) => {
           if (disposed) return;
-          setTerminalBgOpacity(v ?? DEFAULT_APP_SETTINGS["terminal.backgroundOpacity"]);
+          setTerminalBgOpacity(
+            v ?? DEFAULT_APP_SETTINGS["terminal.backgroundOpacity"],
+          );
         },
       );
       unlistenBackgroundBlur = await store.onKeyChange<number>(
         "terminal.backgroundBlur",
         (v) => {
           if (disposed) return;
-          setTerminalBgBlur(v ?? DEFAULT_APP_SETTINGS["terminal.backgroundBlur"]);
+          setTerminalBgBlur(
+            v ?? DEFAULT_APP_SETTINGS["terminal.backgroundBlur"],
+          );
         },
       );
       unlistenBackgroundFit = await store.onKeyChange<TerminalBackgroundFit>(
@@ -4735,6 +5232,18 @@ export function XTerminal({
         );
       }
       cleanupResizeListener?.();
+      if (resizeAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeAnimationFrameRef.current);
+        resizeAnimationFrameRef.current = null;
+      }
+      if (resizeSettleTimerRef.current !== null) {
+        window.clearTimeout(resizeSettleTimerRef.current);
+        resizeSettleTimerRef.current = null;
+      }
+      if (initialConnectTimer !== null) {
+        window.clearTimeout(initialConnectTimer);
+        initialConnectTimer = null;
+      }
       resizeObserver?.disconnect();
       disposable?.dispose();
       unlistenTheme?.();
@@ -4766,7 +5275,9 @@ export function XTerminal({
       if (pendingExec) {
         finalizeAgentTerminalExecution(pendingExec, {
           exitCode: -1,
-          stdout: stripAgentInternalOutput(pendingExec.output.trimEnd()).trimEnd(),
+          stdout: stripAgentInternalOutput(
+            pendingExec.output.trimEnd(),
+          ).trimEnd(),
           stderr: "terminal session closed",
           timedOut: false,
         });
@@ -4818,7 +5329,9 @@ export function XTerminal({
         }
         endpointLatencyRef.current = info.latency_ms;
         if (observedLatencyRef.current !== null) {
-          observedLatencyRef.current = Math.round(observedLatencyRef.current * 0.85);
+          observedLatencyRef.current = Math.round(
+            observedLatencyRef.current * 0.85,
+          );
           if (observedLatencyRef.current < 20) {
             observedLatencyRef.current = null;
           }
@@ -4866,11 +5379,11 @@ export function XTerminal({
 
   const statusIcon = useMemo(() => {
     const connStatusMap: Record<ConnectionStatus, string> = {
-      'connecting': 'dot-green dot-spin',
-      'connected': 'dot-green',
-      'error': 'dot-red dot-spin',
-      'idle': 'dot-red',
-    }
+      connecting: "dot-green dot-spin",
+      connected: "dot-green",
+      error: "dot-red dot-spin",
+      idle: "dot-red",
+    };
     return connStatusMap[connStatus];
   }, [connStatus, t]);
 
@@ -4898,7 +5411,14 @@ export function XTerminal({
       customStyle["--xterminal-bg-size"] = TERMINAL_BG_SIZE_MAP[terminalBgFit];
     }
     return style;
-  }, [terminalBgBlur, terminalBgFit, terminalBgImage, terminalBgOpacity, xtermBaseBg, xtermBg]);
+  }, [
+    terminalBgBlur,
+    terminalBgFit,
+    terminalBgImage,
+    terminalBgOpacity,
+    xtermBaseBg,
+    xtermBg,
+  ]);
 
   return (
     <>
@@ -4906,1291 +5426,1541 @@ export function XTerminal({
         className={`xterminal${terminalBgImage ? " xterminal--bg" : ""}`}
         style={terminalStyle}
       >
-      <div className="xterminal-topbar">
-        <div className= {[
-          "xterminal-topbar-left",
-          `xterminal-topbar-left--${connStatus}`
-        ].filter(Boolean).join(" ")}
-          title={connError ?? undefined}>
-          {/* 状态按钮 */}
-          <span
+        <div className="xterminal-topbar">
+          <div
             className={[
-              "xterminal-topbar-status",
-              connStatus === "connecting"
-                ? "xterminal-topbar-status--spin"
-                : "",
+              "xterminal-topbar-left",
+              `xterminal-topbar-left--${connStatus}`,
             ]
               .filter(Boolean)
               .join(" ")}
-            aria-hidden="true"
+            title={connError ?? undefined}
           >
-            <span className={[
-              "dot",
-              statusIcon,
-            ].join(" ")}></span>
-            {/* <AppIcon icon={statusIcon} size={18} /> */}
-          </span>
-          {/* 连接状态文本 */}
-          <span className="xterminal-topbar-text">
-            {statusText}
-            {connStatus === "error" && connError ? `：${connError}` : ""}
-          </span>
-          <button
-            className={`xterminal-topbar-btn ${connectionLogOpen ? "xterminal-topbar-btn--active" : ""}`}
-            type="button"
-            onClick={() => setConnectionLogOpen((prev) => !prev)}
-            title={locale === "zh-CN" ? "连接日志" : "Connection log"}
-            aria-label={locale === "zh-CN" ? "连接日志" : "Connection log"}
-          >
-            <AppIcon icon="material-symbols:article-outline-rounded" size={18} />
-          </button>
-        </div>
+            {/* 状态按钮 */}
+            <span
+              className={[
+                "xterminal-topbar-status",
+                connStatus === "connecting"
+                  ? "xterminal-topbar-status--spin"
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              aria-hidden="true"
+            >
+              <span className={["dot", statusIcon].join(" ")}></span>
+              {/* <AppIcon icon={statusIcon} size={18} /> */}
+            </span>
+            {/* 连接状态文本 */}
+            <span className="xterminal-topbar-text">
+              {statusText}
+              {connStatus === "error" && connError ? `：${connError}` : ""}
+            </span>
+            <button
+              className={`xterminal-topbar-btn ${connectionLogOpen ? "xterminal-topbar-btn--active" : ""}`}
+              type="button"
+              onClick={() => setConnectionLogOpen((prev) => !prev)}
+              title={locale === "zh-CN" ? "连接日志" : "Connection log"}
+              aria-label={locale === "zh-CN" ? "连接日志" : "Connection log"}
+            >
+              <AppIcon
+                icon="material-symbols:article-outline-rounded"
+                size={18}
+              />
+            </button>
+          </div>
 
-        <div className="xterminal-topbar-right">
-          {/* <span className="xterminal-topbar-meta">
+          <div className="xterminal-topbar-right">
+            {/* <span className="xterminal-topbar-meta">
             {host}:{port}
           </span> */}
-          {!isSplit && onRequestSplit && (
-            <>
+            {!isSplit && onRequestSplit && (
+              <>
+                <button
+                  className="xterminal-topbar-btn"
+                  type="button"
+                  onClick={() => onRequestSplit("vertical")}
+                  title={t("terminal.split.vertical")}
+                  aria-label={t("terminal.split.vertical")}
+                >
+                  <AppIcon icon="proicons:panel-right-open" size={18} />
+                </button>
+                <button
+                  className="xterminal-topbar-btn"
+                  type="button"
+                  onClick={() => onRequestSplit("horizontal")}
+                  title={t("terminal.split.horizontal")}
+                  aria-label={t("terminal.split.horizontal")}
+                >
+                  <AppIcon icon="proicons:panel-bottom-open" size={18} />
+                </button>
+              </>
+            )}
+            {supportsSftp && (
+              <button
+                className={`xterminal-topbar-btn ${sftpOpen ? "xterminal-topbar-btn--active" : ""}`}
+                type="button"
+                onClick={() => {
+                  const nextOpen = !sftpOpen;
+                  setSftpOpen(nextOpen);
+                  if (nextOpen) {
+                    void loadSftpEntries();
+                  }
+                }}
+                title={t("terminal.sftp.open")}
+              >
+                <AppIcon icon="proicons:folder-multiple" size={18} />
+              </button>
+            )}
+            <button
+              className={`xterminal-topbar-btn ${aiOpen ? "xterminal-topbar-btn--active" : ""}`}
+              type="button"
+              onClick={() => setAiOpen((prev) => !prev)}
+              title={t("terminal.ai.toggle")}
+            >
+              <AppIcon icon="proicons:openai" size={18} />
+            </button>
+            {connStatus === "connecting" && (
               <button
                 className="xterminal-topbar-btn"
                 type="button"
-                onClick={() => onRequestSplit("vertical")}
-                title={t("terminal.split.vertical")}
-                aria-label={t("terminal.split.vertical")}
+                onClick={() => {
+                  void cancelPendingConnect();
+                }}
+                title={t("common.cancel")}
+                aria-label={t("common.cancel")}
               >
-                <AppIcon icon="proicons:panel-right-open" size={18} />
+                <AppIcon icon="material-symbols:close-rounded" size={18} />
+                {t("common.cancel")}
               </button>
+            )}
+            {connStatus === "error" && (
               <button
                 className="xterminal-topbar-btn"
                 type="button"
-                onClick={() => onRequestSplit("horizontal")}
-                title={t("terminal.split.horizontal")}
-                aria-label={t("terminal.split.horizontal")}
+                onClick={() => {
+                  void connectNow();
+                }}
               >
-                <AppIcon icon="proicons:panel-bottom-open" size={18} />
+                <AppIcon icon="material-symbols:refresh-rounded" size={18} />
+                {t("terminal.reconnect")}
               </button>
-            </>
-          )}
-          {supportsSftp && (
-            <button
-              className={`xterminal-topbar-btn ${sftpOpen ? "xterminal-topbar-btn--active" : ""}`}
-              type="button"
-              onClick={() => {
-                const nextOpen = !sftpOpen;
-                setSftpOpen(nextOpen);
-                if (nextOpen) {
-                  void loadSftpEntries();
-                }
-              }}
-              title={t("terminal.sftp.open")}
-            >
-              <AppIcon icon="proicons:folder-multiple" size={18} />
-            </button>
-          )}
-          <button
-            className={`xterminal-topbar-btn ${aiOpen ? "xterminal-topbar-btn--active" : ""}`}
-            type="button"
-            onClick={() => setAiOpen((prev) => !prev)}
-            title={t("terminal.ai.toggle")}
-          >
-            <AppIcon icon="proicons:openai" size={18} />
-          </button>
-          {connStatus === "error" && (
-            <button
-              className="xterminal-topbar-btn"
-              type="button"
-              onClick={() => {
-                void connectNow();
-              }}
-            >
-              <AppIcon icon="material-symbols:refresh-rounded" size={18} />
-              {t("terminal.reconnect")}
-            </button>
-          )}
-          {onCloseSession && (
-            <button
-              className="xterminal-topbar-btn"
-              type="button"
-              onClick={onCloseSession}
-              title={t("common.close")}
-              aria-label={t("common.close")}
-            >
-              <AppIcon icon="material-symbols:close-rounded" size={18} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {connectionLogOpen && (
-        <div className="xterminal-connect-log" role="status" aria-live="polite">
-          <div className="xterminal-connect-log-title">
-            {locale === "zh-CN" ? "连接日志" : "Connection Log"}
-          </div>
-          <div className="xterminal-connect-log-list">
-            {connectionLogs.length > 0 ? (
-              connectionLogs.slice(-8).map((line, index) => (
-                <div key={`${line}-${index}`} className="xterminal-connect-log-line">
-                  {line}
-                </div>
-              ))
-            ) : (
-              <div className="xterminal-connect-log-line">
-                {locale === "zh-CN" ? "暂无连接日志" : "No connection logs yet"}
-              </div>
+            )}
+            {onCloseSession && (
+              <button
+                className="xterminal-topbar-btn"
+                type="button"
+                onClick={onCloseSession}
+                title={t("common.close")}
+                aria-label={t("common.close")}
+              >
+                <AppIcon icon="material-symbols:close-rounded" size={18} />
+              </button>
             )}
           </div>
         </div>
-      )}
 
-      <div className="xterminal-body">
-        {terminalIssue && (
-          <div className="xterminal-alert">
-            <div className="xterminal-alert-text">
-              {terminalIssue.message}
+        {connectionLogOpen && (
+          <div
+            className="xterminal-connect-log"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="xterminal-connect-log-title">
+              {locale === "zh-CN" ? "连接日志" : "Connection Log"}
             </div>
-            <div className="xterminal-alert-actions">
-              <button
-                type="button"
-                className="xterminal-alert-btn"
-                onClick={() => void copyTerminalLog()}
-              >
-                {t("terminal.alert.copyLog")}
-              </button>
-              <button
-                type="button"
-                className="xterminal-alert-btn xterminal-alert-btn--ghost"
-                onClick={() => setTerminalIssue(null)}
-              >
-                {t("terminal.alert.close")}
-              </button>
+            <div className="xterminal-connect-log-list">
+              {connectionLogs.length > 0 ? (
+                connectionLogs.slice(-8).map((line, index) => (
+                  <div
+                    key={`${line}-${index}`}
+                    className="xterminal-connect-log-line"
+                  >
+                    {line}
+                  </div>
+                ))
+              ) : (
+                <div className="xterminal-connect-log-line">
+                  {locale === "zh-CN"
+                    ? "暂无连接日志"
+                    : "No connection logs yet"}
+                </div>
+              )}
             </div>
           </div>
         )}
-        <div className="xterminal-pane" ref={paneRef}>
-          <div className="xterminal-pad">
-            <div className="xterminal-mount" ref={terminalRef} />
-            {terminalFindOpen && (
-              <div className="xterminal-find" role="search" aria-label="Terminal search">
-                <div className="xterminal-find-main">
-                  <AppIcon icon="material-symbols:search-rounded" size={14} />
-                  <input
-                    ref={terminalFindInputRef}
-                    type="text"
-                    value={terminalFindQuery}
-                    onChange={(event) => {
-                      setTerminalFindQuery(event.target.value);
-                      setTerminalFindStatus("idle");
-                    }}
-                    placeholder={locale === "zh-CN" ? "搜索终端内容" : "Search terminal output"}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        void findInTerminal(event.shiftKey ? "prev" : "next");
-                        return;
+
+        <div className="xterminal-body">
+          {terminalIssue && (
+            <div className="xterminal-alert">
+              <div className="xterminal-alert-text">
+                {terminalIssue.message}
+              </div>
+              <div className="xterminal-alert-actions">
+                <button
+                  type="button"
+                  className="xterminal-alert-btn"
+                  onClick={() => void copyTerminalLog()}
+                >
+                  {t("terminal.alert.copyLog")}
+                </button>
+                <button
+                  type="button"
+                  className="xterminal-alert-btn xterminal-alert-btn--ghost"
+                  onClick={() => setTerminalIssue(null)}
+                >
+                  {t("terminal.alert.close")}
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="xterminal-pane" ref={paneRef}>
+            <div className="xterminal-pad">
+              <div className="xterminal-mount" ref={terminalRef} />
+              {terminalFindOpen && (
+                <div
+                  className="xterminal-find"
+                  role="search"
+                  aria-label="Terminal search"
+                >
+                  <div className="xterminal-find-main">
+                    <AppIcon icon="material-symbols:search-rounded" size={14} />
+                    <input
+                      ref={terminalFindInputRef}
+                      type="text"
+                      value={terminalFindQuery}
+                      onChange={(event) => {
+                        setTerminalFindQuery(event.target.value);
+                        setTerminalFindStatus("idle");
+                      }}
+                      placeholder={
+                        locale === "zh-CN"
+                          ? "搜索终端内容"
+                          : "Search terminal output"
                       }
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        closeTerminalFind();
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void findInTerminal(event.shiftKey ? "prev" : "next");
+                          return;
+                        }
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          closeTerminalFind();
+                        }
+                      }}
+                    />
+                  </div>
+                  <div className="xterminal-find-actions">
+                    <button
+                      type="button"
+                      className={`xterminal-find-flag ${
+                        terminalFindCaseSensitive ? "is-active" : ""
+                      }`}
+                      onClick={() => {
+                        setTerminalFindCaseSensitive((prev) => !prev);
+                        setTerminalFindStatus("idle");
+                      }}
+                      title={
+                        locale === "zh-CN" ? "区分大小写" : "Case sensitive"
                       }
+                    >
+                      Aa
+                    </button>
+                    <button
+                      type="button"
+                      className="xterminal-find-btn"
+                      onClick={() => {
+                        void findInTerminal("prev");
+                      }}
+                      title={locale === "zh-CN" ? "上一个" : "Previous"}
+                    >
+                      <AppIcon
+                        icon="material-symbols:keyboard-arrow-up-rounded"
+                        size={16}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className="xterminal-find-btn"
+                      onClick={() => {
+                        void findInTerminal("next");
+                      }}
+                      title={locale === "zh-CN" ? "下一个" : "Next"}
+                    >
+                      <AppIcon
+                        icon="material-symbols:keyboard-arrow-down-rounded"
+                        size={16}
+                      />
+                    </button>
+                    <span
+                      className={`xterminal-find-status ${
+                        terminalFindStatus === "not_found" ? "is-error" : ""
+                      }`}
+                    >
+                      {terminalFindStatus === "not_found"
+                        ? locale === "zh-CN"
+                          ? "未找到"
+                          : "No match"
+                        : terminalFindStatus === "found"
+                          ? locale === "zh-CN"
+                            ? "已匹配"
+                            : "Matched"
+                          : ""}
+                    </span>
+                    <button
+                      type="button"
+                      className="xterminal-find-btn"
+                      onClick={closeTerminalFind}
+                      title={locale === "zh-CN" ? "关闭" : "Close"}
+                    >
+                      <AppIcon
+                        icon="material-symbols:close-rounded"
+                        size={16}
+                      />
+                    </button>
+                  </div>
+                </div>
+              )}
+              {shouldShowQuickOverlay && (
+                <section className="xterminal-quick-overlay">
+                  <div className="xterminal-quick-overlay-head">
+                    <div className="xterminal-quick-overlay-title">
+                      <AppIcon
+                        icon="material-symbols:terminal-rounded"
+                        size={15}
+                      />
+                      {t("terminal.ai.quick.title")}
+                    </div>
+                  </div>
+                  <div className="xterminal-quick-overlay-current">
+                    {t("terminal.ai.quick.detected", {
+                      command: terminalQuickDraft,
+                    })}
+                  </div>
+                  <div className="xterminal-quick-overlay-list">
+                    {terminalQuickCommands.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="xterminal-quick-overlay-item"
+                        onClick={() =>
+                          handleApplyTerminalQuickCommand(item.insertText)
+                        }
+                      >
+                        <div className="xterminal-quick-overlay-command">
+                          {item.syntax}
+                        </div>
+                        <div className="xterminal-quick-overlay-desc">
+                          {item.description}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="xterminal-quick-overlay-tip">
+                    {t("terminal.quick.overlay.tip")}
+                  </div>
+                </section>
+              )}
+            </div>
+            {supportsSftp && sftpOpen && (
+              <>
+                <div
+                  className={`xterminal-resize-handle ${
+                    resizing?.type === "sftp" ? "is-active" : ""
+                  }`}
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setResizing({
+                      type: "sftp",
+                      startX: event.clientX,
+                      startWidth: sftpWidth,
+                    });
+                  }}
+                />
+                <div
+                  className={`xterminal-sftp ${sftpDragging ? "xterminal-sftp--dragging" : ""}`}
+                  style={{ width: sftpWidth }}
+                  ref={sftpPanelRef}
+                  onDragEnter={handleSftpDragEnter}
+                  onDragLeave={handleSftpDragLeave}
+                  onDragOver={handleSftpDragOver}
+                  onDrop={(event) => void handleSftpDrop(event)}
+                >
+                  <div className="xterminal-sftp-header">
+                    <div className="xterminal-sftp-title">
+                      {t("terminal.sftp.title")}
+                    </div>
+                    <div className="xterminal-sftp-actions">
+                      <button
+                        type="button"
+                        className="xterminal-sftp-icon-btn"
+                        onClick={handleFileSelect}
+                        disabled={sftpLoading || !!uploadProgress}
+                        title={t("terminal.sftp.action.upload")}
+                      >
+                        <AppIcon
+                          icon="material-symbols:upload-rounded"
+                          size={16}
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        className="xterminal-sftp-icon-btn"
+                        onClick={() => void loadSftpEntries()}
+                        disabled={sftpLoading}
+                        title={t("terminal.sftp.action.refresh")}
+                      >
+                        <AppIcon
+                          icon="material-symbols:refresh-rounded"
+                          size={16}
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        className="xterminal-sftp-icon-btn"
+                        onClick={() => setSftpOpen(false)}
+                        title={t("terminal.sftp.action.close")}
+                      >
+                        <AppIcon
+                          icon="material-symbols:close-rounded"
+                          size={16}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="xterminal-sftp-pathbar">
+                    <button
+                      type="button"
+                      className="xterminal-sftp-icon-btn"
+                      onClick={() => {
+                        const currentPath = sftpPath || "/";
+                        const parts = currentPath.split("/").filter((p) => p);
+                        if (parts.length > 0) {
+                          parts.pop();
+                          const newPath =
+                            parts.length > 0 ? "/" + parts.join("/") : "/";
+                          void loadSftpEntries(newPath);
+                        }
+                      }}
+                      disabled={sftpLoading || sftpPath === "/" || !sftpPath}
+                      title={t("terminal.sftp.action.up")}
+                    >
+                      <AppIcon
+                        icon="material-symbols:keyboard-return-rounded"
+                        size={16}
+                      />
+                    </button>
+                    <div className="xterminal-sftp-path-input">
+                      <input
+                        type="text"
+                        value={sftpPath}
+                        onChange={(event) => setSftpPath(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            void loadSftpEntries();
+                          }
+                        }}
+                        placeholder="/"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="xterminal-sftp-table-header">
+                    <span className="xterminal-sftp-check" aria-hidden="true" />
+                    <span className="xterminal-sftp-col-name">
+                      {t("terminal.sftp.col.name")}
+                    </span>
+                    <span className="xterminal-sftp-col-size">
+                      {t("terminal.sftp.col.size")}
+                    </span>
+                  </div>
+                  <div
+                    className="xterminal-sftp-body"
+                    onDragEnter={handleSftpDragEnter}
+                    onDragLeave={handleSftpDragLeave}
+                    onDragOver={handleSftpDragOver}
+                    onDrop={(event) => void handleSftpDrop(event)}
+                    onPointerDown={(event) => {
+                      if (event.button !== 2) return;
+                      if (isSftpItemTarget(event.target)) return;
+                      openSftpMenu(event, null);
                     }}
+                    onContextMenu={(event) => {
+                      if (isSftpItemTarget(event.target)) return;
+                      openSftpMenu(event, null);
+                    }}
+                  >
+                    {sftpDragging && (
+                      <div className="xterminal-sftp-drop-overlay">
+                        <div className="xterminal-sftp-drop-content">
+                          <AppIcon
+                            icon="material-symbols:upload-rounded"
+                            size={24}
+                          />
+                          <span>
+                            {sftpDropTarget
+                              ? t("terminal.sftp.dropHintTarget", {
+                                  name: sftpDropTarget.name,
+                                })
+                              : t("terminal.sftp.dropHint")}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    {sftpLoading && (
+                      <div className="xterminal-sftp-state xterminal-sftp-state--loading">
+                        <AppIcon
+                          className="xterminal-sftp-loading-icon"
+                          icon="material-symbols:refresh"
+                          size={16}
+                        />
+                        <span>{t("terminal.sftp.loading")}</span>
+                      </div>
+                    )}
+                    {!sftpLoading && sftpError && (
+                      <div className="xterminal-sftp-state xterminal-sftp-state--error">
+                        <AppIcon
+                          className="xterminal-sftp-notice-icon"
+                          icon="material-symbols:error-outline-rounded"
+                          size={16}
+                        />
+                        <span className="xterminal-sftp-notice-text">
+                          {sftpError}
+                        </span>
+                        <button
+                          type="button"
+                          className="xterminal-sftp-error-close"
+                          onClick={() => setSftpError(null)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )}
+                    {!sftpLoading && !sftpError && sftpEntries.length === 0 && (
+                      <div className="xterminal-sftp-state">
+                        {t("terminal.sftp.empty")}
+                      </div>
+                    )}
+                    {!sftpLoading && !sftpError && sftpEntries.length > 0 && (
+                      <ul className="xterminal-sftp-list">
+                        {sftpEntries.map((entry) => (
+                          <li
+                            key={entry.name}
+                            className={`xterminal-sftp-item ${entry.is_dir ? "xterminal-sftp-item--dir" : "xterminal-sftp-item--file"} ${
+                              sftpDropTarget?.name === entry.name &&
+                              entry.is_dir
+                                ? "xterminal-sftp-item--drop-target"
+                                : ""
+                            }`}
+                            data-drop-path={
+                              entry.is_dir && entry.name !== ".."
+                                ? buildNestedRemotePath(
+                                    sftpPath || "/",
+                                    entry.name,
+                                  )
+                                : undefined
+                            }
+                            data-drop-name={
+                              entry.is_dir && entry.name !== ".."
+                                ? entry.name
+                                : undefined
+                            }
+                            onClick={() => handleEntryClick(entry)}
+                            onDoubleClick={() => {
+                              if (entry.is_dir) return;
+                              void handleOpenFileForEditing(entry);
+                            }}
+                            onPointerDown={(event) => {
+                              if (event.button !== 2) return;
+                              openSftpMenu(event, entry);
+                            }}
+                            onContextMenu={(event) =>
+                              openSftpMenu(event, entry)
+                            }
+                          >
+                            <span
+                              className="xterminal-sftp-check"
+                              aria-hidden="true"
+                            />
+                            <span
+                              className="xterminal-sftp-icon"
+                              aria-hidden="true"
+                            >
+                              <AppIcon
+                                icon={
+                                  entry.is_dir
+                                    ? "material-symbols:folder-rounded"
+                                    : "material-symbols:description-rounded"
+                                }
+                                size={16}
+                              />
+                            </span>
+                            <span className="xterminal-sftp-name">
+                              {entry.name}
+                            </span>
+                            {typeof entry.size === "number" &&
+                              !entry.is_dir && (
+                                <span className="xterminal-sftp-meta">
+                                  {formatSftpListSize(entry.size)}
+                                </span>
+                              )}
+                            {entry.is_dir && (
+                              <span className="xterminal-sftp-meta">-</span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  {sftpMenu && (
+                    <div
+                      className="xterminal-sftp-menu"
+                      style={{ top: sftpMenu.y, left: sftpMenu.x }}
+                      ref={sftpMenuRef}
+                    >
+                      {!sftpMenu.entry && (
+                        <>
+                          <button
+                            type="button"
+                            className="xterminal-sftp-menu-item"
+                            onClick={() => {
+                              void handleFileSelect();
+                              setSftpMenu(null);
+                            }}
+                          >
+                            <AppIcon
+                              icon="material-symbols:upload-rounded"
+                              size={16}
+                            />
+                            {t("terminal.sftp.menu.upload")}
+                          </button>
+                          <button
+                            type="button"
+                            className="xterminal-sftp-menu-item"
+                            onClick={() => {
+                              void loadSftpEntries();
+                              setSftpMenu(null);
+                            }}
+                          >
+                            <AppIcon
+                              icon="material-symbols:refresh-rounded"
+                              size={16}
+                            />
+                            {t("terminal.sftp.menu.refresh")}
+                          </button>
+                        </>
+                      )}
+                      {sftpMenu.entry && (
+                        <>
+                          <button
+                            type="button"
+                            className="xterminal-sftp-menu-item"
+                            onClick={() => {
+                              if (!sftpMenu.entry) return;
+                              openRename(sftpMenu.entry);
+                              setSftpMenu(null);
+                            }}
+                          >
+                            <AppIcon
+                              icon="material-symbols:edit-outline-rounded"
+                              size={16}
+                            />
+                            {t("terminal.sftp.menu.rename")}
+                          </button>
+                          <button
+                            type="button"
+                            className="xterminal-sftp-menu-item"
+                            onClick={() => {
+                              if (!sftpMenu.entry) return;
+                              openChmod(sftpMenu.entry);
+                              setSftpMenu(null);
+                            }}
+                          >
+                            <AppIcon
+                              icon="material-symbols:lock-person-outline-rounded"
+                              size={16}
+                            />
+                            {t("terminal.sftp.menu.chmod")}
+                          </button>
+                          <button
+                            type="button"
+                            className="xterminal-sftp-menu-item"
+                            onClick={async () => {
+                              if (!sftpMenu.entry) return;
+                              const path = buildRemotePath(sftpMenu.entry.name);
+                              try {
+                                await navigator.clipboard.writeText(path);
+                              } catch {
+                                // ignore
+                              }
+                              setSftpMenu(null);
+                            }}
+                          >
+                            <AppIcon
+                              icon="material-symbols:content-copy-outline-rounded"
+                              size={16}
+                            />
+                            {t("terminal.sftp.menu.copyPath")}
+                          </button>
+                          {!sftpMenu.entry.is_dir && (
+                            <button
+                              type="button"
+                              className="xterminal-sftp-menu-item"
+                              onClick={() => {
+                                if (!sftpMenu.entry) return;
+                                void handleOpenFileForEditing(sftpMenu.entry);
+                                setSftpMenu(null);
+                              }}
+                            >
+                              <AppIcon
+                                icon="material-symbols:open-in-new-rounded"
+                                size={16}
+                              />
+                              {t("terminal.sftp.menu.open")}
+                            </button>
+                          )}
+                          {!sftpMenu.entry.is_dir && (
+                            <button
+                              type="button"
+                              className="xterminal-sftp-menu-item"
+                              onClick={() => {
+                                if (!sftpMenu.entry) return;
+                                void handleDownloadFile(sftpMenu.entry);
+                                setSftpMenu(null);
+                              }}
+                            >
+                              <AppIcon
+                                icon="material-symbols:download-rounded"
+                                size={16}
+                              />
+                              {t("terminal.sftp.menu.download")}
+                            </button>
+                          )}
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        className="xterminal-sftp-menu-item"
+                        onClick={() => {
+                          setNewFolderOpen(true);
+                          setNewFolderName("");
+                          setSftpActionError(null);
+                          setSftpMenu(null);
+                        }}
+                      >
+                        <AppIcon
+                          icon="material-symbols:create-new-folder-outline-rounded"
+                          size={16}
+                        />
+                        {t("terminal.sftp.menu.newFolder")}
+                      </button>
+                      {sftpMenu.entry && (
+                        <button
+                          type="button"
+                          className="xterminal-sftp-menu-item xterminal-sftp-menu-item--danger"
+                          onClick={() => {
+                            if (!sftpMenu.entry) return;
+                            void handleDeleteEntry(sftpMenu.entry);
+                            setSftpMenu(null);
+                          }}
+                        >
+                          <AppIcon
+                            icon="material-symbols:delete-outline-rounded"
+                            size={16}
+                          />
+                          {t("common.delete")}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+            {aiOpen && (
+              <>
+                <div
+                  className={`xterminal-resize-handle ${
+                    resizing?.type === "ai" ? "is-active" : ""
+                  }`}
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setResizing({
+                      type: "ai",
+                      startX: event.clientX,
+                      startWidth: aiWidth,
+                    });
+                  }}
+                />
+                <div className="xterminal-ai" style={{ width: aiWidth }}>
+                  <div className="xterminal-ai-header">
+                    <div className="xterminal-ai-header-main">
+                      <div className="xterminal-ai-title">
+                        {t("terminal.ai.title")}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="xterminal-ai-close"
+                      onClick={() => setAiOpen(false)}
+                      title={t("common.close")}
+                    >
+                      <AppIcon icon="proicons:cancel" size={16} />
+                    </button>
+                  </div>
+                  <div className="xterminal-ai-body">
+                    <AgentStreamView
+                      blocks={agentBlocks}
+                      isRunning={agentRunning}
+                      pendingConfirmation={agentPendingConfirmation}
+                      onConfirm={(actionId) => {
+                        setAgentPendingConfirmation(null);
+                        agentLoopRef.current?.confirmAction(actionId);
+                      }}
+                      onReject={(actionId) => {
+                        setAgentPendingConfirmation(null);
+                        agentLoopRef.current?.rejectAction(actionId);
+                      }}
+                      onCopy={(text) => clipboardWrite(text)}
+                    />
+                    {aiError && (
+                      <div className="xterminal-ai-error">{aiError}</div>
+                    )}
+                    <div className="xterminal-ai-input">
+                      <div className="xterminal-ai-input-box">
+                        <textarea
+                          ref={aiInputRef}
+                          value={aiInput}
+                          onChange={(event) => setAiInput(event.target.value)}
+                          placeholder={t("terminal.ai.input.placeholder", {
+                            modifier: modifierKeyAbbr,
+                          })}
+                          onKeyDown={(event) => {
+                            if (
+                              (event.metaKey || event.ctrlKey) &&
+                              event.key === "Enter"
+                            ) {
+                              event.preventDefault();
+                              void sendAiMessage(aiInput);
+                              setAiInput("");
+                            }
+                          }}
+                          disabled={aiBusy}
+                        />
+                        {aiAttachments.length > 0 && (
+                          <div className="xterminal-ai-attachments">
+                            {aiAttachments.map((attachment) => (
+                              <span
+                                key={attachment.id}
+                                className="xterminal-ai-attachment-chip"
+                              >
+                                <AppIcon
+                                  icon={
+                                    attachment.kind === "image"
+                                      ? "proicons:image"
+                                      : "material-symbols:description-outline-rounded"
+                                  }
+                                  size={14}
+                                />
+                                <span className="xterminal-ai-attachment-name">
+                                  {attachment.name}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="xterminal-ai-attachment-remove"
+                                  onClick={() =>
+                                    removeAiAttachment(attachment.id)
+                                  }
+                                  aria-label={t("common.close")}
+                                  title={t("common.close")}
+                                  disabled={aiBusy}
+                                >
+                                  <AppIcon
+                                    icon="material-symbols:close-rounded"
+                                    size={14}
+                                  />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="xterminal-ai-input-footer">
+                          <div className="xterminal-ai-input-meta">
+                            <button
+                              type="button"
+                              className="xterminal-ai-footer-icon-btn"
+                              onClick={() => void handlePickAiAttachments()}
+                              title={t("terminal.ai.attach")}
+                              aria-label={t("terminal.ai.attach")}
+                              disabled={aiBusy}
+                            >
+                              <AppIcon
+                                icon="material-symbols:add-rounded"
+                                size={18}
+                              />
+                            </button>
+                            <div
+                              className="xterminal-ai-mode-dropdown"
+                              ref={aiApprovalMenuRef}
+                            >
+                              <button
+                                type="button"
+                                className={`xterminal-ai-mode-pill${aiApprovalMenuOpen ? " xterminal-ai-mode-pill--open" : ""}`}
+                                onClick={() => {
+                                  setAiModelMenuOpen(false);
+                                  setAiApprovalMenuOpen((prev) => !prev);
+                                }}
+                                disabled={aiBusy}
+                                aria-haspopup="listbox"
+                                aria-expanded={aiApprovalMenuOpen}
+                                title={t("terminal.ai.approvalMode.title")}
+                              >
+                                <span className="xterminal-ai-mode-value">
+                                  {activeAiApprovalMode.label}
+                                </span>
+                                <AppIcon
+                                  className="xterminal-ai-model-caret"
+                                  icon="material-symbols:keyboard-arrow-down-rounded"
+                                  size={16}
+                                />
+                              </button>
+                              {aiApprovalMenuOpen && (
+                                <div
+                                  className="xterminal-ai-mode-menu"
+                                  role="listbox"
+                                >
+                                  {aiApprovalModeOptions.map((option) => (
+                                    <button
+                                      key={option.value}
+                                      type="button"
+                                      className={`xterminal-ai-mode-item${option.value === aiApprovalMode ? " is-active" : ""}`}
+                                      onClick={() =>
+                                        void handleSelectAiApprovalMode(
+                                          option.value,
+                                        )
+                                      }
+                                      role="option"
+                                      aria-selected={
+                                        option.value === aiApprovalMode
+                                      }
+                                    >
+                                      <span className="xterminal-ai-mode-copy">
+                                        <span className="xterminal-ai-mode-label">
+                                          {option.label}
+                                        </span>
+                                        <span className="xterminal-ai-mode-description">
+                                          {option.description}
+                                        </span>
+                                      </span>
+                                      {option.value === aiApprovalMode && (
+                                        <AppIcon
+                                          className="xterminal-ai-mode-check"
+                                          icon="material-symbols:check-rounded"
+                                          size={18}
+                                        />
+                                      )}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="xterminal-ai-input-actions">
+                            <div
+                              className="xterminal-ai-model-dropdown"
+                              ref={aiModelMenuRef}
+                            >
+                              <button
+                                type="button"
+                                className={`xterminal-ai-model-pill${aiModelMenuOpen ? " xterminal-ai-model-pill--open" : ""}`}
+                                onClick={() => {
+                                  setAiApprovalMenuOpen(false);
+                                  setAiModelMenuOpen((prev) => !prev);
+                                }}
+                                disabled={aiBusy}
+                                aria-haspopup="listbox"
+                                aria-expanded={aiModelMenuOpen}
+                              >
+                                <span className="xterminal-ai-model-value">
+                                  {aiModel ||
+                                    t("terminal.ai.model.placeholder")}
+                                </span>
+                                <AppIcon
+                                  className="xterminal-ai-model-caret"
+                                  icon="material-symbols:keyboard-arrow-down-rounded"
+                                  size={16}
+                                />
+                              </button>
+                              {aiModelMenuOpen && (
+                                <div
+                                  className="xterminal-ai-model-menu"
+                                  role="listbox"
+                                >
+                                  {modelOptionsWithCurrent.map((model) => (
+                                    <button
+                                      key={model}
+                                      type="button"
+                                      className={`xterminal-ai-model-item${model === aiModel ? " is-active" : ""}`}
+                                      onClick={() => {
+                                        aiModelTouchedRef.current = true;
+                                        setAiModel(model);
+                                        setAiModelMenuOpen(false);
+                                      }}
+                                      role="option"
+                                      aria-selected={model === aiModel}
+                                    >
+                                      {model}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            {aiMessages.length > 0 && (
+                              <button
+                                type="button"
+                                className="xterminal-ai-footer-icon-btn"
+                                onClick={clearAiConversationContext}
+                                title={t("terminal.ai.clearContext")}
+                                aria-label={t("terminal.ai.clearContext")}
+                              >
+                                <AppIcon icon="proicons:delete" size={16} />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="xterminal-ai-send"
+                              onClick={() => {
+                                if (aiBusy) {
+                                  interruptAiConversation();
+                                  return;
+                                }
+                                void sendAiMessage(aiInput);
+                                setAiInput("");
+                              }}
+                              disabled={
+                                !aiBusy &&
+                                !aiInput.trim() &&
+                                aiAttachments.length === 0
+                              }
+                              title={
+                                aiBusy
+                                  ? t("terminal.ai.stop")
+                                  : t("terminal.ai.send")
+                              }
+                              aria-label={
+                                aiBusy
+                                  ? t("terminal.ai.stop")
+                                  : t("terminal.ai.send")
+                              }
+                            >
+                              <AppIcon
+                                icon={
+                                  aiBusy
+                                    ? "proicons:record-stop"
+                                    : "proicons:send"
+                                }
+                                size={16}
+                              />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="xterminal-toolbar">
+            <div className="xterminal-toolbar-item xterminal-toolbar-item--metric">
+              <AppIcon icon="proicons:globe" size={16} />
+              <span
+                className={`xterminal-toolbar-value xterminal-toolbar-value--metric xterminal-latency xterminal-latency--${latencyTone}`}
+                title={t("terminal.toolbar.latency")}
+              >
+                {latencyMs === null ? "--" : `${latencyMs} ms`}
+              </span>
+            </div>
+
+            {supportsToolbarResourceStats && (
+              <>
+                <span className="xterminal-toolbar-dot" aria-hidden="true" />
+                <div className="xterminal-toolbar-item xterminal-toolbar-item--metric-group">
+                  <span
+                    className="xterminal-toolbar-value xterminal-toolbar-value--resource-group"
+                    title={t("terminal.toolbar.cpuShort")}
+                  >
+                    <AppIcon
+                      icon="material-symbols:developer-board-rounded"
+                      size={16}
+                    />
+                    <span className="xterminal-toolbar-value xterminal-toolbar-value--metric">
+                      {resourceCpuLabel}
+                    </span>
+                  </span>
+                  <span
+                    className="xterminal-toolbar-value xterminal-toolbar-value--resource-group"
+                    title={t("terminal.toolbar.memShort")}
+                  >
+                    <AppIcon
+                      icon="material-symbols:view-stream-rounded"
+                      size={16}
+                    />
+                    <span className="xterminal-toolbar-value xterminal-toolbar-value--metric">
+                      {resourceMemoryLabel}
+                    </span>
+                  </span>
+                </div>
+              </>
+            )}
+
+            <span className="xterminal-toolbar-dot" aria-hidden="true" />
+
+            <div
+              className="xterminal-toolbar-item"
+              style={{ flex: 1, minWidth: 0 }}
+            >
+              <AppIcon icon="proicons:server" size={16} />
+              <button
+                type="button"
+                className={`xterminal-toolbar-value xterminal-toolbar-value--copy ${
+                  endpointCopied ? "is-copied" : ""
+                }`}
+                onClick={() => void handleCopyEndpoint()}
+                disabled={!endpointCopyText}
+                title={endpointCopyLabel}
+                aria-label={endpointCopyLabel}
+              >
+                {endpointLabel}
+              </button>
+            </div>
+
+            <button
+              type="button"
+              className="xterminal-toolbar-btn"
+              onClick={toggleScriptPanel}
+              title={t("terminal.toolbar.script")}
+            >
+              <AppIcon icon="proicons:terminal" size={16} />
+              {t("terminal.toolbar.quickActions")}
+            </button>
+            {supportsSftp && (
+              <button
+                type="button"
+                className={`xterminal-toolbar-btn ${transferPanelOpen ? "xterminal-toolbar-btn--active" : ""}`}
+                onClick={toggleTransferPanel}
+                title={t("terminal.transfer.title")}
+              >
+                <AppIcon icon="proicons:arrow-download" size={16} />
+                {t("terminal.transfer.title")}
+                {(runningTransferCount > 0 || failedTransferCount > 0) && (
+                  <span
+                    className={`xterminal-transfer-badge ${
+                      failedTransferCount > 0
+                        ? "xterminal-transfer-badge--error"
+                        : ""
+                    }`}
+                  >
+                    {failedTransferCount > 0
+                      ? failedTransferCount
+                      : runningTransferCount}
+                  </span>
+                )}
+              </button>
+            )}
+          </div>
+
+          {scriptPanelOpen && (
+            <div className="xterminal-script-panel">
+              <div className="xterminal-script-header">
+                <div className="xterminal-script-actions">
+                  <button
+                    type="button"
+                    className="xterminal-script-link"
+                    onClick={() => setScriptPickerOpen(true)}
+                  >
+                    <AppIcon icon="proicons:terminal" size={16} />
+                    {t("terminal.script.library")}
+                  </button>
+                  <button
+                    type="button"
+                    className="xterminal-script-link"
+                    onClick={() => setScriptText("")}
+                  >
+                    <AppIcon icon="proicons:delete" size={16} />
+                    {t("terminal.script.clear")}
+                  </button>
+                </div>
+                <div className="xterminal-script-target">
+                  <span>{t("terminal.script.sendTo")}</span>
+                  <Select
+                    value={scriptTarget}
+                    onChange={(nextValue) =>
+                      setScriptTarget(nextValue as "current" | "all")
+                    }
+                    options={[
+                      {
+                        value: "current",
+                        label: t("terminal.script.target.current"),
+                      },
+                      { value: "all", label: t("terminal.script.target.all") },
+                    ]}
                   />
                 </div>
-                <div className="xterminal-find-actions">
-                  <button
-                    type="button"
-                    className={`xterminal-find-flag ${
-                      terminalFindCaseSensitive ? "is-active" : ""
-                    }`}
-                    onClick={() => {
-                      setTerminalFindCaseSensitive((prev) => !prev);
-                      setTerminalFindStatus("idle");
-                    }}
-                    title={locale === "zh-CN" ? "区分大小写" : "Case sensitive"}
-                  >
-                    Aa
-                  </button>
-                  <button
-                    type="button"
-                    className="xterminal-find-btn"
-                    onClick={() => {
-                      void findInTerminal("prev");
-                    }}
-                    title={locale === "zh-CN" ? "上一个" : "Previous"}
-                  >
-                    <AppIcon icon="material-symbols:keyboard-arrow-up-rounded" size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    className="xterminal-find-btn"
-                    onClick={() => {
-                      void findInTerminal("next");
-                    }}
-                    title={locale === "zh-CN" ? "下一个" : "Next"}
-                  >
-                    <AppIcon icon="material-symbols:keyboard-arrow-down-rounded" size={16} />
-                  </button>
-                  <span
-                    className={`xterminal-find-status ${
-                      terminalFindStatus === "not_found" ? "is-error" : ""
-                    }`}
-                  >
-                    {terminalFindStatus === "not_found"
-                      ? locale === "zh-CN"
-                        ? "未找到"
-                        : "No match"
-                      : terminalFindStatus === "found"
-                      ? locale === "zh-CN"
-                        ? "已匹配"
-                        : "Matched"
-                      : ""}
+              </div>
+              <div className="xterminal-script-body">
+                <textarea
+                  value={scriptText}
+                  onChange={(event) => setScriptText(event.target.value)}
+                  placeholder={t("terminal.script.placeholder", {
+                    modifier: modifierKeyAbbr,
+                  })}
+                  onKeyDown={(event) => {
+                    if (
+                      (event.metaKey || event.ctrlKey) &&
+                      event.key === "Enter"
+                    ) {
+                      event.preventDefault();
+                      void handleSendScript();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="xterminal-script-send"
+                  onClick={() => void handleSendScript()}
+                >
+                  {t("terminal.script.run")}
+                  <span className="xterminal-script-shortcut">
+                    {modifierKeyLabel} Enter
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+          {supportsSftp && transferPanelOpen && (
+            <div className="xterminal-transfer-panel">
+              <div className="xterminal-transfer-header">
+                <div className="xterminal-transfer-title">
+                  {t("terminal.transfer.title")}
+                </div>
+                <div className="xterminal-transfer-actions">
+                  <span className="xterminal-transfer-summary">
+                    {t("terminal.transfer.summary", {
+                      running: runningTransferCount,
+                      failed: failedTransferCount,
+                    })}
                   </span>
                   <button
                     type="button"
-                    className="xterminal-find-btn"
-                    onClick={closeTerminalFind}
-                    title={locale === "zh-CN" ? "关闭" : "Close"}
+                    className="xterminal-script-link"
+                    onClick={clearTransferHistory}
+                    disabled={transferTasks.length === 0}
                   >
-                    <AppIcon icon="material-symbols:close-rounded" size={16} />
+                    <AppIcon
+                      icon="material-symbols:delete-outline-rounded"
+                      size={16}
+                    />
+                    {t("terminal.transfer.clear")}
                   </button>
                 </div>
               </div>
-            )}
-            {shouldShowQuickOverlay && (
-              <section className="xterminal-quick-overlay">
-                <div className="xterminal-quick-overlay-head">
-                  <div className="xterminal-quick-overlay-title">
-                    <AppIcon icon="material-symbols:terminal-rounded" size={15} />
-                    {t("terminal.ai.quick.title")}
-                  </div>
+              {transferTasks.length === 0 ? (
+                <div className="xterminal-transfer-empty">
+                  {t("terminal.transfer.empty")}
                 </div>
-                <div className="xterminal-quick-overlay-current">
-                  {t("terminal.ai.quick.detected", { command: terminalQuickDraft })}
-                </div>
-                <div className="xterminal-quick-overlay-list">
-                  {terminalQuickCommands.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className="xterminal-quick-overlay-item"
-                      onClick={() => handleApplyTerminalQuickCommand(item.insertText)}
+              ) : (
+                <div className="xterminal-transfer-list">
+                  {transferTasks.map((task) => (
+                    <div
+                      key={task.id}
+                      className={`xterminal-transfer-item xterminal-transfer-item--${task.status}`}
                     >
-                      <div className="xterminal-quick-overlay-command">{item.syntax}</div>
-                      <div className="xterminal-quick-overlay-desc">{item.description}</div>
-                    </button>
-                  ))}
-                </div>
-                <div className="xterminal-quick-overlay-tip">{t("terminal.quick.overlay.tip")}</div>
-              </section>
-            )}
-          </div>
-          {supportsSftp && sftpOpen && (
-            <>
-              <div
-                className={`xterminal-resize-handle ${
-                  resizing?.type === "sftp" ? "is-active" : ""
-                }`}
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setResizing({
-                    type: "sftp",
-                    startX: event.clientX,
-                    startWidth: sftpWidth,
-                  });
-                }}
-              />
-              <div
-                className={`xterminal-sftp ${sftpDragging ? "xterminal-sftp--dragging" : ""}`}
-                style={{ width: sftpWidth }}
-                ref={sftpPanelRef}
-                onDragEnter={handleSftpDragEnter}
-                onDragLeave={handleSftpDragLeave}
-                onDragOver={handleSftpDragOver}
-                onDrop={(event) => void handleSftpDrop(event)}
-              >
-                <div className="xterminal-sftp-header">
-                  <div className="xterminal-sftp-title">
-                    {t("terminal.sftp.title")}
-                  </div>
-                  <div className="xterminal-sftp-actions">
-                    <button
-                      type="button"
-                      className="xterminal-sftp-icon-btn"
-                      onClick={handleFileSelect}
-                      disabled={sftpLoading || !!uploadProgress}
-                      title={t("terminal.sftp.action.upload")}
-                    >
-                      <AppIcon icon="material-symbols:upload-rounded" size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="xterminal-sftp-icon-btn"
-                      onClick={() => void loadSftpEntries()}
-                      disabled={sftpLoading}
-                      title={t("terminal.sftp.action.refresh")}
-                    >
-                      <AppIcon icon="material-symbols:refresh-rounded" size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="xterminal-sftp-icon-btn"
-                      onClick={() => setSftpOpen(false)}
-                      title={t("terminal.sftp.action.close")}
-                    >
-                      <AppIcon icon="material-symbols:close-rounded" size={16} />
-                    </button>
-                  </div>
-                </div>
-
-              <div className="xterminal-sftp-pathbar">
-                <button
-                  type="button"
-                  className="xterminal-sftp-icon-btn"
-                  onClick={() => {
-                    const currentPath = sftpPath || "/";
-                    const parts = currentPath.split("/").filter((p) => p);
-                    if (parts.length > 0) {
-                      parts.pop();
-                      const newPath = parts.length > 0 ? "/" + parts.join("/") : "/";
-                      void loadSftpEntries(newPath);
-                    }
-                  }}
-                  disabled={sftpLoading || sftpPath === "/" || !sftpPath}
-                  title={t("terminal.sftp.action.up")}
-                >
-                  <AppIcon icon="material-symbols:keyboard-return-rounded" size={16} />
-                </button>
-                <div className="xterminal-sftp-path-input">
-                  <input
-                    type="text"
-                    value={sftpPath}
-                    onChange={(event) => setSftpPath(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        void loadSftpEntries();
-                      }
-                    }}
-                    placeholder="/"
-                  />
-                </div>
-              </div>
-
-              <div className="xterminal-sftp-table-header">
-                <span className="xterminal-sftp-check" aria-hidden="true" />
-                <span className="xterminal-sftp-col-name">
-                  {t("terminal.sftp.col.name")}
-                </span>
-                <span className="xterminal-sftp-col-size">
-                  {t("terminal.sftp.col.size")}
-                </span>
-              </div>
-              <div
-                className="xterminal-sftp-body"
-                onDragEnter={handleSftpDragEnter}
-                onDragLeave={handleSftpDragLeave}
-                onDragOver={handleSftpDragOver}
-                onDrop={(event) => void handleSftpDrop(event)}
-                onPointerDown={(event) => {
-                  if (event.button !== 2) return;
-                  if (isSftpItemTarget(event.target)) return;
-                  openSftpMenu(event, null);
-                }}
-                onContextMenu={(event) => {
-                  if (isSftpItemTarget(event.target)) return;
-                  openSftpMenu(event, null);
-                }}
-              >
-                {sftpDragging && (
-                  <div className="xterminal-sftp-drop-overlay">
-                    <div className="xterminal-sftp-drop-content">
-                      <AppIcon icon="material-symbols:upload-rounded" size={24} />
-                      <span>
-                        {sftpDropTarget
-                          ? t("terminal.sftp.dropHintTarget", { name: sftpDropTarget.name })
-                          : t("terminal.sftp.dropHint")}
-                      </span>
-                    </div>
-                  </div>
-                )}
-                {sftpLoading && (
-                  <div className="xterminal-sftp-state xterminal-sftp-state--loading">
-                    <AppIcon
-                        className="xterminal-sftp-loading-icon"
-                        icon="material-symbols:refresh"
-                        size={16}
-                    />
-                    <span>{t("terminal.sftp.loading")}</span>
-                    </div>
-                )}
-                {!sftpLoading && sftpError && (
-                  <div className="xterminal-sftp-state xterminal-sftp-state--error">
-                    <AppIcon
-                      className="xterminal-sftp-notice-icon"
-                      icon="material-symbols:error-outline-rounded"
-                      size={16}
-                    />
-                    <span className="xterminal-sftp-notice-text">{sftpError}</span>
-                    <button
-                      type="button"
-                      className="xterminal-sftp-error-close"
-                      onClick={() => setSftpError(null)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
-                {!sftpLoading && !sftpError && sftpEntries.length === 0 && (
-                  <div className="xterminal-sftp-state">
-                    {t("terminal.sftp.empty")}
-                  </div>
-                )}
-                {!sftpLoading && !sftpError && sftpEntries.length > 0 && (
-                  <ul className="xterminal-sftp-list">
-                    {sftpEntries.map((entry) => (
-                      <li
-                        key={entry.name}
-                        className={`xterminal-sftp-item ${entry.is_dir ? "xterminal-sftp-item--dir" : "xterminal-sftp-item--file"} ${
-                          sftpDropTarget?.name === entry.name && entry.is_dir ? "xterminal-sftp-item--drop-target" : ""
-                        }`}
-                        data-drop-path={entry.is_dir && entry.name !== ".." ? buildNestedRemotePath(sftpPath || "/", entry.name) : undefined}
-                        data-drop-name={entry.is_dir && entry.name !== ".." ? entry.name : undefined}
-                        onClick={() => handleEntryClick(entry)}
-                        onDoubleClick={() => {
-                          if (entry.is_dir) return;
-                          void handleOpenFileForEditing(entry);
-                        }}
-                        onPointerDown={(event) => {
-                          if (event.button !== 2) return;
-                          openSftpMenu(event, entry);
-                        }}
-                        onContextMenu={(event) => openSftpMenu(event, entry)}
-                      >
-                        <span className="xterminal-sftp-check" aria-hidden="true" />
-                        <span className="xterminal-sftp-icon" aria-hidden="true">
+                      <div className="xterminal-transfer-row">
+                        <div className="xterminal-transfer-name">
                           <AppIcon
                             icon={
-                              entry.is_dir
-                                ? "material-symbols:folder-rounded"
-                                : "material-symbols:description-rounded"
+                              task.direction === "upload"
+                                ? "material-symbols:upload-rounded"
+                                : "material-symbols:download-rounded"
                             }
                             size={16}
                           />
+                          <span>{task.name}</span>
+                        </div>
+                        <span
+                          className={`xterminal-transfer-status xterminal-transfer-status--${task.status}`}
+                        >
+                          {transferStatusLabel(task.status)}
                         </span>
-                        <span className="xterminal-sftp-name">{entry.name}</span>
-                        {typeof entry.size === "number" && !entry.is_dir && (
-                          <span className="xterminal-sftp-meta">
-                            {formatSftpListSize(entry.size)}
-                          </span>
-                        )}
-                        {entry.is_dir && <span className="xterminal-sftp-meta">-</span>}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              {sftpMenu && (
-                <div
-                  className="xterminal-sftp-menu"
-                  style={{ top: sftpMenu.y, left: sftpMenu.x }}
-                  ref={sftpMenuRef}
-                >
-                  {!sftpMenu.entry && (
-                    <>
-                      <button
-                        type="button"
-                        className="xterminal-sftp-menu-item"
-                        onClick={() => {
-                          void handleFileSelect();
-                          setSftpMenu(null);
-                        }}
-                      >
-                        <AppIcon icon="material-symbols:upload-rounded" size={16} />
-                        {t("terminal.sftp.menu.upload")}
-                      </button>
-                      <button
-                        type="button"
-                        className="xterminal-sftp-menu-item"
-                        onClick={() => {
-                          void loadSftpEntries();
-                          setSftpMenu(null);
-                        }}
-                      >
-                        <AppIcon icon="material-symbols:refresh-rounded" size={16} />
-                        {t("terminal.sftp.menu.refresh")}
-                      </button>
-                    </>
-                  )}
-                  {sftpMenu.entry && (
-                    <>
-                      <button
-                        type="button"
-                        className="xterminal-sftp-menu-item"
-                        onClick={() => {
-                          if (!sftpMenu.entry) return;
-                          openRename(sftpMenu.entry);
-                          setSftpMenu(null);
-                        }}
-                      >
-                        <AppIcon icon="material-symbols:edit-outline-rounded" size={16} />
-                        {t("terminal.sftp.menu.rename")}
-                      </button>
-                      <button
-                        type="button"
-                        className="xterminal-sftp-menu-item"
-                        onClick={() => {
-                          if (!sftpMenu.entry) return;
-                          openChmod(sftpMenu.entry);
-                          setSftpMenu(null);
-                        }}
-                      >
-                        <AppIcon icon="material-symbols:lock-person-outline-rounded" size={16} />
-                        {t("terminal.sftp.menu.chmod")}
-                      </button>
-                      <button
-                        type="button"
-                        className="xterminal-sftp-menu-item"
-                        onClick={async () => {
-                          if (!sftpMenu.entry) return;
-                          const path = buildRemotePath(sftpMenu.entry.name);
-                          try {
-                            await navigator.clipboard.writeText(path);
-                          } catch {
-                            // ignore
-                          }
-                          setSftpMenu(null);
-                        }}
-                      >
-                        <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
-                        {t("terminal.sftp.menu.copyPath")}
-                      </button>
-                      {!sftpMenu.entry.is_dir && (
-                        <button
-                          type="button"
-                          className="xterminal-sftp-menu-item"
-                          onClick={() => {
-                            if (!sftpMenu.entry) return;
-                            void handleOpenFileForEditing(sftpMenu.entry);
-                            setSftpMenu(null);
-                          }}
-                        >
-                          <AppIcon icon="material-symbols:open-in-new-rounded" size={16} />
-                          {t("terminal.sftp.menu.open")}
-                        </button>
-                      )}
-                      {!sftpMenu.entry.is_dir && (
-                        <button
-                          type="button"
-                          className="xterminal-sftp-menu-item"
-                          onClick={() => {
-                            if (!sftpMenu.entry) return;
-                            void handleDownloadFile(sftpMenu.entry);
-                            setSftpMenu(null);
-                          }}
-                        >
-                          <AppIcon icon="material-symbols:download-rounded" size={16} />
-                          {t("terminal.sftp.menu.download")}
-                        </button>
-                      )}
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    className="xterminal-sftp-menu-item"
-                    onClick={() => {
-                      setNewFolderOpen(true);
-                      setNewFolderName("");
-                      setSftpActionError(null);
-                      setSftpMenu(null);
-                    }}
-                  >
-                    <AppIcon icon="material-symbols:create-new-folder-outline-rounded" size={16} />
-                    {t("terminal.sftp.menu.newFolder")}
-                  </button>
-                  {sftpMenu.entry && (
-                    <button
-                      type="button"
-                      className="xterminal-sftp-menu-item xterminal-sftp-menu-item--danger"
-                      onClick={() => {
-                        if (!sftpMenu.entry) return;
-                        void handleDeleteEntry(sftpMenu.entry);
-                        setSftpMenu(null);
-                      }}
-                    >
-                      <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
-                      {t("common.delete")}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-            </>
-          )}
-          {aiOpen && (
-            <>
-              <div
-                className={`xterminal-resize-handle ${
-                  resizing?.type === "ai" ? "is-active" : ""
-                }`}
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setResizing({
-                    type: "ai",
-                    startX: event.clientX,
-                    startWidth: aiWidth,
-                  });
-                }}
-              />
-              <div className="xterminal-ai" style={{ width: aiWidth }}>
-                <div className="xterminal-ai-header">
-	                  <div className="xterminal-ai-header-main">
-	                    <div className="xterminal-ai-title">
-	                      {t("terminal.ai.title")}
-	                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="xterminal-ai-close"
-                    onClick={() => setAiOpen(false)}
-                    title={t("common.close")}
-                  >
-                    <AppIcon icon="proicons:cancel" size={16} />
-                  </button>
-              </div>
-              <div className="xterminal-ai-body">
-                <AgentStreamView
-                  blocks={agentBlocks}
-                  isRunning={agentRunning}
-                  pendingConfirmation={agentPendingConfirmation}
-                  onConfirm={(actionId) => {
-                    setAgentPendingConfirmation(null);
-                    agentLoopRef.current?.confirmAction(actionId);
-                  }}
-                  onReject={(actionId) => {
-                    setAgentPendingConfirmation(null);
-                    agentLoopRef.current?.rejectAction(actionId);
-                  }}
-                  onCopy={(text) => clipboardWrite(text)}
-                />
-                {aiError && <div className="xterminal-ai-error">{aiError}</div>}
-                <div className="xterminal-ai-input">
-	                  <div className="xterminal-ai-input-box">
-	                    <textarea
-	                      ref={aiInputRef}
-	                      value={aiInput}
-                      onChange={(event) => setAiInput(event.target.value)}
-                      placeholder={t("terminal.ai.input.placeholder", {
-                        modifier: modifierKeyAbbr,
-                      })}
-                      onKeyDown={(event) => {
-                        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                          event.preventDefault();
-                          void sendAiMessage(aiInput);
-                          setAiInput("");
-                        }
-                      }}
-                      disabled={aiBusy}
-                    />
-                      {aiAttachments.length > 0 && (
-                        <div className="xterminal-ai-attachments">
-                          {aiAttachments.map((attachment) => (
-                            <span key={attachment.id} className="xterminal-ai-attachment-chip">
-                              <AppIcon
-                                icon={attachment.kind === "image" ? "proicons:image" : "material-symbols:description-outline-rounded"}
-                                size={14}
-                              />
-                              <span className="xterminal-ai-attachment-name">{attachment.name}</span>
-                              <button
-                                type="button"
-                                className="xterminal-ai-attachment-remove"
-                                onClick={() => removeAiAttachment(attachment.id)}
-                                aria-label={t("common.close")}
-                                title={t("common.close")}
-                                disabled={aiBusy}
-                              >
-                                <AppIcon icon="material-symbols:close-rounded" size={14} />
-                              </button>
-                            </span>
-                          ))}
+                      </div>
+                      <div className="xterminal-transfer-meta">
+                        {t("terminal.transfer.createdAt", {
+                          time: formatTransferTime(task.startedAt),
+                        })}
+                      </div>
+                      <div className="xterminal-transfer-progressbar">
+                        <span
+                          className={`xterminal-transfer-progressvalue xterminal-transfer-progressvalue--${task.status}`}
+                          style={{ width: `${task.progress}%` }}
+                        />
+                      </div>
+                      {task.detail && (
+                        <div className="xterminal-transfer-detail">
+                          {task.detail}
                         </div>
                       )}
-	                      <div className="xterminal-ai-input-footer">
-	                      <div className="xterminal-ai-input-meta">
-                          <button
-                            type="button"
-                            className="xterminal-ai-footer-icon-btn"
-                            onClick={() => void handlePickAiAttachments()}
-                            title={t("terminal.ai.attach")}
-                            aria-label={t("terminal.ai.attach")}
-                            disabled={aiBusy}
-                          >
-                            <AppIcon icon="material-symbols:add-rounded" size={18} />
-                          </button>
-                          <div className="xterminal-ai-mode-dropdown" ref={aiApprovalMenuRef}>
+                      <div className="xterminal-transfer-item-actions">
+                        {task.direction === "download" &&
+                          task.status === "running" && (
                             <button
                               type="button"
-                              className={`xterminal-ai-mode-pill${aiApprovalMenuOpen ? " xterminal-ai-mode-pill--open" : ""}`}
-                              onClick={() => {
-                                setAiModelMenuOpen(false);
-                                setAiApprovalMenuOpen((prev) => !prev);
-                              }}
-                              disabled={aiBusy}
-                              aria-haspopup="listbox"
-                              aria-expanded={aiApprovalMenuOpen}
-                              title={t("terminal.ai.approvalMode.title")}
+                              className="xterminal-script-link"
+                              onClick={() => void handlePauseTransferTask(task)}
                             >
-                              <span className="xterminal-ai-mode-value">
-                                {activeAiApprovalMode.label}
-                              </span>
                               <AppIcon
-                                className="xterminal-ai-model-caret"
-                                icon="material-symbols:keyboard-arrow-down-rounded"
+                                icon="material-symbols:pause-rounded"
                                 size={16}
                               />
+                              {t("terminal.transfer.pause")}
                             </button>
-                            {aiApprovalMenuOpen && (
-                              <div className="xterminal-ai-mode-menu" role="listbox">
-                                {aiApprovalModeOptions.map((option) => (
-                                  <button
-                                    key={option.value}
-                                    type="button"
-                                    className={`xterminal-ai-mode-item${option.value === aiApprovalMode ? " is-active" : ""}`}
-                                    onClick={() => void handleSelectAiApprovalMode(option.value)}
-                                    role="option"
-                                    aria-selected={option.value === aiApprovalMode}
-                                  >
-                                    <span className="xterminal-ai-mode-copy">
-                                      <span className="xterminal-ai-mode-label">{option.label}</span>
-                                      <span className="xterminal-ai-mode-description">
-                                        {option.description}
-                                      </span>
-                                    </span>
-                                    {option.value === aiApprovalMode && (
-                                      <AppIcon
-                                        className="xterminal-ai-mode-check"
-                                        icon="material-symbols:check-rounded"
-                                        size={18}
-                                      />
-                                    )}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-	                      </div>
-	                      <div className="xterminal-ai-input-actions">
-                          <div className="xterminal-ai-model-dropdown" ref={aiModelMenuRef}>
+                          )}
+                        {task.direction === "download" &&
+                          task.status === "paused" && (
                             <button
                               type="button"
-                              className={`xterminal-ai-model-pill${aiModelMenuOpen ? " xterminal-ai-model-pill--open" : ""}`}
-                              onClick={() => {
-                                setAiApprovalMenuOpen(false);
-                                setAiModelMenuOpen((prev) => !prev);
-                              }}
-                              disabled={aiBusy}
-                              aria-haspopup="listbox"
-                              aria-expanded={aiModelMenuOpen}
+                              className="xterminal-script-link"
+                              onClick={() =>
+                                void handleResumeTransferTask(task)
+                              }
                             >
-                              <span className="xterminal-ai-model-value">
-                                {aiModel || t("terminal.ai.model.placeholder")}
-                              </span>
                               <AppIcon
-                                className="xterminal-ai-model-caret"
-                                icon="material-symbols:keyboard-arrow-down-rounded"
+                                icon="material-symbols:play-arrow-rounded"
                                 size={16}
                               />
+                              {t("terminal.transfer.resume")}
                             </button>
-                            {aiModelMenuOpen && (
-                              <div className="xterminal-ai-model-menu" role="listbox">
-                                {modelOptionsWithCurrent.map((model) => (
-                                  <button
-                                    key={model}
-                                    type="button"
-                                    className={`xterminal-ai-model-item${model === aiModel ? " is-active" : ""}`}
-                                    onClick={() => {
-                                      aiModelTouchedRef.current = true;
-                                      setAiModel(model);
-                                      setAiModelMenuOpen(false);
-                                    }}
-                                    role="option"
-                                    aria-selected={model === aiModel}
-                                  >
-                                    {model}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-	                        {aiMessages.length > 0 && (
-	                          <button
-	                            type="button"
-	                            className="xterminal-ai-footer-icon-btn"
-	                            onClick={clearAiConversationContext}
-	                            title={t("terminal.ai.clearContext")}
-	                            aria-label={t("terminal.ai.clearContext")}
-	                          >
-	                            <AppIcon icon="proicons:delete" size={16} />
-	                          </button>
-	                        )}
-	                        <button
-	                          type="button"
-	                          className="xterminal-ai-send"
-                          onClick={() => {
-                            if (aiBusy) {
-                              interruptAiConversation();
-                              return;
-                            }
-                            void sendAiMessage(aiInput);
-                            setAiInput("");
-                          }}
-                          disabled={!aiBusy && !aiInput.trim() && aiAttachments.length === 0}
-                          title={aiBusy ? t("terminal.ai.stop") : t("terminal.ai.send")}
-                          aria-label={aiBusy ? t("terminal.ai.stop") : t("terminal.ai.send")}
+                          )}
+                        <button
+                          type="button"
+                          className="xterminal-script-link"
+                          onClick={() => void handleOpenTransferDirectory(task)}
                         >
-                          <AppIcon icon={aiBusy ? "proicons:record-stop" : "proicons:send"} size={16}/>
+                          <AppIcon
+                            icon="material-symbols:folder-open-rounded"
+                            size={16}
+                          />
+                          {t("terminal.transfer.openFolder")}
+                        </button>
+                        <button
+                          type="button"
+                          className="xterminal-script-link xterminal-transfer-delete"
+                          onClick={() => void handleDeleteTransferTask(task)}
+                        >
+                          <AppIcon
+                            icon="material-symbols:close-rounded"
+                            size={16}
+                          />
+                          {t("terminal.transfer.delete")}
                         </button>
                       </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
-              </div>
-              </div>
-            </>
-          )}
-        </div>
-
-        <div className="xterminal-toolbar">
-          <div className="xterminal-toolbar-item xterminal-toolbar-item--metric">
-            <AppIcon icon="proicons:globe" size={16} />
-            <span
-              className={`xterminal-toolbar-value xterminal-toolbar-value--metric xterminal-latency xterminal-latency--${latencyTone}`}
-              title={t("terminal.toolbar.latency")}
-            >
-              {latencyMs === null ? "--" : `${latencyMs} ms`}
-            </span>
-          </div>
-
-          {supportsToolbarResourceStats && (
-            <>
-              <span className="xterminal-toolbar-dot" aria-hidden="true" />
-              <div className="xterminal-toolbar-item xterminal-toolbar-item--metric-group">
-                <span
-                  className="xterminal-toolbar-value xterminal-toolbar-value--resource-group"
-                  title={t("terminal.toolbar.cpuShort")}
-                >
-                  <AppIcon icon="material-symbols:developer-board-rounded" size={16} />
-                  <span className="xterminal-toolbar-value xterminal-toolbar-value--metric">
-                    {resourceCpuLabel}
-                  </span>
-                </span>
-                <span
-                  className="xterminal-toolbar-value xterminal-toolbar-value--resource-group"
-                  title={t("terminal.toolbar.memShort")}
-                >
-                  <AppIcon icon="material-symbols:view-stream-rounded" size={16} />
-                  <span className="xterminal-toolbar-value xterminal-toolbar-value--metric">
-                    {resourceMemoryLabel}
-                  </span>
-                </span>
-              </div>
-            </>
-          )}
-
-          <span className="xterminal-toolbar-dot" aria-hidden="true" />
-
-          <div
-            className="xterminal-toolbar-item"
-            style={{ flex: 1, minWidth: 0 }}
-          >
-            <AppIcon icon="proicons:server" size={16} />
-            <button
-              type="button"
-              className={`xterminal-toolbar-value xterminal-toolbar-value--copy ${
-                endpointCopied ? "is-copied" : ""
-              }`}
-              onClick={() => void handleCopyEndpoint()}
-              disabled={!endpointCopyText}
-              title={endpointCopyLabel}
-              aria-label={endpointCopyLabel}
-            >
-              {endpointLabel}
-            </button>
-          </div>
-
-          <button
-            type="button"
-            className="xterminal-toolbar-btn"
-            onClick={toggleScriptPanel}
-            title={t("terminal.toolbar.script")}
-          >
-            <AppIcon icon="proicons:terminal" size={16} />
-            {t("terminal.toolbar.quickActions")}
-          </button>
-          {supportsSftp && (
-            <button
-              type="button"
-              className={`xterminal-toolbar-btn ${transferPanelOpen ? "xterminal-toolbar-btn--active" : ""}`}
-              onClick={toggleTransferPanel}
-              title={t("terminal.transfer.title")}
-            >
-              <AppIcon icon="proicons:arrow-download" size={16} />
-              {t("terminal.transfer.title")}
-              {(runningTransferCount > 0 || failedTransferCount > 0) && (
-                <span
-                  className={`xterminal-transfer-badge ${
-                    failedTransferCount > 0 ? "xterminal-transfer-badge--error" : ""
-                  }`}
-                >
-                  {failedTransferCount > 0 ? failedTransferCount : runningTransferCount}
-                </span>
               )}
-            </button>
+            </div>
           )}
         </div>
+      </div>
 
-        {scriptPanelOpen && (
-          <div className="xterminal-script-panel">
-            <div className="xterminal-script-header">
-              <div className="xterminal-script-actions">
-                <button
-                  type="button"
-                  className="xterminal-script-link"
-                  onClick={() => setScriptPickerOpen(true)}
-                >
-                  <AppIcon icon="proicons:terminal" size={16} />
-                  {t("terminal.script.library")}
-                </button>
-                <button
-                  type="button"
-                  className="xterminal-script-link"
-                  onClick={() => setScriptText("")}
-                >
-                  <AppIcon icon="proicons:delete" size={16} />
-                  {t("terminal.script.clear")}
-                </button>
-              </div>
-              <div className="xterminal-script-target">
-                <span>{t("terminal.script.sendTo")}</span>
-                <Select
-                  value={scriptTarget}
-                  onChange={(nextValue) =>
-                    setScriptTarget(nextValue as "current" | "all")
-                  }
-                  options={[
-                    {
-                      value: "current",
-                      label: t("terminal.script.target.current"),
-                    },
-                    { value: "all", label: t("terminal.script.target.all") },
-                  ]}
-                />
-              </div>
-            </div>
-            <div className="xterminal-script-body">
-              <textarea
-                value={scriptText}
-                onChange={(event) => setScriptText(event.target.value)}
-                placeholder={t("terminal.script.placeholder", {
-                  modifier: modifierKeyAbbr,
-                })}
-                onKeyDown={(event) => {
-                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                    event.preventDefault();
-                    void handleSendScript();
-                  }
-                }}
-              />
+      {termMenu &&
+        createPortal(
+          <div
+            className="xterminal-term-menu-layer"
+            onMouseDown={handleTermMenuClose}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            <div
+              className="xterminal-term-menu"
+              ref={termMenuRef}
+              style={{ left: termMenu.x, top: termMenu.y }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
               <button
                 type="button"
-                className="xterminal-script-send"
-                onClick={() => void handleSendScript()}
+                className="xterminal-term-menu-item"
+                onClick={() => void handleTermCopy()}
+                disabled={!terminalInstance.current?.hasSelection()}
               >
-                {t("terminal.script.run")}
-                <span className="xterminal-script-shortcut">{modifierKeyLabel} Enter</span>
+                <AppIcon icon="proicons:copy" size={16} />
+                {t("terminal.menu.copy")}
+              </button>
+              <button
+                type="button"
+                className="xterminal-term-menu-item"
+                onClick={() => void handleTermPaste()}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onMouseUp={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                <AppIcon icon="proicons:clipboard-paste" size={16} />
+                {t("terminal.menu.paste")}
+              </button>
+              <button
+                type="button"
+                className="xterminal-term-menu-item"
+                onClick={handleTermClear}
+              >
+                <AppIcon icon="proicons:delete" size={16} />
+                {t("terminal.menu.clear")}
+              </button>
+              <div className="xterminal-term-menu-divider" />
+              <button
+                type="button"
+                className="xterminal-term-menu-item"
+                onClick={() => void openAiFromTerminal("fix")}
+              >
+                <AppIcon icon="proicons:wrench" size={16} />
+                {t("terminal.menu.ai.fix")}
+              </button>
+              <button
+                type="button"
+                className="xterminal-term-menu-item"
+                onClick={() => void openAiFromTerminal("ask")}
+              >
+                <AppIcon icon="proicons:egg-fried" size={16} />
+                {t("terminal.menu.ai.ask")}
               </button>
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
-        {supportsSftp && transferPanelOpen && (
-          <div className="xterminal-transfer-panel">
-            <div className="xterminal-transfer-header">
-              <div className="xterminal-transfer-title">
-                {t("terminal.transfer.title")}
-              </div>
-              <div className="xterminal-transfer-actions">
-                <span className="xterminal-transfer-summary">
-                  {t("terminal.transfer.summary", {
-                    running: runningTransferCount,
-                    failed: failedTransferCount,
-                  })}
-                </span>
-                <button
-                  type="button"
-                  className="xterminal-script-link"
-                  onClick={clearTransferHistory}
-                  disabled={transferTasks.length === 0}
-                >
-                  <AppIcon icon="material-symbols:delete-outline-rounded" size={16} />
-                  {t("terminal.transfer.clear")}
-                </button>
-              </div>
-            </div>
-            {transferTasks.length === 0 ? (
-              <div className="xterminal-transfer-empty">
-                {t("terminal.transfer.empty")}
-              </div>
-            ) : (
-              <div className="xterminal-transfer-list">
-                {transferTasks.map((task) => (
-                  <div
-                    key={task.id}
-                    className={`xterminal-transfer-item xterminal-transfer-item--${task.status}`}
+      {smartMenu &&
+        createPortal(
+          <div
+            className="xterminal-term-menu-layer"
+            onMouseDown={handleSmartMenuClose}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            <div
+              className="xterminal-term-menu xterminal-smart-menu"
+              ref={smartMenuRef}
+              style={{ left: smartMenu.x, top: smartMenu.y }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              {smartMenu.kind === "docker-ps" ? (
+                <>
+                  <button
+                    type="button"
+                    className="xterminal-term-menu-item"
+                    onClick={() => handleSmartStopContainer(smartMenu.row)}
                   >
-                    <div className="xterminal-transfer-row">
-                      <div className="xterminal-transfer-name">
-                        <AppIcon
-                          icon={
-                            task.direction === "upload"
-                              ? "material-symbols:upload-rounded"
-                              : "material-symbols:download-rounded"
-                          }
-                          size={16}
-                        />
-                        <span>{task.name}</span>
-                      </div>
-                      <span
-                        className={`xterminal-transfer-status xterminal-transfer-status--${task.status}`}
-                      >
-                        {transferStatusLabel(task.status)}
-                      </span>
-                    </div>
-                    <div className="xterminal-transfer-meta">
-                      {t("terminal.transfer.createdAt", {
-                        time: formatTransferTime(task.startedAt),
-                      })}
-                    </div>
-                    <div className="xterminal-transfer-progressbar">
-                      <span
-                        className={`xterminal-transfer-progressvalue xterminal-transfer-progressvalue--${task.status}`}
-                        style={{ width: `${task.progress}%` }}
+                    <AppIcon
+                      icon="material-symbols:stop-circle-outline-rounded"
+                      size={16}
+                    />
+                    {t("terminal.ai.smartMenu.stopContainer")}
+                  </button>
+                  <button
+                    type="button"
+                    className="xterminal-term-menu-item"
+                    onClick={() => {
+                      void clipboardWrite(smartMenu.row.containerId);
+                      setSmartMenu(null);
+                    }}
+                  >
+                    <AppIcon
+                      icon="material-symbols:content-copy-outline-rounded"
+                      size={16}
+                    />
+                    {t("terminal.ai.smartMenu.copyContainerId")}
+                  </button>
+                </>
+              ) : (
+                <>
+                  {smartMenu.row.entryType === "dir" ? (
+                    <button
+                      type="button"
+                      className="xterminal-term-menu-item"
+                      onClick={() => handleSmartEnterDir(smartMenu.row)}
+                    >
+                      <AppIcon
+                        icon="material-symbols:folder-open-rounded"
+                        size={16}
                       />
-                    </div>
-                    {task.detail && (
-                      <div className="xterminal-transfer-detail">{task.detail}</div>
-                    )}
-                    <div className="xterminal-transfer-item-actions">
-                      {task.direction === "download" && task.status === "running" && (
-                        <button
-                          type="button"
-                          className="xterminal-script-link"
-                          onClick={() => void handlePauseTransferTask(task)}
-                        >
-                          <AppIcon icon="material-symbols:pause-rounded" size={16} />
-                          {t("terminal.transfer.pause")}
-                        </button>
-                      )}
-                      {task.direction === "download" && task.status === "paused" && (
-                        <button
-                          type="button"
-                          className="xterminal-script-link"
-                          onClick={() => void handleResumeTransferTask(task)}
-                        >
-                          <AppIcon icon="material-symbols:play-arrow-rounded" size={16} />
-                          {t("terminal.transfer.resume")}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="xterminal-script-link"
-                        onClick={() => void handleOpenTransferDirectory(task)}
-                      >
-                        <AppIcon icon="material-symbols:folder-open-rounded" size={16} />
-                        {t("terminal.transfer.openFolder")}
-                      </button>
-                      <button
-                        type="button"
-                        className="xterminal-script-link xterminal-transfer-delete"
-                        onClick={() => void handleDeleteTransferTask(task)}
-                      >
-                        <AppIcon icon="material-symbols:close-rounded" size={16} />
-                        {t("terminal.transfer.delete")}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+                      {t("terminal.ai.smartMenu.enterDir")}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="xterminal-term-menu-item"
+                      onClick={() => handleSmartEditFile(smartMenu.row)}
+                    >
+                      <AppIcon
+                        icon="material-symbols:edit-square-outline-rounded"
+                        size={16}
+                      />
+                      {t("terminal.ai.smartMenu.editFile")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="xterminal-term-menu-item"
+                    onClick={() => {
+                      void clipboardWrite(
+                        stripSymlinkSuffix(smartMenu.row.name).trim(),
+                      );
+                      setSmartMenu(null);
+                    }}
+                  >
+                    <AppIcon
+                      icon="material-symbols:content-copy-outline-rounded"
+                      size={16}
+                    />
+                    {t("terminal.ai.smartMenu.copyFileName")}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>,
+          document.body,
         )}
-      </div>
-      </div>
-
-        {termMenu &&
-          createPortal(
-            <div
-              className="xterminal-term-menu-layer"
-              onMouseDown={handleTermMenuClose}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-            >
-              <div
-                className="xterminal-term-menu"
-                ref={termMenuRef}
-                style={{ left: termMenu.x, top: termMenu.y }}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-              >
-                <button
-                  type="button"
-                  className="xterminal-term-menu-item"
-                  onClick={() => void handleTermCopy()}
-                  disabled={!terminalInstance.current?.hasSelection()}
-                >
-                  <AppIcon icon="proicons:copy" size={16} />
-                  {t("terminal.menu.copy")}
-                </button>
-                <button
-                  type="button"
-                  className="xterminal-term-menu-item"
-                  onClick={() => void handleTermPaste()}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                  }}
-                  onMouseUp={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                  }}
-                >
-                  <AppIcon icon="proicons:clipboard-paste" size={16} />
-                  {t("terminal.menu.paste")}
-                </button>
-                <button
-                  type="button"
-                  className="xterminal-term-menu-item"
-                  onClick={handleTermClear}
-                >
-                  <AppIcon icon="proicons:delete" size={16} />
-                  {t("terminal.menu.clear")}
-                </button>
-                <div className="xterminal-term-menu-divider" />
-                <button
-                  type="button"
-                  className="xterminal-term-menu-item"
-                  onClick={() => void openAiFromTerminal("fix")}
-                >
-                  <AppIcon icon="proicons:wrench" size={16} />
-                  {t("terminal.menu.ai.fix")}
-                </button>
-                <button
-                  type="button"
-                  className="xterminal-term-menu-item"
-                  onClick={() => void openAiFromTerminal("ask")}
-                >
-                  <AppIcon icon="proicons:egg-fried" size={16} />
-                  {t("terminal.menu.ai.ask")}
-                </button>
-              </div>
-            </div>,
-            document.body,
-          )}
-        {smartMenu &&
-          createPortal(
-            <div
-              className="xterminal-term-menu-layer"
-              onMouseDown={handleSmartMenuClose}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-            >
-              <div
-                className="xterminal-term-menu xterminal-smart-menu"
-                ref={smartMenuRef}
-                style={{ left: smartMenu.x, top: smartMenu.y }}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-              >
-                {smartMenu.kind === "docker-ps" ? (
-                  <>
-                    <button
-                      type="button"
-                      className="xterminal-term-menu-item"
-                      onClick={() => handleSmartStopContainer(smartMenu.row)}
-                    >
-                      <AppIcon icon="material-symbols:stop-circle-outline-rounded" size={16} />
-                      {t("terminal.ai.smartMenu.stopContainer")}
-                    </button>
-                    <button
-                      type="button"
-                      className="xterminal-term-menu-item"
-                      onClick={() => {
-                        void clipboardWrite(smartMenu.row.containerId);
-                        setSmartMenu(null);
-                      }}
-                    >
-                      <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
-                      {t("terminal.ai.smartMenu.copyContainerId")}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {smartMenu.row.entryType === "dir" ? (
-                      <button
-                        type="button"
-                        className="xterminal-term-menu-item"
-                        onClick={() => handleSmartEnterDir(smartMenu.row)}
-                      >
-                        <AppIcon icon="material-symbols:folder-open-rounded" size={16} />
-                        {t("terminal.ai.smartMenu.enterDir")}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="xterminal-term-menu-item"
-                        onClick={() => handleSmartEditFile(smartMenu.row)}
-                      >
-                        <AppIcon icon="material-symbols:edit-square-outline-rounded" size={16} />
-                        {t("terminal.ai.smartMenu.editFile")}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="xterminal-term-menu-item"
-                      onClick={() => {
-                        void clipboardWrite(stripSymlinkSuffix(smartMenu.row.name).trim());
-                        setSmartMenu(null);
-                      }}
-                    >
-                      <AppIcon icon="material-symbols:content-copy-outline-rounded" size={16} />
-                      {t("terminal.ai.smartMenu.copyFileName")}
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>,
-            document.body,
-          )}
       <Modal
         open={!!renameEntry}
         title={
           renameEntry
-            ? t("terminal.sftp.rename.titleWithName", { name: renameEntry.name })
+            ? t("terminal.sftp.rename.titleWithName", {
+                name: renameEntry.name,
+              })
             : t("terminal.sftp.rename.title")
         }
         onClose={() => {

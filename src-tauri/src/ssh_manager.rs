@@ -5,10 +5,12 @@ use ssh2::{HashType, HostKeyType, OpenFlags, OpenType};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -49,11 +51,13 @@ pub struct KeepaliveConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AuthType {
-    Password { password: String },
+    Password {
+        password: String,
+    },
     PrivateKey {
         key_path: String,
         key_content: Option<String>,
-        passphrase: Option<String>
+        passphrase: Option<String>,
     },
 }
 
@@ -143,7 +147,8 @@ pub struct SshManager {
     channels: Arc<Mutex<HashMap<String, Arc<Mutex<ssh2::Channel>>>>>,
     shell_op_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     sftp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>, // 独立的 SFTP 会话
-    connections: Arc<Mutex<HashMap<String, SshConnection>>>, // 存储连接信息
+    connections: Arc<Mutex<HashMap<String, SshConnection>>>,         // 存储连接信息
+    connect_attempts: Arc<Mutex<HashMap<String, String>>>,
     forwards: Arc<Mutex<HashMap<String, ForwardHandle>>>, // 端口转发
     forward_sessions: Arc<Mutex<HashMap<String, ForwardSessionHandle>>>,
     transfer_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
@@ -151,8 +156,40 @@ pub struct SshManager {
 
 impl SshManager {
     const LIBSSH2_ERROR_EAGAIN: i32 = -37;
+    const SSH_HANDSHAKE_ATTEMPTS: usize = 3;
+    const SSH_SESSION_TIMEOUT_MS: u32 = 8_000;
+    #[cfg(not(target_os = "macos"))]
+    const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
     const SFTP_SESSION_TIMEOUT_MS: u32 = 120_000;
     const DEFAULT_KEEPALIVE_INTERVAL_SEC: u32 = 15;
+
+    #[cfg(test)]
+    fn run_io_with_timeout<T, F>(
+        timeout: Duration,
+        operation: F,
+        timeout_message: &str,
+    ) -> std::io::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> std::io::Result<T> + Send + 'static,
+    {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(operation());
+        });
+
+        match rx.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                timeout_message,
+            )),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "I/O worker stopped before returning a result",
+            )),
+        }
+    }
 
     fn open_direct_tcpip(
         session: &Arc<Mutex<Session>>,
@@ -217,15 +254,40 @@ impl SshManager {
             shell_op_locks: Arc::new(Mutex::new(HashMap::new())),
             sftp_sessions: Arc::new(Mutex::new(HashMap::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
+            connect_attempts: Arc::new(Mutex::new(HashMap::new())),
             forwards: Arc::new(Mutex::new(HashMap::new())),
             forward_sessions: Arc::new(Mutex::new(HashMap::new())),
             transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
+    pub fn start_connect_attempt(&self, session_id: &str, attempt_id: &str) {
+        self.connect_attempts
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), attempt_id.to_string());
+    }
+
+    fn is_current_connect_attempt(&self, session_id: &str, attempt_id: &str) -> bool {
+        self.connect_attempts
+            .lock()
+            .ok()
+            .and_then(|attempts| attempts.get(session_id).cloned())
+            .is_some_and(|current| current == attempt_id)
+    }
+
+    pub fn cancel_connect(&self, session_id: &str) -> anyhow::Result<()> {
+        self.connect_attempts.lock().unwrap().remove(session_id);
+        Ok(())
+    }
+
     fn forward_session_key(connection: &SshConnection) -> String {
-        serde_json::to_string(connection)
-            .unwrap_or_else(|_| format!("{}:{}@{}", connection.username, connection.port, connection.host))
+        serde_json::to_string(connection).unwrap_or_else(|_| {
+            format!(
+                "{}:{}@{}",
+                connection.username, connection.port, connection.host
+            )
+        })
     }
 
     fn get_or_create_forward_session(
@@ -382,11 +444,8 @@ impl SshManager {
                     connection.port
                 )
             })?;
-        let actual = Self::read_session_host_fingerprint(
-            session,
-            connection.host.trim(),
-            connection.port,
-        )?;
+        let actual =
+            Self::read_session_host_fingerprint(session, connection.host.trim(), connection.port)?;
         if Self::normalize_host_fingerprint(&actual.sha256) != expected {
             return Err(anyhow::anyhow!(
                 "SSH host key verification failed for {}:{} (expected {}, got {})",
@@ -415,10 +474,10 @@ impl SshManager {
         let mut sess_opt: Option<Session> = None;
         let mut attempts: Vec<String> = Vec::new();
         for addr in addrs {
-            // Banner reads can be timing-sensitive on some servers or middleboxes,
-            // especially in release builds where the connect path runs faster.
-            // Retry a few times on the same address before giving up.
-            for attempt_index in 0..3 {
+            // Retry a small number of banner failures, but keep interactive
+            // connects bounded. A long retry window makes the desktop appear
+            // frozen even though the work is on a background thread.
+            for attempt_index in 0..Self::SSH_HANDSHAKE_ATTEMPTS {
                 let tcp = match Self::connect_tcp_for_ssh(&addr) {
                     Ok(tcp) => tcp,
                     Err(e) => {
@@ -436,9 +495,9 @@ impl SshManager {
                 let mut sess = Session::new()?;
                 sess.set_tcp_stream(tcp);
                 sess.set_blocking(true);
+                sess.set_timeout(Self::SSH_SESSION_TIMEOUT_MS);
                 match sess.handshake() {
                     Ok(()) => {
-                        sess.set_timeout(30000); // 30秒超时
                         sess_opt = Some(sess);
                         break;
                     }
@@ -447,23 +506,30 @@ impl SshManager {
                         let is_banner_error = raw.contains("Failed getting banner");
                         let reason = if is_banner_error {
                             format!(
-                                "{} handshake attempt {}/3 failed: {} (target may not be SSH / SSHD not ready / network device interrupted banner)",
+                                "{} handshake attempt {}/{} failed: {} (target may not be SSH / SSHD not ready / network device interrupted banner)",
                                 addr,
                                 attempt_index + 1,
+                                Self::SSH_HANDSHAKE_ATTEMPTS,
                                 raw
                             )
                         } else {
                             format!(
-                                "{} handshake attempt {}/3 failed: {}",
+                                "{} handshake attempt {}/{} failed: {}",
                                 addr,
                                 attempt_index + 1,
+                                Self::SSH_HANDSHAKE_ATTEMPTS,
                                 raw
                             )
                         };
                         attempts.push(reason);
 
-                        if is_banner_error && attempt_index < 2 {
-                            std::thread::sleep(Duration::from_millis(250));
+                        if is_banner_error && attempt_index + 1 < Self::SSH_HANDSHAKE_ATTEMPTS {
+                            let delay_ms = match attempt_index {
+                                0 => 250,
+                                1 => 500,
+                                _ => 750,
+                            };
+                            std::thread::sleep(Duration::from_millis(delay_ms));
                             continue;
                         }
                         break;
@@ -487,22 +553,122 @@ impl SshManager {
         })
     }
 
-    fn connect_tcp_for_ssh(addr: &std::net::SocketAddr) -> std::io::Result<TcpStream> {
+    fn connect_tcp_for_ssh(addr: &SocketAddr) -> std::io::Result<TcpStream> {
         #[cfg(target_os = "macos")]
         {
-            return TcpStream::connect(addr);
+            return Self::connect_tcp_via_system_nc(addr);
         }
 
         #[cfg(not(target_os = "macos"))]
-        match TcpStream::connect_timeout(addr, Duration::from_secs(10)) {
-            Ok(stream) => Ok(stream),
-            Err(error) => {
-                if error.raw_os_error() == Some(9) {
-                    return TcpStream::connect(addr);
+        {
+            TcpStream::connect_timeout(addr, Self::SSH_CONNECT_TIMEOUT)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn connect_tcp_via_system_nc(addr: &SocketAddr) -> std::io::Result<TcpStream> {
+        // Some macOS environments return EBADF when this process opens the
+        // remote TCP socket directly. Route the remote socket through Apple-
+        // signed /usr/bin/nc and keep libssh2 on a regular loopback TcpStream.
+        //
+        // In affected environments the loopback connect can also fail
+        // transiently with EBADF, so retry the whole proxy setup a few times.
+        let mut last_error: Option<std::io::Error> = None;
+        for attempt in 0..3 {
+            match Self::connect_tcp_via_system_nc_once(addr) {
+                Ok(stream) => return Ok(stream),
+                Err(error) => {
+                    let is_bad_fd = error.raw_os_error() == Some(9);
+                    last_error = Some(error);
+                    if !is_bad_fd || attempt == 2 {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(150 * (attempt + 1) as u64));
                 }
-                Err(error)
             }
         }
+
+        Err(last_error.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "nc TCP proxy failed without a reported error",
+            )
+        }))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn connect_tcp_via_system_nc_once(addr: &SocketAddr) -> std::io::Result<TcpStream> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("bind loopback listener failed: {error}"),
+            )
+        })?;
+        let local_addr = listener.local_addr().map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("read loopback listener address failed: {error}"),
+            )
+        })?;
+        let remote_host = addr.ip().to_string();
+        let remote_port = addr.port().to_string();
+
+        std::thread::spawn(move || {
+            let Ok((local_stream, _)) = listener.accept() else {
+                return;
+            };
+
+            let mut child = match Command::new("/usr/bin/nc")
+                .arg("-G")
+                .arg("20")
+                .arg(&remote_host)
+                .arg(&remote_port)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(_) => return,
+            };
+
+            let Some(mut child_stdin) = child.stdin.take() else {
+                let _ = child.kill();
+                return;
+            };
+            let Some(mut child_stdout) = child.stdout.take() else {
+                let _ = child.kill();
+                return;
+            };
+
+            let Ok(mut local_reader) = local_stream.try_clone() else {
+                let _ = child.kill();
+                return;
+            };
+            let mut local_writer = local_stream;
+
+            let to_child = std::thread::spawn(move || {
+                let _ = std::io::copy(&mut local_reader, &mut child_stdin);
+            });
+            let from_child = std::thread::spawn(move || {
+                let _ = std::io::copy(&mut child_stdout, &mut local_writer);
+                let _ = local_writer.shutdown(Shutdown::Both);
+            });
+
+            let _ = to_child.join();
+            let _ = from_child.join();
+            let _ = child.kill();
+            let _ = child.wait();
+        });
+
+        let stream = TcpStream::connect(local_addr).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("connect to loopback nc proxy failed: {error}"),
+            )
+        })?;
+        let _ = stream.set_nodelay(true);
+        Ok(stream)
     }
 
     // 辅助方法：创建并认证 SSH 会话
@@ -511,8 +677,25 @@ impl SshManager {
         connection: &SshConnection,
         keepalive: Option<KeepaliveConfig>,
     ) -> anyhow::Result<Session> {
+        self.create_authenticated_session_with_progress(connection, keepalive, |_, _| {})
+    }
+
+    fn create_authenticated_session_with_progress<F>(
+        &self,
+        connection: &SshConnection,
+        keepalive: Option<KeepaliveConfig>,
+        mut report_phase: F,
+    ) -> anyhow::Result<Session>
+    where
+        F: FnMut(&str, u128),
+    {
+        let started_at = Instant::now();
         let sess = self.create_handshaked_session(connection)?;
+        report_phase("handshake", started_at.elapsed().as_millis());
+
+        let started_at = Instant::now();
         Self::verify_expected_host_key(&sess, connection)?;
+        report_phase("host_key", started_at.elapsed().as_millis());
 
         let keepalive = keepalive.unwrap_or(KeepaliveConfig {
             enabled: true,
@@ -535,11 +718,16 @@ impl SshManager {
             connection.username.trim().to_string()
         };
 
+        let started_at = Instant::now();
         match &connection.auth_type {
             AuthType::Password { password } => {
                 sess.userauth_password(&effective_username, password)?;
             }
-            AuthType::PrivateKey { key_path, key_content, passphrase } => {
+            AuthType::PrivateKey {
+                key_path,
+                key_content,
+                passphrase,
+            } => {
                 let passphrase_str = passphrase.as_deref();
 
                 if let Some(content) = key_content {
@@ -583,6 +771,7 @@ impl SshManager {
         if !sess.authenticated() {
             return Err(anyhow::anyhow!("Authentication failed"));
         }
+        report_phase("auth", started_at.elapsed().as_millis());
 
         Ok(sess)
     }
@@ -621,7 +810,8 @@ impl SshManager {
                             wait
                         }
                         Err(err) => {
-                            if matches!(err.code(), ssh2::ErrorCode::Session(code) if code == Self::LIBSSH2_ERROR_EAGAIN) {
+                            if matches!(err.code(), ssh2::ErrorCode::Session(code) if code == Self::LIBSSH2_ERROR_EAGAIN)
+                            {
                                 consecutive_errors = 0;
                                 1
                             } else {
@@ -632,8 +822,11 @@ impl SshManager {
                                 if !still_registered {
                                     break;
                                 }
-                                if !Self::is_current_session_handle(&sessions, &session_id, &session)
-                                {
+                                if !Self::is_current_session_handle(
+                                    &sessions,
+                                    &session_id,
+                                    &session,
+                                ) {
                                     break;
                                 }
                                 consecutive_errors = consecutive_errors.saturating_add(1);
@@ -706,33 +899,66 @@ impl SshManager {
     }
 
     fn replace_existing_session_state(&self, session_id: &str) {
-        if let Ok(mut channels) = self.channels.lock() {
-            if let Some(channel) = channels.remove(session_id) {
+        let channel = self
+            .channels
+            .lock()
+            .ok()
+            .and_then(|mut channels| channels.remove(session_id));
+        let shell_op_lock = self
+            .shell_op_locks
+            .lock()
+            .ok()
+            .and_then(|mut locks| locks.remove(session_id));
+        let sftp_session = self
+            .sftp_sessions
+            .lock()
+            .ok()
+            .and_then(|mut sessions| sessions.remove(session_id));
+        let session = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|mut sessions| sessions.remove(session_id));
+        if let Ok(mut connections) = self.connections.lock() {
+            connections.remove(session_id);
+        }
+
+        if let Some(lock) = shell_op_lock {
+            let _op_guard = lock.lock().unwrap();
+            if let Some(channel) = channel {
                 if let Ok(mut ch) = channel.lock() {
                     let _ = ch.close();
                     let _ = ch.wait_close();
                 }
             }
-        }
-        if let Ok(mut shell_op_locks) = self.shell_op_locks.lock() {
-            shell_op_locks.remove(session_id);
-        }
-        if let Ok(mut sftp_sessions) = self.sftp_sessions.lock() {
-            if let Some(sftp_session) = sftp_sessions.remove(session_id) {
+            if let Some(sftp_session) = sftp_session {
                 if let Ok(sess) = sftp_session.lock() {
                     let _ = sess.disconnect(None, "Session replaced", None);
                 }
             }
-        }
-        if let Ok(mut sessions) = self.sessions.lock() {
-            if let Some(session) = sessions.remove(session_id) {
+            if let Some(session) = session {
                 if let Ok(sess) = session.lock() {
                     let _ = sess.disconnect(None, "Session replaced", None);
                 }
             }
+            return;
         }
-        if let Ok(mut connections) = self.connections.lock() {
-            connections.remove(session_id);
+
+        if let Some(channel) = channel {
+            if let Ok(mut ch) = channel.lock() {
+                let _ = ch.close();
+                let _ = ch.wait_close();
+            }
+        }
+        if let Some(sftp_session) = sftp_session {
+            if let Ok(sess) = sftp_session.lock() {
+                let _ = sess.disconnect(None, "Session replaced", None);
+            }
+        }
+        if let Some(session) = session {
+            if let Ok(sess) = session.lock() {
+                let _ = sess.disconnect(None, "Session replaced", None);
+            }
         }
     }
 
@@ -768,32 +994,27 @@ impl SshManager {
         message.contains("would block") || message.contains("timed out")
     }
 
-    fn spawn_keepalive_for_forward(
-        &self,
-        session: Arc<Mutex<Session>>,
-        stop: Arc<AtomicBool>,
-    ) {
-        std::thread::spawn(move || {
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                let wait = {
-                    let sess = session.lock().unwrap();
-                    match sess.keepalive_send() {
-                        Ok(wait) => wait,
-                        Err(err) => {
-                            if matches!(err.code(), ssh2::ErrorCode::Session(code) if code == Self::LIBSSH2_ERROR_EAGAIN) {
-                                1
-                            } else {
-                                break;
-                            }
+    fn spawn_keepalive_for_forward(&self, session: Arc<Mutex<Session>>, stop: Arc<AtomicBool>) {
+        std::thread::spawn(move || loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let wait = {
+                let sess = session.lock().unwrap();
+                match sess.keepalive_send() {
+                    Ok(wait) => wait,
+                    Err(err) => {
+                        if matches!(err.code(), ssh2::ErrorCode::Session(code) if code == Self::LIBSSH2_ERROR_EAGAIN)
+                        {
+                            1
+                        } else {
+                            break;
                         }
                     }
-                };
-                let sleep_secs = if wait == 0 { 5 } else { wait.min(60) };
-                std::thread::sleep(Duration::from_secs(sleep_secs as u64));
-            }
+                }
+            };
+            let sleep_secs = if wait == 0 { 5 } else { wait.min(60) };
+            std::thread::sleep(Duration::from_secs(sleep_secs as u64));
         });
     }
 
@@ -802,6 +1023,7 @@ impl SshManager {
         connection: &SshConnection,
         keepalive: Option<KeepaliveConfig>,
         app_handle: tauri::AppHandle,
+        attempt_id: Option<&str>,
     ) -> anyhow::Result<String> {
         let session_id = connection.id.clone();
         Self::emit_debug(
@@ -815,7 +1037,27 @@ impl SshManager {
                 connection.username.trim()
             ),
         );
-        let sess = self.create_authenticated_session(connection, keepalive)?;
+        let sess =
+            self.create_authenticated_session_with_progress(connection, keepalive, |phase, ms| {
+                Self::emit_debug(
+                    &app_handle,
+                    &session_id,
+                    "info",
+                    format!("ssh connect phase={} elapsed_ms={}", phase, ms),
+                );
+            })?;
+        if let Some(attempt_id) = attempt_id {
+            if !self.is_current_connect_attempt(&session_id, attempt_id) {
+                let _ = sess.disconnect(None, "Connection attempt superseded", None);
+                Self::emit_debug(
+                    &app_handle,
+                    &session_id,
+                    "info",
+                    "ssh connect ignored because attempt was cancelled or superseded",
+                );
+                return Err(anyhow::anyhow!("SSH connection attempt cancelled"));
+            }
+        }
         let session_arc = Arc::new(Mutex::new(sess));
 
         // Reconnects reuse the same logical id. Replace prior state first so
@@ -843,31 +1085,65 @@ impl SshManager {
         Ok(session_id.clone())
     }
 
-    pub fn open_shell(&self, session_id: &str, app_handle: tauri::AppHandle) -> anyhow::Result<()> {
+    pub fn open_shell(
+        &self,
+        session_id: &str,
+        app_handle: tauri::AppHandle,
+        attempt_id: Option<&str>,
+    ) -> anyhow::Result<()> {
         Self::emit_debug(&app_handle, session_id, "info", "ssh open shell start");
-        let sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found"))?
-            .clone();
+        if let Some(attempt_id) = attempt_id {
+            if !self.is_current_connect_attempt(session_id, attempt_id) {
+                Self::emit_debug(
+                    &app_handle,
+                    session_id,
+                    "info",
+                    "ssh open shell ignored because attempt was cancelled or superseded",
+                );
+                return Err(anyhow::anyhow!("SSH shell open cancelled"));
+            }
+        }
+        let session = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions
+                .get(session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found"))?
+                .clone()
+        };
+        let shell_op_lock = self.get_or_create_shell_op_lock(session_id);
+        let mut channel = {
+            let _op_guard = shell_op_lock.lock().unwrap();
+            let sess = session.lock().unwrap();
+            let mut channel = sess.channel_session()?;
+            channel.request_pty("xterm-256color", None, Some((80, 24, 0, 0)))?;
+            channel.shell()?;
 
-        let sess = session.lock().unwrap();
-        let mut channel = sess.channel_session()?;
-        channel.request_pty("xterm-256color", None, Some((80, 24, 0, 0)))?;
-        channel.shell()?;
-
-        // Interactive shell is more stable with short blocking reads/writes than
-        // libssh2's fully non-blocking mode, which was surfacing transport-read
-        // and draining-flow errors during normal typing.
-        sess.set_blocking(true);
-        sess.set_timeout(100);
-        drop(sess);
+            // Keep the interactive shell session non-blocking so the reader
+            // thread does not hold the shared shell operation lock for up to
+            // the session timeout on every idle read. Writes/retries already
+            // handle WouldBlock explicitly, and this keeps resize/disconnect
+            // responsive during connect and idle periods.
+            sess.set_blocking(false);
+            channel
+        };
+        if let Some(attempt_id) = attempt_id {
+            if !self.is_current_connect_attempt(session_id, attempt_id) {
+                let _ = channel.close();
+                let _ = channel.wait_close();
+                Self::emit_debug(
+                    &app_handle,
+                    session_id,
+                    "info",
+                    "ssh open shell result discarded because a newer attempt took over",
+                );
+                return Err(anyhow::anyhow!("SSH shell open cancelled"));
+            }
+        }
 
         let channel_arc = Arc::new(Mutex::new(channel));
         let mut channels = self.channels.lock().unwrap();
         channels.insert(session_id.to_string(), channel_arc.clone());
         drop(channels);
-        let shell_op_lock = self.get_or_create_shell_op_lock(session_id);
         Self::emit_debug(&app_handle, session_id, "info", "ssh open shell success");
 
         // Start reading output in background
@@ -896,16 +1172,24 @@ impl SshManager {
                     Ok(n) if n > 0 => {
                         consecutive_read_errors = 0;
                         let output = String::from_utf8_lossy(&buffer[..n]).to_string();
-                        let _ = app_handle.emit("terminal-output", TerminalOutput {
-                            session_id: session_id_clone.clone(),
-                            data: output,
-                        });
+                        let _ = app_handle.emit(
+                            "terminal-output",
+                            TerminalOutput {
+                                session_id: session_id_clone.clone(),
+                                data: output,
+                            },
+                        );
                     }
                     Ok(_) => {
                         // In non-blocking mode, zero-byte reads may happen on idle sessions.
                         // Only mark the shell disconnected when libssh2 reports EOF explicitly.
                         if channel_lock.eof() {
-                            Self::emit_debug(&app_handle, &session_id_clone, "warn", "ssh shell reader observed eof");
+                            Self::emit_debug(
+                                &app_handle,
+                                &session_id_clone,
+                                "warn",
+                                "ssh shell reader observed eof",
+                            );
                             disconnected_reason = Some("eof".to_string());
                             break;
                         }
@@ -948,9 +1232,15 @@ impl SshManager {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             if let Some(reason) = disconnected_reason {
-                if !Self::is_current_channel_handle(&channels_map, &session_id_clone, &channel_clone)
-                    || !Self::is_current_session_handle(&sessions_map, &session_id_clone, &session_clone)
-                {
+                if !Self::is_current_channel_handle(
+                    &channels_map,
+                    &session_id_clone,
+                    &channel_clone,
+                ) || !Self::is_current_session_handle(
+                    &sessions_map,
+                    &session_id_clone,
+                    &session_clone,
+                ) {
                     Self::emit_debug(
                         &app_handle,
                         &session_id_clone,
@@ -971,12 +1261,18 @@ impl SshManager {
                     &app_handle,
                     &session_id_clone,
                     "warn",
-                    format!("ssh session state removed after reader disconnect: {}", reason),
+                    format!(
+                        "ssh session state removed after reader disconnect: {}",
+                        reason
+                    ),
                 );
-                let _ = app_handle.emit("terminal-disconnected", TerminalDisconnected {
-                    session_id: session_id_clone.clone(),
-                    reason,
-                });
+                let _ = app_handle.emit(
+                    "terminal-disconnected",
+                    TerminalDisconnected {
+                        session_id: session_id_clone.clone(),
+                        reason,
+                    },
+                );
             }
         });
 
@@ -996,10 +1292,13 @@ impl SshManager {
         }
 
         let shell_op_lock = self.get_or_create_shell_op_lock(session_id);
-        let channels = self.channels.lock().unwrap();
-        let channel = channels
-            .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Shell not found"))?;
+        let channel = {
+            let channels = self.channels.lock().unwrap();
+            channels
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Shell not found"))?
+        };
 
         let _op_guard = shell_op_lock.lock().unwrap();
         let mut ch = channel.lock().unwrap();
@@ -1043,34 +1342,44 @@ impl SshManager {
     }
 
     pub fn disconnect(&self, session_id: &str) -> anyhow::Result<()> {
-        // Close SFTP session first
-        let mut sftp_sessions = self.sftp_sessions.lock().unwrap();
-        if let Some(sftp_session) = sftp_sessions.remove(session_id) {
-            let sess = sftp_session.lock().unwrap();
-            let _ = sess.disconnect(None, "User disconnected", None);
-        }
-        drop(sftp_sessions);
+        let shell_op_lock = self.shell_op_locks.lock().unwrap().remove(session_id);
+        let sftp_session = self.sftp_sessions.lock().unwrap().remove(session_id);
+        let channel = self.channels.lock().unwrap().remove(session_id);
+        let session = self.sessions.lock().unwrap().remove(session_id);
+        self.connections.lock().unwrap().remove(session_id);
+        self.connect_attempts.lock().unwrap().remove(session_id);
 
-        // Close shell channel
-        let mut channels = self.channels.lock().unwrap();
-        if let Some(channel) = channels.remove(session_id) {
+        if let Some(lock) = shell_op_lock {
+            let _op_guard = lock.lock().unwrap();
+            if let Some(channel) = channel {
+                let mut ch = channel.lock().unwrap();
+                let _ = ch.close();
+                let _ = ch.wait_close();
+            }
+            if let Some(sftp_session) = sftp_session {
+                let sess = sftp_session.lock().unwrap();
+                let _ = sess.disconnect(None, "User disconnected", None);
+            }
+            if let Some(session) = session {
+                let sess = session.lock().unwrap();
+                let _ = sess.disconnect(None, "User disconnected", None);
+            }
+            return Ok(());
+        }
+
+        if let Some(channel) = channel {
             let mut ch = channel.lock().unwrap();
             let _ = ch.close();
             let _ = ch.wait_close();
         }
-        drop(channels);
-
-        // Close shell session
-        let mut sessions = self.sessions.lock().unwrap();
-        if let Some(session) = sessions.remove(session_id) {
+        if let Some(sftp_session) = sftp_session {
+            let sess = sftp_session.lock().unwrap();
+            let _ = sess.disconnect(None, "User disconnected", None);
+        }
+        if let Some(session) = session {
             let sess = session.lock().unwrap();
             let _ = sess.disconnect(None, "User disconnected", None);
         }
-        drop(sessions);
-
-        // Remove connection info
-        let mut connections = self.connections.lock().unwrap();
-        connections.remove(session_id);
 
         Ok(())
     }
@@ -1120,7 +1429,9 @@ impl SshManager {
             let connections = self.connections.lock().unwrap();
             connections
                 .get(session_id)
-                .ok_or_else(|| anyhow::anyhow!("Connection info not found for session: {}", session_id))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Connection info not found for session: {}", session_id)
+                })?
                 .clone()
         };
 
@@ -1274,7 +1585,9 @@ impl SshManager {
         let connections = self.connections.lock().unwrap();
         let connection = connections
             .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Connection info not found for session: {}", session_id))?
+            .ok_or_else(|| {
+                anyhow::anyhow!("Connection info not found for session: {}", session_id)
+            })?
             .clone();
         drop(connections);
 
@@ -1298,16 +1611,22 @@ impl SshManager {
         let sftp_session = self.get_or_create_sftp(session_id)?;
         let sess = sftp_session.lock().unwrap();
 
-        let sftp = sess.sftp()
+        let sftp = sess
+            .sftp()
             .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
 
-        let clean_path = if path.trim().is_empty() { "." } else { path.trim() };
+        let clean_path = if path.trim().is_empty() {
+            "."
+        } else {
+            path.trim()
+        };
 
         // 规范化路径以检查是否在根目录
         let normalized_path = Path::new(clean_path);
         let is_root = clean_path == "/" || clean_path == "." || clean_path.is_empty();
 
-        let entries = sftp.readdir(normalized_path)
+        let entries = sftp
+            .readdir(normalized_path)
             .map_err(|e| anyhow::anyhow!("Failed to read directory '{}': {}", clean_path, e))?;
 
         let mut output: Vec<SftpEntry> = entries
@@ -1334,13 +1653,16 @@ impl SshManager {
 
         // 如果不在根目录，添加 ".." 条目用于返回上级
         if !is_root {
-            output.insert(0, SftpEntry {
-                name: "..".to_string(),
-                is_dir: true,
-                size: None,
-                modified: None,
-                perm: None,
-            });
+            output.insert(
+                0,
+                SftpEntry {
+                    name: "..".to_string(),
+                    is_dir: true,
+                    size: None,
+                    modified: None,
+                    perm: None,
+                },
+            );
         }
 
         output.sort_by(|a, b| {
@@ -1362,11 +1684,17 @@ impl SshManager {
         Ok(output)
     }
 
-    pub fn sftp_rename(&self, session_id: &str, from_path: &str, to_path: &str) -> anyhow::Result<()> {
+    pub fn sftp_rename(
+        &self,
+        session_id: &str,
+        from_path: &str,
+        to_path: &str,
+    ) -> anyhow::Result<()> {
         let sftp_session = self.get_or_create_sftp(session_id)?;
         let sess = sftp_session.lock().unwrap();
 
-        let sftp = sess.sftp()
+        let sftp = sess
+            .sftp()
             .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
 
         sftp.rename(Path::new(from_path), Path::new(to_path), None)
@@ -1379,7 +1707,8 @@ impl SshManager {
         let sftp_session = self.get_or_create_sftp(session_id)?;
         let sess = sftp_session.lock().unwrap();
 
-        let sftp = sess.sftp()
+        let sftp = sess
+            .sftp()
             .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
 
         let stat = FileStat {
@@ -1401,7 +1730,8 @@ impl SshManager {
         let sftp_session = self.get_or_create_sftp(session_id)?;
         let sess = sftp_session.lock().unwrap();
 
-        let sftp = sess.sftp()
+        let sftp = sess
+            .sftp()
             .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
 
         if is_dir {
@@ -1419,7 +1749,8 @@ impl SshManager {
         let sftp_session = self.get_or_create_sftp(session_id)?;
         let sess = sftp_session.lock().unwrap();
 
-        let sftp = sess.sftp()
+        let sftp = sess
+            .sftp()
             .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
 
         sftp.mkdir(Path::new(path), 0o755)
@@ -1430,10 +1761,13 @@ impl SshManager {
 
     pub fn resize_pty(&self, session_id: &str, cols: u32, rows: u32) -> anyhow::Result<()> {
         let shell_op_lock = self.get_or_create_shell_op_lock(session_id);
-        let channels = self.channels.lock().unwrap();
-        let channel = channels
-            .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Shell not found"))?;
+        let channel = {
+            let channels = self.channels.lock().unwrap();
+            channels
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Shell not found"))?
+        };
 
         let _op_guard = shell_op_lock.lock().unwrap();
         let mut ch = channel.lock().unwrap();
@@ -1456,11 +1790,13 @@ impl SshManager {
         let sftp_session = self.get_or_create_sftp(session_id)?;
         let sess = sftp_session.lock().unwrap();
 
-        let sftp = sess.sftp()
+        let sftp = sess
+            .sftp()
             .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
 
         // 打开远程文件
-        let mut remote_file = sftp.open(Path::new(remote_path))
+        let mut remote_file = sftp
+            .open(Path::new(remote_path))
             .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", remote_path, e))?;
 
         let total = sftp
@@ -1468,21 +1804,26 @@ impl SshManager {
             .ok()
             .and_then(|stat| stat.size)
             .unwrap_or(0);
-        let local_existing = std::fs::metadata(local_path).map(|meta| meta.len()).unwrap_or(0);
+        let local_existing = std::fs::metadata(local_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
         let can_resume = local_existing > 0 && local_existing < total;
 
         let mut local_file = if can_resume {
             remote_file
                 .seek(SeekFrom::Start(local_existing))
-                .map_err(|e| anyhow::anyhow!("Failed to seek remote file '{}': {}", remote_path, e))?;
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to seek remote file '{}': {}", remote_path, e)
+                })?;
             std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(local_path)
                 .map_err(|e| anyhow::anyhow!("Failed to open local file '{}': {}", local_path, e))?
         } else {
-            std::fs::File::create(local_path)
-                .map_err(|e| anyhow::anyhow!("Failed to create local file '{}': {}", local_path, e))?
+            std::fs::File::create(local_path).map_err(|e| {
+                anyhow::anyhow!("Failed to create local file '{}': {}", local_path, e)
+            })?
         };
 
         let mut transferred: u64 = if can_resume { local_existing } else { 0 };
@@ -1496,9 +1837,9 @@ impl SshManager {
             {
                 return Err(anyhow::anyhow!("transfer_cancelled"));
             }
-            let read = remote_file
-                .read(&mut buf)
-                .map_err(|e| anyhow::anyhow!("Failed to read remote file '{}': {}", remote_path, e))?;
+            let read = remote_file.read(&mut buf).map_err(|e| {
+                anyhow::anyhow!("Failed to read remote file '{}': {}", remote_path, e)
+            })?;
             if read == 0 {
                 break;
             }
@@ -1508,9 +1849,9 @@ impl SshManager {
             {
                 return Err(anyhow::anyhow!("transfer_cancelled"));
             }
-            local_file
-                .write_all(&buf[..read])
-                .map_err(|e| anyhow::anyhow!("Failed to write local file '{}': {}", local_path, e))?;
+            local_file.write_all(&buf[..read]).map_err(|e| {
+                anyhow::anyhow!("Failed to write local file '{}': {}", local_path, e)
+            })?;
             transferred = transferred.saturating_add(read as u64);
             on_progress(transferred, total);
         }
@@ -1535,135 +1876,147 @@ impl SshManager {
         let sftp_session = self.get_or_create_sftp(session_id)?;
         let sess = sftp_session.lock().unwrap();
 
-        let sftp = sess.sftp()
+        let sftp = sess
+            .sftp()
             .map_err(|e| anyhow::anyhow!("Failed to initialize SFTP subsystem: {}", e))?;
 
         // 打开本地文件
         let mut local_file = std::fs::File::open(local_path)
             .map_err(|e| anyhow::anyhow!("Failed to open local file '{}': {}", local_path, e))?;
 
-        let total = local_file
-            .metadata()
-            .map(|meta| meta.len())
-            .unwrap_or(0);
-        let (mut remote_file, using_temp_file, mut transferred, write_target_label): (ssh2::File, bool, u64, String) =
-            if use_temp_file {
-                // Prefer upload-to-temp + rename so readers never observe partial writes.
-                // Some servers allow overwriting an existing file but deny creating sibling files.
-                // In that case, fall back to writing the target file directly.
-                let temp_remote_path = format!("{}.part", remote_path);
-                let temp_remote_path_ref = Path::new(&temp_remote_path);
+        let total = local_file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        let (mut remote_file, using_temp_file, mut transferred, write_target_label): (
+            ssh2::File,
+            bool,
+            u64,
+            String,
+        ) = if use_temp_file {
+            // Prefer upload-to-temp + rename so readers never observe partial writes.
+            // Some servers allow overwriting an existing file but deny creating sibling files.
+            // In that case, fall back to writing the target file directly.
+            let temp_remote_path = format!("{}.part", remote_path);
+            let temp_remote_path_ref = Path::new(&temp_remote_path);
 
-                let temp_existing = sftp
-                    .stat(temp_remote_path_ref)
-                    .ok()
-                    .and_then(|stat| stat.size)
-                    .unwrap_or(0);
-                let can_resume_temp = temp_existing > 0 && temp_existing < total;
+            let temp_existing = sftp
+                .stat(temp_remote_path_ref)
+                .ok()
+                .and_then(|stat| stat.size)
+                .unwrap_or(0);
+            let can_resume_temp = temp_existing > 0 && temp_existing < total;
 
-                if can_resume_temp {
-                    local_file
-                        .seek(SeekFrom::Start(temp_existing))
-                        .map_err(|e| anyhow::anyhow!("Failed to seek local file '{}': {}", local_path, e))?;
-                    (
-                        sftp.open_mode(
-                            temp_remote_path_ref,
-                            OpenFlags::WRITE | OpenFlags::APPEND,
-                            0o644,
-                            OpenType::File,
-                        )
-                        .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", temp_remote_path, e))?,
-                        true,
-                        temp_existing,
-                        temp_remote_path.clone(),
-                    )
-                } else {
-                    match sftp.open_mode(
+            if can_resume_temp {
+                local_file
+                    .seek(SeekFrom::Start(temp_existing))
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to seek local file '{}': {}", local_path, e)
+                    })?;
+                (
+                    sftp.open_mode(
                         temp_remote_path_ref,
-                        OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+                        OpenFlags::WRITE | OpenFlags::APPEND,
                         0o644,
                         OpenType::File,
-                    ) {
-                        Ok(file) => (file, true, 0, temp_remote_path.clone()),
-                        Err(temp_err) => {
-                            let final_ref = Path::new(remote_path);
-                            let fallback = sftp.open_mode(
-                                final_ref,
-                                OpenFlags::WRITE | OpenFlags::TRUNCATE,
-                                0o644,
-                                OpenType::File,
-                            );
-                            match fallback {
-                                Ok(file) => (file, false, 0, remote_path.to_string()),
-                                Err(final_err) => {
-                                    return Err(anyhow::anyhow!(
+                    )
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to open remote file '{}': {}", temp_remote_path, e)
+                    })?,
+                    true,
+                    temp_existing,
+                    temp_remote_path.clone(),
+                )
+            } else {
+                match sftp.open_mode(
+                    temp_remote_path_ref,
+                    OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+                    0o644,
+                    OpenType::File,
+                ) {
+                    Ok(file) => (file, true, 0, temp_remote_path.clone()),
+                    Err(temp_err) => {
+                        let final_ref = Path::new(remote_path);
+                        let fallback = sftp.open_mode(
+                            final_ref,
+                            OpenFlags::WRITE | OpenFlags::TRUNCATE,
+                            0o644,
+                            OpenType::File,
+                        );
+                        match fallback {
+                            Ok(file) => (file, false, 0, remote_path.to_string()),
+                            Err(final_err) => {
+                                return Err(anyhow::anyhow!(
                                         "Failed to create remote file '{}': {}. Direct overwrite fallback for '{}' also failed: {}",
                                         temp_remote_path,
                                         temp_err,
                                         remote_path,
                                         final_err
                                     ));
-                                }
                             }
                         }
                     }
                 }
+            }
+        } else {
+            let final_ref = Path::new(remote_path);
+            let remote_existing = sftp
+                .stat(final_ref)
+                .ok()
+                .and_then(|stat| stat.size)
+                .unwrap_or(0);
+            let can_resume = remote_existing > 0 && remote_existing < total;
+            if can_resume {
+                local_file
+                    .seek(SeekFrom::Start(remote_existing))
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to seek local file '{}': {}", local_path, e)
+                    })?;
+                (
+                    sftp.open_mode(
+                        final_ref,
+                        OpenFlags::WRITE | OpenFlags::APPEND,
+                        0o644,
+                        OpenType::File,
+                    )
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to open remote file '{}': {}", remote_path, e)
+                    })?,
+                    false,
+                    remote_existing,
+                    remote_path.to_string(),
+                )
             } else {
-                let final_ref = Path::new(remote_path);
-                let remote_existing = sftp
-                    .stat(final_ref)
-                    .ok()
-                    .and_then(|stat| stat.size)
-                    .unwrap_or(0);
-                let can_resume = remote_existing > 0 && remote_existing < total;
-                if can_resume {
-                    local_file
-                        .seek(SeekFrom::Start(remote_existing))
-                        .map_err(|e| anyhow::anyhow!("Failed to seek local file '{}': {}", local_path, e))?;
-                    (
-                        sftp.open_mode(
-                            final_ref,
-                            OpenFlags::WRITE | OpenFlags::APPEND,
-                            0o644,
-                            OpenType::File,
-                        )
-                        .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", remote_path, e))?,
-                        false,
-                        remote_existing,
-                        remote_path.to_string(),
+                (
+                    sftp.open_mode(
+                        final_ref,
+                        OpenFlags::WRITE | OpenFlags::TRUNCATE,
+                        0o644,
+                        OpenType::File,
                     )
-                } else {
-                    (
-                        sftp.open_mode(
-                            final_ref,
-                            OpenFlags::WRITE | OpenFlags::TRUNCATE,
-                            0o644,
-                            OpenType::File,
-                        )
-                        .map_err(|e| anyhow::anyhow!("Failed to overwrite remote file '{}': {}", remote_path, e))?,
-                        false,
-                        0,
-                        remote_path.to_string(),
-                    )
-                }
-            };
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to overwrite remote file '{}': {}", remote_path, e)
+                    })?,
+                    false,
+                    0,
+                    remote_path.to_string(),
+                )
+            }
+        };
         let mut buf = [0u8; 64 * 1024];
 
         on_progress(transferred, total);
         loop {
-            let read = local_file
-                .read(&mut buf)
-                .map_err(|e| anyhow::anyhow!("Failed to read local file '{}': {}", local_path, e))?;
+            let read = local_file.read(&mut buf).map_err(|e| {
+                anyhow::anyhow!("Failed to read local file '{}': {}", local_path, e)
+            })?;
             if read == 0 {
                 break;
             }
-            remote_file
-                .write_all(&buf[..read])
-                .map_err(|e| anyhow::anyhow!(
+            remote_file.write_all(&buf[..read]).map_err(|e| {
+                anyhow::anyhow!(
                     "Failed to write remote file '{}': {}",
                     write_target_label,
                     e
-                ))?;
+                )
+            })?;
             transferred = transferred.saturating_add(read as u64);
             on_progress(transferred, total);
         }
@@ -1682,9 +2035,10 @@ impl SshManager {
                 .is_err()
             {
                 let _ = sftp.unlink(Path::new(remote_path));
-                sftp
-                    .rename(temp_remote_path_ref, Path::new(remote_path), None)
-                    .map_err(|e| anyhow::anyhow!("Failed to finalize uploaded file '{}': {}", remote_path, e))?;
+                sftp.rename(temp_remote_path_ref, Path::new(remote_path), None)
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to finalize uploaded file '{}': {}", remote_path, e)
+                    })?;
             }
         }
 
@@ -1706,23 +2060,60 @@ impl SshManager {
 
         let start_result = match config.kind {
             ForwardKind::Local => {
-                let bind_host = config.local_bind_host.unwrap_or_else(|| "127.0.0.1".to_string());
-                let bind_port = config.local_bind_port.ok_or_else(|| anyhow::anyhow!("Local bind port missing"))?;
-                let target_host = config.target_host.ok_or_else(|| anyhow::anyhow!("Target host missing"))?;
-                let target_port = config.target_port.ok_or_else(|| anyhow::anyhow!("Target port missing"))?;
-                self.start_local_forward(session.clone(), listener_stop.clone(), bind_host, bind_port, target_host, target_port)
+                let bind_host = config
+                    .local_bind_host
+                    .unwrap_or_else(|| "127.0.0.1".to_string());
+                let bind_port = config
+                    .local_bind_port
+                    .ok_or_else(|| anyhow::anyhow!("Local bind port missing"))?;
+                let target_host = config
+                    .target_host
+                    .ok_or_else(|| anyhow::anyhow!("Target host missing"))?;
+                let target_port = config
+                    .target_port
+                    .ok_or_else(|| anyhow::anyhow!("Target port missing"))?;
+                self.start_local_forward(
+                    session.clone(),
+                    listener_stop.clone(),
+                    bind_host,
+                    bind_port,
+                    target_host,
+                    target_port,
+                )
             }
             ForwardKind::Remote => {
                 let bind_host = Self::default_remote_bind_host(config.remote_bind_host);
-                let bind_port = config.remote_bind_port.ok_or_else(|| anyhow::anyhow!("Remote bind port missing"))?;
-                let target_host = config.target_host.ok_or_else(|| anyhow::anyhow!("Target host missing"))?;
-                let target_port = config.target_port.ok_or_else(|| anyhow::anyhow!("Target port missing"))?;
-                self.start_remote_forward(session.clone(), listener_stop.clone(), bind_host, bind_port, target_host, target_port)
+                let bind_port = config
+                    .remote_bind_port
+                    .ok_or_else(|| anyhow::anyhow!("Remote bind port missing"))?;
+                let target_host = config
+                    .target_host
+                    .ok_or_else(|| anyhow::anyhow!("Target host missing"))?;
+                let target_port = config
+                    .target_port
+                    .ok_or_else(|| anyhow::anyhow!("Target port missing"))?;
+                self.start_remote_forward(
+                    session.clone(),
+                    listener_stop.clone(),
+                    bind_host,
+                    bind_port,
+                    target_host,
+                    target_port,
+                )
             }
             ForwardKind::Dynamic => {
-                let bind_host = config.local_bind_host.unwrap_or_else(|| "127.0.0.1".to_string());
-                let bind_port = config.local_bind_port.ok_or_else(|| anyhow::anyhow!("Local bind port missing"))?;
-                self.start_dynamic_forward(session.clone(), listener_stop.clone(), bind_host, bind_port)
+                let bind_host = config
+                    .local_bind_host
+                    .unwrap_or_else(|| "127.0.0.1".to_string());
+                let bind_port = config
+                    .local_bind_port
+                    .ok_or_else(|| anyhow::anyhow!("Local bind port missing"))?;
+                self.start_dynamic_forward(
+                    session.clone(),
+                    listener_stop.clone(),
+                    bind_host,
+                    bind_port,
+                )
             }
         };
 
@@ -1781,35 +2172,33 @@ impl SshManager {
     ) -> anyhow::Result<()> {
         let listener = TcpListener::bind((bind_host.as_str(), bind_port))?;
         listener.set_nonblocking(true)?;
-        std::thread::spawn(move || {
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        let session = session.clone();
-                        let target_host = target_host.clone();
-                        let stop = stop.clone();
-                        std::thread::spawn(move || {
-                            if stop.load(Ordering::Relaxed) {
+        std::thread::spawn(move || loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let session = session.clone();
+                    let target_host = target_host.clone();
+                    let stop = stop.clone();
+                    std::thread::spawn(move || {
+                        if stop.load(Ordering::Relaxed) {
+                            let _ = stream.shutdown(Shutdown::Both);
+                            return;
+                        }
+                        let _ = stream.set_nonblocking(false);
+                        match Self::open_direct_tcpip(&session, &target_host, target_port) {
+                            Ok(channel) => Self::pipe_streams(channel, stream),
+                            Err(_) => {
                                 let _ = stream.shutdown(Shutdown::Both);
-                                return;
                             }
-                            let _ = stream.set_nonblocking(false);
-                            match Self::open_direct_tcpip(&session, &target_host, target_port) {
-                                Ok(channel) => Self::pipe_streams(channel, stream),
-                                Err(_) => {
-                                    let _ = stream.shutdown(Shutdown::Both);
-                                }
-                            }
-                        });
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => break,
+                        }
+                    });
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
             }
         });
         Ok(())
@@ -1824,47 +2213,47 @@ impl SshManager {
     ) -> anyhow::Result<()> {
         let listener = TcpListener::bind((bind_host.as_str(), bind_port))?;
         listener.set_nonblocking(true)?;
-        std::thread::spawn(move || {
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let session = session.clone();
-                        let stop = stop.clone();
-                        std::thread::spawn(move || {
-                            if stop.load(Ordering::Relaxed) {
+        std::thread::spawn(move || loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let session = session.clone();
+                    let stop = stop.clone();
+                    std::thread::spawn(move || {
+                        if stop.load(Ordering::Relaxed) {
+                            let _ = stream.shutdown(Shutdown::Both);
+                            return;
+                        }
+                        let _ = stream.set_nonblocking(false);
+                        let target = match Self::socks5_handshake(&mut stream) {
+                            Ok(target) => target,
+                            Err(_) => {
                                 let _ = stream.shutdown(Shutdown::Both);
                                 return;
                             }
-                            let _ = stream.set_nonblocking(false);
-                            let target = match Self::socks5_handshake(&mut stream) {
-                                Ok(target) => target,
-                                Err(_) => {
-                                    let _ = stream.shutdown(Shutdown::Both);
-                                    return;
-                                }
-                            };
-                            let _ = stream.set_read_timeout(None);
-                            let _ = stream.set_write_timeout(None);
-                            match Self::open_direct_tcpip(&session, &target.0, target.1) {
-                                Ok(channel) => {
-                                    let _ = stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
-                                    Self::pipe_streams(channel, stream);
-                                }
-                                Err(_) => {
-                                    let _ = stream.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
-                                    let _ = stream.shutdown(Shutdown::Both);
-                                }
+                        };
+                        let _ = stream.set_read_timeout(None);
+                        let _ = stream.set_write_timeout(None);
+                        match Self::open_direct_tcpip(&session, &target.0, target.1) {
+                            Ok(channel) => {
+                                let _ =
+                                    stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+                                Self::pipe_streams(channel, stream);
                             }
-                        });
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => break,
+                            Err(_) => {
+                                let _ =
+                                    stream.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+                                let _ = stream.shutdown(Shutdown::Both);
+                            }
+                        }
+                    });
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
             }
         });
         Ok(())
@@ -1885,38 +2274,36 @@ impl SshManager {
             listener
         };
 
-        std::thread::spawn(move || {
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                let mut channel = match listener.accept() {
-                    Ok(channel) => channel,
-                    Err(_) => {
-                        if stop.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(80));
-                        continue;
-                    }
-                };
-                let target_host = target_host.clone();
-                let stop = stop.clone();
-                std::thread::spawn(move || {
-                    if stop.load(Ordering::Relaxed) {
-                        let _ = channel.close();
-                        return;
-                    }
-                    match TcpStream::connect((target_host.as_str(), target_port)) {
-                        Ok(stream) => {
-                            Self::pipe_streams(channel, stream);
-                        }
-                        Err(_) => {
-                            let _ = channel.close();
-                        }
-                    }
-                });
+        std::thread::spawn(move || loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
             }
+            let mut channel = match listener.accept() {
+                Ok(channel) => channel,
+                Err(_) => {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(80));
+                    continue;
+                }
+            };
+            let target_host = target_host.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                if stop.load(Ordering::Relaxed) {
+                    let _ = channel.close();
+                    return;
+                }
+                match TcpStream::connect((target_host.as_str(), target_port)) {
+                    Ok(stream) => {
+                        Self::pipe_streams(channel, stream);
+                    }
+                    Err(_) => {
+                        let _ = channel.close();
+                    }
+                }
+            });
         });
         Ok(())
     }
@@ -2001,7 +2388,12 @@ impl SshManager {
 
 #[cfg(test)]
 mod tests {
-    use super::SshManager;
+    use super::{AuthType, SshConnection, SshManager};
+    use std::io;
+    use std::net::ToSocketAddrs;
+    use std::path::Path;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn normalizes_host_fingerprints_for_comparison() {
@@ -2025,6 +2417,129 @@ mod tests {
             SshManager::default_remote_bind_host(Some("0.0.0.0".to_string())),
             "0.0.0.0".to_string()
         );
+    }
+
+    #[test]
+    fn run_io_with_timeout_returns_result_before_deadline() {
+        let result = SshManager::run_io_with_timeout(
+            Duration::from_millis(50),
+            || Ok::<_, io::Error>(123usize),
+            "timed out",
+        )
+        .unwrap();
+
+        assert_eq!(result, 123);
+    }
+
+    #[test]
+    fn run_io_with_timeout_times_out_long_running_operation() {
+        let error = SshManager::run_io_with_timeout(
+            Duration::from_millis(20),
+            || {
+                thread::sleep(Duration::from_millis(80));
+                Ok::<_, io::Error>(())
+            },
+            "timed out",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires a reachable SSH endpoint to validate the nc TCP proxy path"]
+    fn connects_tcp_via_system_nc_when_configured() {
+        let host = std::env::var("NOTERM_E2E_TCP_HOST").expect("NOTERM_E2E_TCP_HOST missing");
+        let port = std::env::var("NOTERM_E2E_TCP_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .expect("NOTERM_E2E_TCP_PORT missing or invalid");
+        let addr = format!("{host}:{port}")
+            .to_socket_addrs()
+            .expect("failed to resolve host")
+            .next()
+            .expect("no address resolved");
+
+        let stream = SshManager::connect_tcp_via_system_nc(&addr)
+            .expect("nc TCP proxy should produce a local TcpStream");
+
+        assert_eq!(
+            stream
+                .peer_addr()
+                .expect("proxy stream should have a peer")
+                .ip()
+                .to_string(),
+            "127.0.0.1"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a reachable SSH endpoint to validate libssh2 handshake"]
+    fn handshakes_real_ssh_when_configured() {
+        let host = std::env::var("NOTERM_E2E_HANDSHAKE_HOST")
+            .expect("NOTERM_E2E_HANDSHAKE_HOST missing");
+        let port = std::env::var("NOTERM_E2E_HANDSHAKE_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .expect("NOTERM_E2E_HANDSHAKE_PORT missing or invalid");
+
+        let manager = SshManager::new();
+        let session = manager
+            .create_handshaked_session(&SshConnection {
+                id: "e2e-handshake".to_string(),
+                name: "e2e-handshake".to_string(),
+                host,
+                port,
+                username: String::new(),
+                host_key_fingerprint_sha256: None,
+                auth_type: AuthType::Password {
+                    password: String::new(),
+                },
+                encoding: None,
+            })
+            .expect("SSH handshake should succeed");
+
+        assert!(session.banner_bytes().is_some());
+    }
+
+    #[test]
+    #[ignore = "requires NOTERM_E2E_SSH_* environment variables and a reachable test host"]
+    fn authenticates_real_ssh_with_key_path_when_configured() {
+        let host = std::env::var("NOTERM_E2E_SSH_HOST").expect("NOTERM_E2E_SSH_HOST missing");
+        let port = std::env::var("NOTERM_E2E_SSH_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(22);
+        let username =
+            std::env::var("NOTERM_E2E_SSH_USERNAME").expect("NOTERM_E2E_SSH_USERNAME missing");
+        let key_path =
+            std::env::var("NOTERM_E2E_SSH_KEY_PATH").expect("NOTERM_E2E_SSH_KEY_PATH missing");
+        let fingerprint = std::env::var("NOTERM_E2E_SSH_FINGERPRINT_SHA256").ok();
+        assert!(Path::new(&key_path).exists(), "key path does not exist");
+
+        let manager = SshManager::new();
+        let session = manager
+            .create_authenticated_session(
+                &SshConnection {
+                    id: "e2e-key-path".to_string(),
+                    name: "e2e-key-path".to_string(),
+                    host,
+                    port,
+                    username,
+                    host_key_fingerprint_sha256: fingerprint,
+                    auth_type: AuthType::PrivateKey {
+                        key_path,
+                        key_content: None,
+                        passphrase: None,
+                    },
+                    encoding: None,
+                },
+                None,
+            )
+            .expect("SSH authentication should succeed");
+
+        assert!(session.authenticated());
     }
 }
 
@@ -2073,7 +2588,6 @@ fn userauth_pubkey_memory_compat(
     content: &str,
     passphrase: Option<&str>,
 ) -> anyhow::Result<()> {
-    sess
-        .userauth_pubkey_memory(username, None, content, passphrase)
+    sess.userauth_pubkey_memory(username, None, content, passphrase)
         .map_err(|e| anyhow::anyhow!(e))
 }
