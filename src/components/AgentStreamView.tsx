@@ -290,7 +290,7 @@ const AgentStreamView: React.FC<AgentStreamViewProps> = ({
   // Auto-scroll to bottom when new blocks arrive
   useEffect(() => {
     if (autoScroll && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: "smooth" });
+      bottomRef.current.scrollIntoView({ behavior: "auto" });
     }
   }, [blocks, autoScroll, pendingConfirmation]);
 
@@ -313,7 +313,7 @@ const AgentStreamView: React.FC<AgentStreamViewProps> = ({
   const scrollToBottom = useCallback(() => {
     userScrolledRef.current = false;
     setAutoScroll(true);
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ behavior: "auto" });
   }, []);
 
   useEffect(() => {

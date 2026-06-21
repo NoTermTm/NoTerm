@@ -17,8 +17,6 @@ interface TitleBarProps {
   onTabClick?: (id: string) => void;
   onTabClose?: (id: string) => void;
   onNewTab?: () => void;
-  useNativeWindowControls?: boolean;
-  hideCustomWindowControls?: boolean;
   showWindowsWindowControls?: boolean;
 }
 
@@ -76,8 +74,6 @@ export function TitleBar({
   onTabClick,
   onTabClose,
   onNewTab,
-  useNativeWindowControls = false,
-  hideCustomWindowControls = false,
   showWindowsWindowControls = false,
 }: TitleBarProps) {
   const appWindow = getCurrentWindow();
@@ -129,77 +125,17 @@ export function TitleBar({
     appWindow.minimize();
   };
 
-  const handleMaximize = async () => {
-    try {
-      const isFullscreen = await appWindow.isFullscreen();
-      await appWindow.setFullscreen(!isFullscreen);
-      return;
-    } catch {
-      // fallback to maximize when fullscreen API is unavailable
-    }
-    appWindow.toggleMaximize();
-  };
-
   const handleClose = () => {
     appWindow.close();
   };
 
   return (
     <div
-      className={`title-bar ${useNativeWindowControls ? "title-bar--native-controls" : ""}`}
+      className="title-bar"
       onPointerDown={handlePointerDown}
       data-tauri-drag-region
     >
       <div className="title-bar-left">
-        {!hideCustomWindowControls && (
-          <div className="traffic-lights">
-            <button
-              className="traffic-light close"
-              onClick={handleClose}
-              aria-label="Close"
-            >
-              <svg
-                className="traffic-light-icon"
-                width="7"
-                height="7"
-                viewBox="0 0 7 7"
-                aria-hidden="true"
-              >
-                <path d="M1 1 L6 6 M6 1 L1 6" />
-              </svg>
-            </button>
-            <button
-              className="traffic-light minimize"
-              onClick={handleMinimize}
-              aria-label="Minimize"
-            >
-              <svg
-                className="traffic-light-icon"
-                width="7"
-                height="7"
-                viewBox="0 0 7 7"
-                aria-hidden="true"
-              >
-                <path d="M1 3.5 L6 3.5" />
-              </svg>
-            </button>
-            <button
-              className="traffic-light maximize"
-              onClick={handleMaximize}
-              aria-label="Maximize"
-            >
-              <svg
-                className="traffic-light-icon"
-                width="7"
-                height="7"
-                viewBox="0 0 7 7"
-                aria-hidden="true"
-              >
-                <path d="M3.5 1 L3.5 6 M1 3.5 L6 3.5" />
-              </svg>
-            </button>
-          </div>
-        )}
         {tabs.length === 0 && (
           <div className="title-bar-title">SSH Manager</div>
         )}
@@ -215,13 +151,36 @@ export function TitleBar({
               >
                 <AppIcon icon="material-symbols:chevron-left-rounded" size={14} />
               </span>
-              <div className="title-bar-tabs" ref={tabsScrollRef}>
+              <div className="title-bar-tabs" ref={tabsScrollRef} role="tablist">
                 {tabs.map((tab) => (
                   <div
                     key={tab.id}
                     className={`tab ${activeTabId === tab.id ? "active" : ""} ${tab.color ? "tab--colored" : ""}`}
                     style={buildTabColorStyle(tab.color, activeTabId === tab.id)}
                     onClick={() => onTabClick?.(tab.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onTabClick?.(tab.id);
+                        return;
+                      }
+                      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                        event.preventDefault();
+                        const currentIndex = tabs.findIndex(({ id }) => id === tab.id);
+                        const direction = event.key === "ArrowLeft" ? -1 : 1;
+                        const nextTab = tabs[(currentIndex + direction + tabs.length) % tabs.length];
+                        onTabClick?.(nextTab.id);
+                        requestAnimationFrame(() => {
+                          tabsScrollRef.current
+                            ?.querySelector<HTMLElement>(`[role="tab"][data-tab-id="${CSS.escape(nextTab.id)}"]`)
+                            ?.focus();
+                        });
+                      }
+                    }}
+                    role="tab"
+                    tabIndex={activeTabId === tab.id ? 0 : -1}
+                    aria-selected={activeTabId === tab.id}
+                    data-tab-id={tab.id}
                   >
                     <div className="tab-content">
                       <div className="tab-title">{tab.title}</div>
@@ -229,6 +188,7 @@ export function TitleBar({
                     </div>
                     <button
                       className="tab-close"
+                      aria-label={t("titleBar.close")}
                       onClick={(e) => {
                         e.stopPropagation();
                         onTabClose?.(tab.id);

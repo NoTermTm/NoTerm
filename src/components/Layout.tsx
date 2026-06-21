@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { load } from "@tauri-apps/plugin-store";
 import { check as checkForUpdates } from "@tauri-apps/plugin-updater";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { useNavigate, useLocation } from "react-router-dom";
 import { TitleBar, Tab } from "./TitleBar";
 import { AppIcon } from "./AppIcon";
@@ -33,6 +34,7 @@ import {
   setMasterKeySession,
 } from "../utils/securitySession";
 import { isMacPlatform } from "../utils/platform";
+import { openNativeSettingsWindow } from "../utils/nativeDesktop";
 import { useI18n } from "../i18n";
 import "./Layout.css";
 
@@ -67,7 +69,7 @@ const SpacePage = lazy(async () => {
   };
 });
 
-const LazyPageFallback = () => <div style={{ padding: "24px" }}>Loading...</div>;
+const LazyPageFallback = () => null;
 
 export function Layout() {
   const navigate = useNavigate();
@@ -111,7 +113,6 @@ export function Layout() {
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [unlocking, setUnlocking] = useState(false);
   const [showUnlockSecret, setShowUnlockSecret] = useState(false);
-  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
   const { t } = useI18n();
   const lastActiveAtRef = useRef(Date.now());
@@ -135,6 +136,14 @@ export function Layout() {
       navigate("/connections", { replace: true });
     }
   }, [location.pathname, navigate]);
+
+  useEffect(() => {
+    const newSession = () => handleNewTab();
+    window.addEventListener("noterm:new-session", newSession);
+    return () => {
+      window.removeEventListener("noterm:new-session", newSession);
+    };
+  });
 
   useEffect(() => {
     let disposed = false;
@@ -244,6 +253,9 @@ export function Layout() {
       const isBackspaceNav = key === "backspace" && !isEditableTarget(event.target);
 
       const isNewSessionShortcut = isCmdOrCtrl && key === "t";
+      const isSettingsShortcut = isCmdOrCtrl && key === ",";
+      const isCloseWindowShortcut = event.metaKey && key === "w";
+      const isMinimizeShortcut = event.metaKey && key === "m";
       const isSplitShortcut = isCmdOrCtrl && key === "d";
       const isLockShortcut = isCmdOrCtrl && key === "g";
       const isToggleConnectionsShortcut = isCmdOrCtrl && key === "b";
@@ -251,10 +263,40 @@ export function Layout() {
         isCmdOrCtrl &&
         (event.code === "Backquote" || key === "`" || key === "~");
 
+      if (key === "escape" && activePanel) {
+        event.preventDefault();
+        setActivePanel(null);
+        return;
+      }
+
       if (isNewSessionShortcut) {
         event.preventDefault();
         event.stopPropagation();
         handleNewTab();
+        return;
+      }
+
+      if (isSettingsShortcut) {
+        event.preventDefault();
+        if (isMac) {
+          void openNativeSettingsWindow();
+        } else {
+          setActivePanel(null);
+          setActiveTabId(SETTINGS_TAB_ID);
+          navigate("/settings");
+        }
+        return;
+      }
+
+      if (isCloseWindowShortcut) {
+        event.preventDefault();
+        void appWindow.close();
+        return;
+      }
+
+      if (isMinimizeShortcut) {
+        event.preventDefault();
+        void appWindow.minimize();
         return;
       }
 
@@ -1132,7 +1174,6 @@ export function Layout() {
       setIsLocked(false);
       setUnlockInput("");
       setUnlockError(null);
-      setResetConfirmOpen(false);
       if (typeof window !== "undefined") {
         window.dispatchEvent(
           new CustomEvent("app-message", {
@@ -1163,6 +1204,16 @@ export function Layout() {
     lastActiveAtRef.current = Date.now();
   };
 
+  const confirmResetMasterKey = async () => {
+    const accepted = await confirm(t("app.lock.reset.desc"), {
+      title: t("app.lock.reset.title"),
+      kind: "warning",
+      okLabel: t("app.lock.reset.confirm"),
+      cancelLabel: t("app.lock.reset.cancel"),
+    });
+    if (accepted) await handleResetMasterKey();
+  };
+
   return (
     <div
       className="app-container"
@@ -1180,8 +1231,6 @@ export function Layout() {
         onTabClick={handleTabClick}
         onTabClose={handleTabClose}
         onNewTab={handleNewTab}
-        useNativeWindowControls={isMac}
-        hideCustomWindowControls
         showWindowsWindowControls={!isMac}
       />
       <div className="layout">
@@ -1368,6 +1417,8 @@ export function Layout() {
               <div
                 key={toast.id}
                 className={`toast ${toast.tone ? `toast--${toast.tone}` : ""}`}
+                role={toast.tone === "error" ? "alert" : "status"}
+                aria-live={toast.tone === "error" ? "assertive" : "polite"}
               >
                 <div className="toast-badge" aria-hidden="true">
                   <AppIcon
@@ -1470,38 +1521,12 @@ export function Layout() {
             <button
               type="button"
               className="lock-forgot-btn"
-              onClick={() => setResetConfirmOpen(true)}
+              onClick={() => void confirmResetMasterKey()}
               disabled={resetting}
             >
               {t("app.lock.reset")}
             </button>
           </div>
-          {resetConfirmOpen && (
-            <div className="lock-reset-layer">
-              <div className="lock-reset-card">
-                <div className="lock-reset-title">{t("app.lock.reset.title")}</div>
-                <div className="lock-reset-desc">{t("app.lock.reset.desc")}</div>
-                <div className="lock-reset-actions">
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => setResetConfirmOpen(false)}
-                    disabled={resetting}
-                  >
-                    {t("app.lock.reset.cancel")}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-danger"
-                    onClick={() => void handleResetMasterKey()}
-                    disabled={resetting}
-                  >
-                    {resetting ? t("app.lock.reset.inProgress") : t("app.lock.reset.confirm")}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>

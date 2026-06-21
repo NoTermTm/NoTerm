@@ -381,6 +381,12 @@ body {
     background: transparent;
 }
 
+html[data-platform="macos"] {
+    accent-color: AccentColor;
+    --accent: AccentColor;
+    --accent-primary: AccentColor;
+}
+
 body {
     font-family: var(--font-ui);
     font-kerning: normal;
@@ -389,26 +395,36 @@ body {
     overflow: hidden;
     font-size: var(--type-body);
     line-height: var(--leading-ui);
-    border-radius: var(--window-radius);
+    border-radius: 0;
 }
 
-*::-webkit-scrollbar {
+html:not([data-platform="macos"]) *::-webkit-scrollbar {
     width: 5px;
     height: 5px;
 }
 
-*::-webkit-scrollbar-thumb {
+html:not([data-platform="macos"]) *::-webkit-scrollbar-thumb {
     background: rgba(140, 140, 140, 0.5);
     border-radius: 999px;
 }
 
-*::-webkit-scrollbar-track {
+html:not([data-platform="macos"]) *::-webkit-scrollbar-track {
     background: transparent;
 }
 
 button {
-    cursor: pointer;
+    cursor: default;
     font-family: inherit;
+}
+
+:is(button, [role="button"], [role="tab"], a[href], input, textarea, select):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+:is(button, [role="button"], [role="tab"], label, .title-bar, .sidebar) {
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 input,
@@ -428,11 +444,37 @@ samp {
     width: 100vw;
     height: 100vh;
     overflow: hidden;
-    border-radius: var(--window-radius);
+    border-radius: 0;
     background-color: var(--bg-primary);
     display: flex;
     background-clip: padding-box;
     box-shadow: none;
+}
+
+html[data-platform="macos"] :is(
+    button,
+    [role="button"],
+    [role="tab"],
+    .connection-item,
+    .sidebar-item,
+    .xterminal-sftp-menu-item
+) {
+    cursor: default !important;
+}
+
+html[data-platform="macos"] a[href] {
+    cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }
 
 .app-loading {

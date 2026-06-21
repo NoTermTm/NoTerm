@@ -4,7 +4,7 @@ use ssh2::Session;
 use ssh2::{HashType, HostKeyType, OpenFlags, OpenType};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::Path;
 #[cfg(target_os = "macos")]
@@ -158,6 +158,7 @@ impl SshManager {
     const LIBSSH2_ERROR_EAGAIN: i32 = -37;
     const SSH_HANDSHAKE_ATTEMPTS: usize = 3;
     const SSH_SESSION_TIMEOUT_MS: u32 = 8_000;
+    const SSH_INTERACTIVE_SLICE_MS: u32 = 15;
     #[cfg(not(target_os = "macos"))]
     const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
     const SFTP_SESSION_TIMEOUT_MS: u32 = 120_000;
@@ -305,6 +306,10 @@ impl SshManager {
 
         let started_at = Instant::now();
         let session = self.create_authenticated_session(connection, None)?;
+        // Forwarding channels share one libssh2 session. They must never make
+        // blocking reads while holding libssh2's internal session mutex, or a
+        // single idle HTTP connection stalls every other channel.
+        session.set_blocking(false);
         let session = Arc::new(Mutex::new(session));
         let keepalive_stop = Arc::new(AtomicBool::new(false));
         self.spawn_keepalive_for_forward(session.clone(), keepalive_stop.clone());
@@ -486,8 +491,13 @@ impl SshManager {
                     }
                 };
 
-                if let Err(e) = tcp.set_nonblocking(false) {
-                    attempts.push(format!("{} set blocking mode failed: {}", addr, e));
+                // libssh2's blocking flag controls its retry/wait behavior; it
+                // does not change O_NONBLOCK on the underlying socket. Keep
+                // the real socket non-blocking from the start so switching the
+                // interactive session to non-blocking later cannot leave a
+                // channel_read call blocked while it holds the shell lock.
+                if let Err(e) = tcp.set_nonblocking(true) {
+                    attempts.push(format!("{} set non-blocking mode failed: {}", addr, e));
                     break;
                 }
                 let _ = tcp.set_nodelay(true);
@@ -556,7 +566,16 @@ impl SshManager {
     fn connect_tcp_for_ssh(addr: &SocketAddr) -> std::io::Result<TcpStream> {
         #[cfg(target_os = "macos")]
         {
-            return Self::connect_tcp_via_system_nc(addr);
+            // A native socket is the reliable path for normal macOS installs.
+            // Keep the nc proxy only as a narrow fallback for environments that
+            // return EBADF while opening sockets from the app process.
+            return match TcpStream::connect(addr) {
+                Ok(stream) => Ok(stream),
+                Err(error) if error.raw_os_error() == Some(9) => {
+                    Self::connect_tcp_via_system_nc(addr)
+                }
+                Err(error) => Err(error),
+            };
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -613,36 +632,83 @@ impl SshManager {
         let remote_host = addr.ip().to_string();
         let remote_port = addr.port().to_string();
 
+        let mut child = Command::new("/usr/bin/nc")
+            .arg("-v")
+            .arg("-G")
+            .arg("8")
+            .arg(&remote_host)
+            .arg(&remote_port)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                std::io::Error::new(error.kind(), format!("start nc TCP proxy failed: {error}"))
+            })?;
+
+        // Do not expose the loopback stream until nc confirms that the remote
+        // connection exists. Previously this function returned immediately and
+        // converted every nc connection failure into a misleading SSH timeout.
+        let mut status_line = String::new();
+        let status_result = child
+            .stderr
+            .take()
+            .ok_or_else(|| std::io::Error::other("capture nc status output failed"))
+            .and_then(|stderr| {
+                BufReader::new(stderr)
+                    .read_line(&mut status_line)
+                    .map(|_| ())
+            });
+        if let Err(error) = status_result {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!("read nc TCP proxy status failed: {error}"),
+            ));
+        }
+        if !status_line.to_ascii_lowercase().contains("succeeded") {
+            let _ = child.kill();
+            let _ = child.wait();
+            let message = status_line.trim();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                if message.is_empty() {
+                    "nc TCP proxy exited before connecting".to_string()
+                } else {
+                    format!("nc TCP proxy failed: {message}")
+                },
+            ));
+        }
+
+        let mut child_stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("open nc proxy input failed"))?;
+        let mut child_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("open nc proxy output failed"))?;
+
+        let stream = TcpStream::connect(local_addr).map_err(|error| {
+            let _ = child.kill();
+            let _ = child.wait();
+            std::io::Error::new(
+                error.kind(),
+                format!("connect to loopback nc proxy failed: {error}"),
+            )
+        })?;
+        let _ = stream.set_nodelay(true);
+
         std::thread::spawn(move || {
             let Ok((local_stream, _)) = listener.accept() else {
-                return;
-            };
-
-            let mut child = match Command::new("/usr/bin/nc")
-                .arg("-G")
-                .arg("20")
-                .arg(&remote_host)
-                .arg(&remote_port)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                Ok(child) => child,
-                Err(_) => return,
-            };
-
-            let Some(mut child_stdin) = child.stdin.take() else {
                 let _ = child.kill();
+                let _ = child.wait();
                 return;
             };
-            let Some(mut child_stdout) = child.stdout.take() else {
-                let _ = child.kill();
-                return;
-            };
-
             let Ok(mut local_reader) = local_stream.try_clone() else {
                 let _ = child.kill();
+                let _ = child.wait();
                 return;
             };
             let mut local_writer = local_stream;
@@ -661,13 +727,6 @@ impl SshManager {
             let _ = child.wait();
         });
 
-        let stream = TcpStream::connect(local_addr).map_err(|error| {
-            std::io::Error::new(
-                error.kind(),
-                format!("connect to loopback nc proxy failed: {error}"),
-            )
-        })?;
-        let _ = stream.set_nodelay(true);
         Ok(stream)
     }
 
@@ -702,7 +761,10 @@ impl SshManager {
             interval_sec: Self::DEFAULT_KEEPALIVE_INTERVAL_SEC,
         });
         let keepalive_interval = keepalive.interval_sec.clamp(5, 300);
-        sess.set_keepalive(keepalive.enabled, keepalive_interval);
+        // The first libssh2 argument is `want_reply`, not an enabled flag.
+        // Unanswered keepalive replies add no value to connection liveness;
+        // channel I/O remains the source of truth for disconnect detection.
+        sess.set_keepalive(false, if keepalive.enabled { keepalive_interval } else { 0 });
 
         let effective_username = if connection.username.trim().is_empty() {
             std::env::var("USER")
@@ -970,19 +1032,6 @@ impl SshManager {
             .clone()
     }
 
-    fn is_transient_shell_read_error(error: &std::io::Error) -> bool {
-        if matches!(
-            error.kind(),
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-        ) {
-            return true;
-        }
-        let message = error.to_string().to_lowercase();
-        message.contains("transport read")
-            || message.contains("would block")
-            || message.contains("timed out")
-    }
-
     fn is_idle_shell_read_timeout(error: &std::io::Error) -> bool {
         if matches!(
             error.kind(),
@@ -1026,26 +1075,35 @@ impl SshManager {
         attempt_id: Option<&str>,
     ) -> anyhow::Result<String> {
         let session_id = connection.id.clone();
+        let keepalive = keepalive.unwrap_or(KeepaliveConfig {
+            enabled: true,
+            interval_sec: Self::DEFAULT_KEEPALIVE_INTERVAL_SEC,
+        });
         Self::emit_debug(
             &app_handle,
             &session_id,
             "info",
             format!(
-                "ssh connect start host={} port={} user={}",
+                "ssh connect start host={} port={} user={} keepalive={} interval_sec={}",
                 connection.host.trim(),
                 connection.port,
-                connection.username.trim()
+                connection.username.trim(),
+                keepalive.enabled,
+                keepalive.interval_sec
             ),
         );
-        let sess =
-            self.create_authenticated_session_with_progress(connection, keepalive, |phase, ms| {
+        let sess = self.create_authenticated_session_with_progress(
+            connection,
+            Some(keepalive),
+            |phase, ms| {
                 Self::emit_debug(
                     &app_handle,
                     &session_id,
                     "info",
                     format!("ssh connect phase={} elapsed_ms={}", phase, ms),
                 );
-            })?;
+            },
+        )?;
         if let Some(attempt_id) = attempt_id {
             if !self.is_current_connect_attempt(&session_id, attempt_id) {
                 let _ = sess.disconnect(None, "Connection attempt superseded", None);
@@ -1074,7 +1132,9 @@ impl SshManager {
         sessions.insert(session_id.clone(), session_arc.clone());
         drop(sessions);
 
-        self.spawn_keepalive_for_session(session_id.clone(), session_arc, app_handle);
+        if keepalive.enabled {
+            self.spawn_keepalive_for_session(session_id.clone(), session_arc, app_handle);
+        }
 
         // The shell channel is opened separately; this only confirms SSH auth/session setup.
         // Logging it explicitly helps distinguish transport/auth failures from PTY failures.
@@ -1118,12 +1178,13 @@ impl SshManager {
             channel.request_pty("xterm-256color", None, Some((80, 24, 0, 0)))?;
             channel.shell()?;
 
-            // Keep the interactive shell session non-blocking so the reader
-            // thread does not hold the shared shell operation lock for up to
-            // the session timeout on every idle read. Writes/retries already
-            // handle WouldBlock explicitly, and this keeps resize/disconnect
-            // responsive during connect and idle periods.
-            sess.set_blocking(false);
+            // Run one complete libssh2 operation at a time. A short blocking
+            // slice avoids carrying an EAGAIN state machine from reader to
+            // writer/keepalive while bounding input lock wait to one frame.
+            // The actual TCP socket remains O_NONBLOCK; libssh2 performs the
+            // bounded wait internally.
+            sess.set_timeout(Self::SSH_INTERACTIVE_SLICE_MS);
+            sess.set_blocking(true);
             channel
         };
         if let Some(attempt_id) = attempt_id {
@@ -1160,17 +1221,24 @@ impl SshManager {
         std::thread::spawn(move || {
             let mut buffer = [0u8; 8192];
             let mut disconnected_reason: Option<String> = None;
-            let mut consecutive_read_errors = 0u8;
             loop {
-                let _op_guard = shell_op_lock_clone.lock().unwrap();
-                let mut channel_lock = match channel_clone.lock() {
-                    Ok(ch) => ch,
-                    Err(_) => break,
+                // libssh2 session operations must remain serialized, but event
+                // dispatch and polling sleeps must not hold this lock. Holding
+                // it across those operations starves interactive writes.
+                let read_result = {
+                    let _op_guard = shell_op_lock_clone.lock().unwrap();
+                    let mut channel_lock = match channel_clone.lock() {
+                        Ok(ch) => ch,
+                        Err(_) => break,
+                    };
+                    match channel_lock.read(&mut buffer) {
+                        Ok(n) => Ok((n, n == 0 && channel_lock.eof())),
+                        Err(error) => Err(error),
+                    }
                 };
 
-                match channel_lock.read(&mut buffer) {
-                    Ok(n) if n > 0 => {
-                        consecutive_read_errors = 0;
+                let sleep_ms = match read_result {
+                    Ok((n, _)) if n > 0 => {
                         let output = String::from_utf8_lossy(&buffer[..n]).to_string();
                         let _ = app_handle.emit(
                             "terminal-output",
@@ -1179,11 +1247,11 @@ impl SshManager {
                                 data: output,
                             },
                         );
+                        1
                     }
-                    Ok(_) => {
-                        // In non-blocking mode, zero-byte reads may happen on idle sessions.
+                    Ok((_, eof)) => {
                         // Only mark the shell disconnected when libssh2 reports EOF explicitly.
-                        if channel_lock.eof() {
+                        if eof {
                             Self::emit_debug(
                                 &app_handle,
                                 &session_id_clone,
@@ -1193,43 +1261,24 @@ impl SshManager {
                             disconnected_reason = Some("eof".to_string());
                             break;
                         }
-                        consecutive_read_errors = 0;
+                        4
                     }
                     Err(e) => {
                         if Self::is_idle_shell_read_timeout(&e) {
-                            consecutive_read_errors = 0;
-                            drop(channel_lock);
-                            std::thread::sleep(std::time::Duration::from_millis(25));
-                            continue;
-                        }
-                        if Self::is_transient_shell_read_error(&e) {
-                            consecutive_read_errors = consecutive_read_errors.saturating_add(1);
-                            if consecutive_read_errors >= 20 {
-                                Self::emit_debug(
-                                    &app_handle,
-                                    &session_id_clone,
-                                    "warn",
-                                    format!(
-                                        "ssh shell reader transient error x{}: {}",
-                                        consecutive_read_errors, e
-                                    ),
-                                );
-                                consecutive_read_errors = 0;
-                            }
+                            4
                         } else {
                             Self::emit_debug(
                                 &app_handle,
                                 &session_id_clone,
                                 "error",
-                                format!("ssh shell reader error: {}", e),
+                                format!("ssh shell reader error kind={:?}: {}", e.kind(), e),
                             );
                             disconnected_reason = Some(format!("error: {}", e));
                             break;
                         }
                     }
-                }
-                drop(channel_lock);
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                };
+                std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
             }
             if let Some(reason) = disconnected_reason {
                 if !Self::is_current_channel_handle(
@@ -2188,7 +2237,7 @@ impl SshManager {
                         }
                         let _ = stream.set_nonblocking(false);
                         match Self::open_direct_tcpip(&session, &target_host, target_port) {
-                            Ok(channel) => Self::pipe_streams(channel, stream),
+                            Ok(channel) => Self::pipe_streams(channel, stream, stop),
                             Err(_) => {
                                 let _ = stream.shutdown(Shutdown::Both);
                             }
@@ -2240,7 +2289,7 @@ impl SshManager {
                             Ok(channel) => {
                                 let _ =
                                     stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
-                                Self::pipe_streams(channel, stream);
+                                Self::pipe_streams(channel, stream, stop);
                             }
                             Err(_) => {
                                 let _ =
@@ -2297,7 +2346,7 @@ impl SshManager {
                 }
                 match TcpStream::connect((target_host.as_str(), target_port)) {
                     Ok(stream) => {
-                        Self::pipe_streams(channel, stream);
+                        Self::pipe_streams(channel, stream, stop);
                     }
                     Err(_) => {
                         let _ = channel.close();
@@ -2308,25 +2357,120 @@ impl SshManager {
         Ok(())
     }
 
-    fn pipe_streams(channel: ssh2::Channel, stream: TcpStream) {
+    fn pipe_streams(mut channel: ssh2::Channel, mut stream: TcpStream, stop: Arc<AtomicBool>) {
         let _ = stream.set_nodelay(true);
-        let mut channel_read = channel.clone();
-        let mut channel_write = channel;
-        let mut stream_read = match stream.try_clone() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let mut stream_write = stream;
+        let _ = stream.set_nonblocking(true);
 
-        std::thread::spawn(move || {
-            let _ = std::io::copy(&mut stream_read, &mut channel_write);
-            let _ = channel_write.close();
-        });
+        // Drive both directions from one short, non-blocking loop. Channel
+        // clones still share libssh2's session mutex, so two blocking
+        // io::copy threads are not actually full-duplex and can deadlock each
+        // other. Fixed buffers also provide natural backpressure.
+        let mut local_to_ssh = [0u8; 32 * 1024];
+        let mut local_to_ssh_pos = 0usize;
+        let mut local_to_ssh_len = 0usize;
+        let mut ssh_to_local = [0u8; 32 * 1024];
+        let mut ssh_to_local_pos = 0usize;
+        let mut ssh_to_local_len = 0usize;
+        let mut local_open = true;
+        let mut remote_open = true;
+        let mut sent_eof = false;
 
-        std::thread::spawn(move || {
-            let _ = std::io::copy(&mut channel_read, &mut stream_write);
-            let _ = stream_write.shutdown(Shutdown::Both);
-        });
+        while !stop.load(Ordering::Relaxed) {
+            let mut progressed = false;
+
+            if local_open && local_to_ssh_pos == local_to_ssh_len {
+                match stream.read(&mut local_to_ssh) {
+                    Ok(0) => local_open = false,
+                    Ok(read) => {
+                        local_to_ssh_pos = 0;
+                        local_to_ssh_len = read;
+                        progressed = true;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(_) => break,
+                }
+            }
+
+            if local_to_ssh_pos < local_to_ssh_len {
+                match channel.write(&local_to_ssh[local_to_ssh_pos..local_to_ssh_len]) {
+                    Ok(0) => break,
+                    Ok(written) => {
+                        local_to_ssh_pos += written;
+                        progressed = true;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+
+            if !local_open && local_to_ssh_pos == local_to_ssh_len && !sent_eof {
+                match channel.send_eof() {
+                    Ok(()) => {
+                        sent_eof = true;
+                        progressed = true;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.code(),
+                            ssh2::ErrorCode::Session(code)
+                                if code == Self::LIBSSH2_ERROR_EAGAIN
+                        ) => {}
+                    Err(_) => break,
+                }
+            }
+
+            if remote_open && ssh_to_local_pos == ssh_to_local_len {
+                match channel.read(&mut ssh_to_local) {
+                    Ok(0) if channel.eof() => remote_open = false,
+                    Ok(0) => {}
+                    Ok(read) => {
+                        ssh_to_local_pos = 0;
+                        ssh_to_local_len = read;
+                        progressed = true;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+
+            if ssh_to_local_pos < ssh_to_local_len {
+                match stream.write(&ssh_to_local[ssh_to_local_pos..ssh_to_local_len]) {
+                    Ok(0) => break,
+                    Ok(written) => {
+                        ssh_to_local_pos += written;
+                        progressed = true;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(_) => break,
+                }
+            }
+
+            if !remote_open && ssh_to_local_pos == ssh_to_local_len {
+                let _ = stream.shutdown(Shutdown::Write);
+            }
+            if !local_open
+                && !remote_open
+                && local_to_ssh_pos == local_to_ssh_len
+                && ssh_to_local_pos == ssh_to_local_len
+            {
+                break;
+            }
+
+            std::thread::sleep(Duration::from_millis(if progressed { 1 } else { 3 }));
+        }
+
+        let _ = channel.close();
+        let _ = stream.shutdown(Shutdown::Both);
     }
 
     fn socks5_handshake(stream: &mut TcpStream) -> anyhow::Result<(String, u16)> {

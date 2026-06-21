@@ -581,16 +581,24 @@ fn ssh_write_to_shell(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    emit_terminal_debug(
-        &app_handle,
-        &session_id,
-        "info",
-        format!("command ssh_write_to_shell bytes={}", data.len()),
-    );
+    let started_at = Instant::now();
     let manager = state.ssh_manager.lock().unwrap().clone();
     let result = manager
         .write_to_shell(&session_id, &data)
         .map_err(|e| e.to_string());
+    let elapsed_ms = started_at.elapsed().as_millis();
+    if elapsed_ms >= 100 {
+        emit_terminal_debug(
+            &app_handle,
+            &session_id,
+            "warn",
+            format!(
+                "command ssh_write_to_shell slow elapsed_ms={} bytes={}",
+                elapsed_ms,
+                data.len()
+            ),
+        );
+    }
     if let Err(error) = &result {
         emit_terminal_debug(
             &app_handle,

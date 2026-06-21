@@ -18,8 +18,9 @@
         "height": 850,
         "minWidth": 1200,
         "minHeight": 600,
-        "decorations": false,
+        "decorations": true,
         "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "backgroundColor": "#1f232b",
         "transparent": false,
         "devtools": false

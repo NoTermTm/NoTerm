@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { load } from "@tauri-apps/plugin-store";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { AppIcon } from "../components/AppIcon";
 import { Modal } from "../components/Modal";
 import { SshHostTrustModal } from "../components/SshHostTrustModal";
@@ -82,9 +83,13 @@ async function getKeyStore() {
 
 async function getSecurityContext(): Promise<SecurityContext> {
   const masterKey = getMasterKeySession();
-  let encSalt = await readAppSetting("security.masterKeyEncSalt");
-  const savePassword = await readAppSetting("connection.savePassword");
-  const hasMasterKey = Boolean(await readAppSetting("security.masterKeyHash"));
+  const [storedEncSalt, savePassword, masterKeyHash] = await Promise.all([
+    readAppSetting("security.masterKeyEncSalt"),
+    readAppSetting("connection.savePassword"),
+    readAppSetting("security.masterKeyHash"),
+  ]);
+  let encSalt = storedEncSalt;
+  const hasMasterKey = Boolean(masterKeyHash);
   if (savePassword && hasMasterKey && masterKey && !encSalt) {
     encSalt = generateSalt();
     await writeAppSetting("security.masterKeyEncSalt", encSalt);
@@ -205,12 +210,18 @@ export function ForwardingPage() {
   const [hostTrustPrompt, setHostTrustPrompt] = useState<HostTrustPromptState | null>(null);
 
   const reloadConnections = async () => {
-    const store = await load("connections.json");
-    const saved = (await store.get<ConnectionConfig[]>("connections")) ?? [];
-    const ctx = await getSecurityContext();
+    const [store, ctx, keys] = await Promise.all([
+      load("connections.json"),
+      getSecurityContext(),
+      getKeyStore(),
+    ]);
+    const [storedConnections, storedProfiles] = await Promise.all([
+      store.get<ConnectionConfig[]>("connections"),
+      keys.get<AuthProfile[]>("profiles"),
+    ]);
+    const saved = storedConnections ?? [];
     const fallbackName = t("connections.defaultName");
-    const keyStore = await getKeyStore();
-    const savedProfiles = (await keyStore.get<AuthProfile[]>("profiles")) ?? [];
+    const savedProfiles = storedProfiles ?? [];
     const lockedProfiles = new Set<string>();
     if (!ctx.masterKey) {
       for (const profile of savedProfiles) {
@@ -420,7 +431,11 @@ export function ForwardingPage() {
   };
 
   const handleDelete = async (rule: ForwardRule) => {
-    if (!window.confirm(t("forwarding.delete.confirm"))) return;
+    const accepted = await confirm(t("forwarding.delete.confirm"), {
+      title: "NoTerm",
+      kind: "warning",
+    });
+    if (!accepted) return;
     if (runningIds.has(rule.id)) {
       await stopForward(rule.id).catch(() => {});
     }
@@ -571,20 +586,56 @@ export function ForwardingPage() {
                 {isRunning ? (
                   <button
                     type="button"
-                    className="btn btn-secondary"
+                    className="btn btn-secondary forwarding-action-button"
                     onClick={() => void handleStop(rule)}
                     disabled={busyId === rule.id}
+                    aria-busy={busyId === rule.id}
+                    aria-label={
+                      busyId === rule.id
+                        ? t("forwarding.action.stopping")
+                        : t("forwarding.action.stop")
+                    }
                   >
-                    {t("forwarding.action.stop")}
+                    {busyId === rule.id && (
+                      <span className="forwarding-button-spinner" aria-hidden="true" />
+                    )}
+                    <span
+                      className={
+                        busyId === rule.id
+                          ? "forwarding-button-label is-hidden"
+                          : "forwarding-button-label"
+                      }
+                      aria-hidden={busyId === rule.id}
+                    >
+                      {t("forwarding.action.stop")}
+                    </span>
                   </button>
                 ) : (
                   <button
                     type="button"
-                    className="btn btn-primary"
+                    className="btn btn-primary forwarding-action-button"
                     onClick={() => void handleStart(rule)}
                     disabled={busyId === rule.id}
+                    aria-busy={busyId === rule.id}
+                    aria-label={
+                      busyId === rule.id
+                        ? t("forwarding.action.starting")
+                        : t("forwarding.action.start")
+                    }
                   >
-                    {t("forwarding.action.start")}
+                    {busyId === rule.id && (
+                      <span className="forwarding-button-spinner" aria-hidden="true" />
+                    )}
+                    <span
+                      className={
+                        busyId === rule.id
+                          ? "forwarding-button-label is-hidden"
+                          : "forwarding-button-label"
+                      }
+                      aria-hidden={busyId === rule.id}
+                    >
+                      {t("forwarding.action.start")}
+                    </span>
                   </button>
                 )}
                 <button

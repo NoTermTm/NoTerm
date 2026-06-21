@@ -126,6 +126,38 @@
     justify-content: flex-end;
 }
 
+.forwarding-action-button {
+    position: relative;
+}
+
+.forwarding-button-label.is-hidden {
+    visibility: hidden;
+}
+
+.forwarding-button-spinner {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: forwarding-button-spin 700ms linear infinite;
+}
+
+@keyframes forwarding-button-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .forwarding-button-spinner {
+        animation: none;
+    }
+}
+
 .forwarding-form {
     display: flex;
     flex-direction: column;

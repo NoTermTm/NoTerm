@@ -12,11 +12,11 @@
     -webkit-app-region: no-drag;
     position: relative;
     z-index: 30;
-    border-top-left-radius: var(--window-radius);
-    border-top-right-radius: var(--window-radius);
+    border-radius: 0;
 }
 
-.title-bar--native-controls {
+/* Reserve the native traffic-light hit area when the title bar overlays WebView content. */
+html[data-platform="macos"] .title-bar {
     padding-left: 84px;
 }
 
@@ -24,82 +24,6 @@
     display: flex;
     align-items: center;
     gap: 12px;
-}
-
-.traffic-lights {
-    display: flex;
-    gap: 8px;
-    -webkit-app-region: no-drag;
-}
-
-.traffic-light {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: none;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background-color 0.15s ease, color 0.15s ease;
-    padding: 0;
-    position: relative;
-    line-height: 0;
-}
-
-.traffic-light-icon {
-    opacity: 0;
-    transition: opacity 0.15s ease;
-    display: block;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-}
-
-.traffic-lights:hover .traffic-light-icon {
-    opacity: 1;
-}
-
-.traffic-lights:not(:hover) .traffic-light-icon {
-    opacity: 0 !important;
-}
-
-.traffic-light.close {
-    background-color: #ff5f57;
-}
-
-.traffic-light.close:hover {
-    background-color: #ff3b30;
-}
-
-.traffic-light.close .traffic-light-icon {
-    color: #8b0000;
-}
-
-.traffic-light.minimize {
-    background-color: #febc2e;
-}
-
-.traffic-light.minimize:hover {
-    background-color: #ffb400;
-}
-
-.traffic-light.minimize .traffic-light-icon {
-    color: #996500;
-}
-
-.traffic-light.maximize {
-    background-color: #28c840;
-}
-
-.traffic-light.maximize:hover {
-    background-color: #1fb437;
-}
-
-.traffic-light.maximize .traffic-light-icon {
-    color: #006400;
 }
 
 .title-bar-title {
@@ -206,7 +130,6 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    cursor: pointer;
 }
 
 .title-bar-win-btn svg {
@@ -242,7 +165,6 @@
     padding: 4px 12px;
     background: transparent;
     border-radius: 8px;
-    cursor: pointer;
     transition: background-color 0.2s ease, border-color 0.2s ease;
     border: none;
     position: relative;
@@ -314,7 +236,6 @@
     border: none;
     background: transparent;
     color: var(--text-tertiary);
-    cursor: pointer;
     opacity: 0;
     transition: opacity 0.2s ease, background-color 0.2s ease, color 0.2s ease;
     padding: 0;

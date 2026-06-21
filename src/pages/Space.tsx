@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { StreamLanguage } from "@codemirror/language";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
+import { message } from "@tauri-apps/plugin-dialog";
 import { AppIcon } from "../components/AppIcon";
 import { Modal } from "../components/Modal";
 import type { Tab } from "../components/TitleBar";
@@ -184,7 +185,10 @@ export function SpacePage(_props: SpacePageProps) {
 
   const openCreateScript = () => {
     if (!view.selectedFolderId) {
-      window.alert(t("space.alert.selectFolder"));
+      void message(t("space.alert.selectFolder"), {
+        title: "NoTerm",
+        kind: "info",
+      });
       return;
     }
     setActiveScriptForm({

@@ -16,6 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
 import {
+  confirm,
   open as openDialog,
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
@@ -1279,11 +1280,11 @@ export function XTerminal({
     }
   };
 
-  const startReconnectFlow = () => {
+  const startReconnectFlow = (forceReset = false) => {
     if (isLocal) return;
     if (reconnectPromiseRef.current) return;
     const now = Date.now();
-    if (now < reconnectCooldownUntilRef.current) {
+    if (!forceReset && now < reconnectCooldownUntilRef.current) {
       pushTerminalLog("warn", "reconnect skipped (cooldown)");
       return;
     }
@@ -1305,11 +1306,13 @@ export function XTerminal({
           return false;
         }
         try {
-          const connectedBeforeReconnect = await (
-            isTelnet
-              ? telnetApi.isConnected(sessionId)
-              : sshApi.isConnected(sessionId)
-          ).catch(() => false);
+          const connectedBeforeReconnect = forceReset
+            ? false
+            : await (
+                isTelnet
+                  ? telnetApi.isConnected(sessionId)
+                  : sshApi.isConnected(sessionId)
+              ).catch(() => false);
           if (reconnectRunId !== reconnectRunIdRef.current) {
             return false;
           }
@@ -1320,7 +1323,7 @@ export function XTerminal({
           }
 
           pushTerminalLog("info", `reconnect attempt ${attempt}`);
-          await connectNow({ forceReset: attempt > 1 });
+          await connectNow({ forceReset: forceReset || attempt > 1 });
           if (reconnectRunId !== reconnectRunIdRef.current) {
             return false;
           }
@@ -1379,6 +1382,15 @@ export function XTerminal({
   };
 
   const writeToShellWithTimeout = async (data: string) => {
+    const isFatalShellWriteError = (message: string) => {
+      const normalized = message.toLowerCase();
+      return (
+        normalized.includes("failure while draining incoming flow") ||
+        normalized.includes("transport read") ||
+        normalized.includes("channel closed") ||
+        normalized.includes("shell not found")
+      );
+    };
     const updateDisplayLatency = () => {
       const endpoint = endpointLatencyRef.current;
       const observed = observedLatencyRef.current;
@@ -1413,6 +1425,7 @@ export function XTerminal({
         return true;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        const fatalWriteError = !isLocal && isFatalShellWriteError(message);
         const detail =
           message === "write_timeout"
             ? t("terminal.write.timeout")
@@ -1421,7 +1434,10 @@ export function XTerminal({
           "error",
           `${detail} (${Date.now() - startedAt}ms) attempt=${attempt} err=${message}`,
         );
-        if (attempt < 2) {
+        // A fatal channel error cannot succeed on the same channel. Retrying
+        // the same payload before reset only delays recovery and can duplicate
+        // input if libssh2 accepted a partial write.
+        if (attempt < 2 && !fatalWriteError) {
           await new Promise((resolve) => window.setTimeout(resolve, 180));
           continue;
         }
@@ -1437,7 +1453,13 @@ export function XTerminal({
             timestamp: Date.now(),
           });
         }
-        if (
+        if (fatalWriteError) {
+          pushTerminalLog(
+            "error",
+            "fatal shell channel error; forcing reconnect",
+          );
+          startReconnectFlow(true);
+        } else if (
           !isLocal &&
           writeFailureCountRef.current >= reconnectWriteFailuresRef.current
         ) {
@@ -2964,8 +2986,12 @@ export function XTerminal({
     const label = entry.is_dir
       ? t("terminal.sftp.entry.folder")
       : t("terminal.sftp.entry.file");
-    const ok = window.confirm(
+    const ok = await confirm(
       t("terminal.sftp.delete.confirm", { label, name: entry.name }),
+      {
+        title: "NoTerm",
+        kind: "warning",
+      },
     );
     if (!ok) return;
 
