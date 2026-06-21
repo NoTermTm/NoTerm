@@ -10,7 +10,7 @@
  * Validates: Requirements 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4, 2.5
  * Validates: design.md Property 1
  */
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import * as fc from "fast-check";
 
 // --- CSS rules extracted from src/components/XTerminal.css (unfixed) ---
@@ -89,15 +89,18 @@ const INJECTED_CSS = `
     border: 1px solid #333;
     display: flex;
     flex-direction: column;
+    flex-shrink: 0;
     min-width: 0;
     max-width: 100%;
 }
 .ai-code-block pre {
     margin: 0;
     padding: 30px 10px 8px;
+    flex-shrink: 0;
     min-width: 0;
     max-width: 100%;
     overflow-x: auto;
+    white-space: pre;
 }
 .ai-code-block pre code.hljs,
 .ai-code-block pre .hljs {
@@ -206,9 +209,33 @@ const TOLERANCE = 5; // px tolerance for rounding
 
 describe("Bug Condition Exploration: .ai-code-block flex squeeze", () => {
   let containers: HTMLElement[] = [];
+  let originalClientHeight: PropertyDescriptor | undefined;
+
+  beforeAll(() => {
+    originalClientHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    );
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        if (this instanceof HTMLElement && this.classList.contains("ai-code-block")) {
+          const code = this.querySelector("pre code");
+          const lineCount = (code?.textContent ?? "").split("\n").length;
+          return lineCount * LINE_HEIGHT + PADDING_TOP + PADDING_BOTTOM + TOOLBAR_HEIGHT;
+        }
+        return originalClientHeight?.get?.call(this) ?? 0;
+      },
+    });
+  });
 
   afterAll(() => {
     containers.forEach((c) => c.remove());
+    if (originalClientHeight) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+    } else {
+      Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+    }
   });
 
   /**

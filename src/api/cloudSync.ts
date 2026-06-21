@@ -1,5 +1,6 @@
 import { load } from "@tauri-apps/plugin-store";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { invoke } from "@tauri-apps/api/core";
 import {
   decryptString,
   encryptString,
@@ -89,6 +90,13 @@ type StorageProvider = {
   testConnection(): Promise<void>;
 };
 
+type CloudSyncHttpResponse = {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  text(): Promise<string>;
+};
+
 const REMOTE_KEY = "noterm.sync.v1.json";
 const LEGACY_REMOTE_KEYS = ["noterm.sync.json", "noterm-sync.json"];
 const REMOTE_LOCK_KEY = "noterm.sync.lock.v1.json";
@@ -142,6 +150,41 @@ const joinKey = (prefix: string, key: string) => {
   const cleanPrefix = normalizePrefix(prefix);
   if (!cleanPrefix) return key;
   return `${cleanPrefix}/${key}`;
+};
+
+const cloudSyncFetch = async (
+  url: string,
+  init: {
+    method: string;
+    headers?: Record<string, string>;
+    body?: string;
+  },
+): Promise<CloudSyncHttpResponse> => {
+  try {
+    return await tauriFetch(url, init);
+  } catch (error) {
+    const fallback = await invoke<{
+      status: number;
+      statusText: string;
+      body: string;
+    }>("system_http_request", {
+      request: {
+        url,
+        method: init.method,
+        headers: init.headers ?? {},
+        body: init.body,
+      },
+    });
+
+    return {
+      ok: fallback.status >= 200 && fallback.status < 300,
+      status: fallback.status,
+      statusText:
+        fallback.statusText ||
+        (error instanceof Error ? error.message : String(error)),
+      text: async () => fallback.body,
+    };
+  }
 };
 
 const sha256Hex = async (value: string | Uint8Array) => {
@@ -221,7 +264,7 @@ const createWebDavProvider = (config: WebDavConfig): StorageProvider => {
       "Content-Type": "application/json",
     };
     if (auth) headers.Authorization = auth;
-    return tauriFetch(url, {
+    return cloudSyncFetch(url, {
       method,
       headers,
       body,
@@ -239,7 +282,7 @@ const createWebDavProvider = (config: WebDavConfig): StorageProvider => {
       const url = `${endpoint}${currentPath}`;
       const headers: Record<string, string> = {};
       if (auth) headers.Authorization = auth;
-      const resp = await tauriFetch(url, { method: "MKCOL", headers });
+      const resp = await cloudSyncFetch(url, { method: "MKCOL", headers });
       if (resp.ok || resp.status === 405 || resp.status === 301) continue;
       if (resp.status === 409) continue;
       throw new Error(`WebDAV MKCOL failed: ${resp.status} ${resp.statusText}`);
@@ -337,7 +380,7 @@ const createS3Provider = (config: S3Config): StorageProvider => {
   return {
     async readText(key) {
       const req = await buildSignedRequest("GET", key);
-      const resp = await tauriFetch(req.url, { method: "GET", headers: req.headers });
+      const resp = await cloudSyncFetch(req.url, { method: "GET", headers: req.headers });
       if (resp.status === 404) return null;
       if (resp.status === 403) {
         throw new Error(`S3 GET access denied (403) for key "${joinKey(config.prefix, key)}"`);
@@ -347,7 +390,7 @@ const createS3Provider = (config: S3Config): StorageProvider => {
     },
     async writeText(key, value) {
       const req = await buildSignedRequest("PUT", key, value);
-      const resp = await tauriFetch(req.url, {
+      const resp = await cloudSyncFetch(req.url, {
         method: "PUT",
         headers: req.headers,
         body: req.body,
@@ -356,7 +399,7 @@ const createS3Provider = (config: S3Config): StorageProvider => {
     },
     async deleteKey(key) {
       const req = await buildSignedRequest("DELETE", key);
-      const resp = await tauriFetch(req.url, { method: "DELETE", headers: req.headers });
+      const resp = await cloudSyncFetch(req.url, { method: "DELETE", headers: req.headers });
       if (!resp.ok && resp.status !== 404) {
         throw new Error(`S3 DELETE failed: ${resp.status} ${resp.statusText}`);
       }

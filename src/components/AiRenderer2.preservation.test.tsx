@@ -140,15 +140,18 @@ function injectStyles(): HTMLStyleElement {
       border: 1px solid #e0e0e0;
       display: flex;
       flex-direction: column;
+      flex-shrink: 0;
       min-width: 0;
       max-width: 100%;
     }
     .ai-code-block pre {
       margin: 0;
       padding: 30px 10px 8px;
+      flex-shrink: 0;
       min-width: 0;
       max-width: 100%;
       overflow-x: auto;
+      white-space: pre;
     }
     .ai-code-block pre code.hljs, .ai-code-block pre .hljs {
       padding: 0;
@@ -228,7 +231,7 @@ function injectStyles(): HTMLStyleElement {
     .agent-stream__container { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
     .agent-block { max-width: 88%; align-self: flex-start; border-radius: 8px; padding: 12px 16px; font-size: 13px; line-height: 1.5; }
     .agent-block--user { align-self: flex-end; background-color: #667eea; border: none; color: #fff; border-radius: 14px 14px 4px 14px; padding: 8px 12px; }
-    .agent-block--user .agent-block__content { word-break: break-word; color: #fff; }
+    .agent-block--user .agent-block__content { white-space: pre-wrap; word-break: break-word; color: #fff; }
     .agent-block--error { background-color: #fef2f2; border: 1px solid #fecaca; color: #333; }
     .agent-block--error .agent-block__header { color: #ef4444; }
     .agent-block--thinking { background-color: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 14px 14px 14px 4px; }
